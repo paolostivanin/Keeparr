@@ -8,7 +8,6 @@ import android.graphics.Color
 import android.net.Uri
 import android.text.Html
 import android.view.View
-import android.widget.GridView
 import android.widget.RemoteViews
 import android.widget.RemoteViewsService
 import dev.kept.android.KeptApplication
@@ -29,13 +28,11 @@ class NotesWidget : AppWidgetProvider() {
         const val TOGGLE = "dev.kept.android.WIDGET_TOGGLE"
         fun render(context: Context, id: Int) {
             val app = context.applicationContext as KeptApplication
-            val filter = context.getSharedPreferences("widgets", Context.MODE_PRIVATE).getString("filter_$id", "home")!!
             val views = RemoteViews(context.packageName, R.layout.notes_widget)
-            views.setInt(R.id.widget_list, "setNumColumns", if (filter.startsWith("note:")) 1 else GridView.AUTO_FIT)
-            val service = Intent(context, NotesWidgetService::class.java).putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
-                .setData(Uri.parse("keptnative://widget/$id"))
+            val service = Intent(context, NotesWidgetService::class.java)
+                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                .setData(Uri.parse("keptnative://widget/$id/list-v5"))
             views.setRemoteAdapter(R.id.widget_list, service)
-            views.setEmptyView(R.id.widget_list, R.id.widget_empty)
             val itemAction = Intent(context, MainActivity::class.java).setAction(TOGGLE)
                 .setData(Uri.parse("keptnative://widget/action/$id"))
             val open = PendingIntent.getActivity(context, id, itemAction, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
@@ -62,6 +59,7 @@ class NotesWidgetService : RemoteViewsService() {
     private class Factory(private val app: KeptApplication, private val widgetId: Int) : RemoteViewsFactory {
         private data class Row(val note: Note, val item: JSONObject? = null, val itemIndex: Int = -1)
         private var rows = emptyList<Row>()
+        private var remindersByNoteSyncId = emptyMap<String, JSONObject>()
         private var single = false
         override fun onCreate() = Unit
         override fun onDestroy() = Unit
@@ -73,17 +71,25 @@ class NotesWidgetService : RemoteViewsService() {
             val notes = if (profile != app.settings.profile || app.settings.token.isEmpty()) emptyList() else runBlocking(Dispatchers.IO) {
                 NoteOrder.visible(app.database.store().list(profile, "note").map { Note(JSONObject(it.payload)) }, filter)
             }
+            val reminders = if (profile != app.settings.profile || app.settings.token.isEmpty()) emptyList() else runBlocking(Dispatchers.IO) {
+                app.database.store().list(profile, "reminder").map { JSONObject(it.payload) }
+            }
+            remindersByNoteSyncId = ReminderFormat.indexByNote(notes, reminders)
             val note = notes.singleOrNull()
             val fullChecklist = note?.let(::singleNoteWidgetChecklistItems).orEmpty()
-            rows = if (single && fullChecklist.isNotEmpty()) {
-                listOf(Row(note!!)) + fullChecklist.mapIndexed { index, item -> Row(note, item, index) }
-            } else notes.map { Row(it) }
+            rows = if (single) {
+                if (fullChecklist.isNotEmpty()) listOf(Row(note!!)) + fullChecklist.mapIndexed { index, item -> Row(note, item, index) }
+                else notes.map { Row(it) }
+            } else {
+                notes.map { Row(it) }
+            }
         }
         override fun getCount() = rows.size
         override fun getViewAt(position: Int): RemoteViews? {
             val row = rows.getOrNull(position) ?: return null
             val note = row.note
             val item = row.item
+            val reminder = remindersByNoteSyncId[note.syncId]
             val interactiveChecklistItem = item != null && item.has("id") && !note.locked
             val color = runCatching { Color.parseColor(note.raw.text("bgColor")) }.getOrDefault(Color.WHITE)
             val foreground = widgetForegroundColor(color)
@@ -101,9 +107,12 @@ class NotesWidgetService : RemoteViewsService() {
                     .apply { if (interactiveChecklistItem) putExtra("itemId", item.optLong("id")).putExtra("widgetToggle", true) })
                 return itemRow
             }
-            return RemoteViews(app.packageName, R.layout.widget_row).apply {
-                val title = if (note.locked) "Locked note" else (if (note.pinned) "📌 " else "") + note.title.ifBlank { "Untitled" }
+            val compact = widgetNoteHeightDp(note, single) == 64
+            val layout = if (compact) R.layout.widget_row_small else R.layout.widget_row
+            return RemoteViews(app.packageName, layout).apply {
+                val title = if (note.locked) "Locked note" else (if (note.pinned) "📌 " else "") + note.title
                 setTextViewText(R.id.row_title, boundedWidgetText(title, 160))
+                setViewVisibility(R.id.row_title, if (title.isBlank()) View.GONE else View.VISIBLE)
                 setTextColor(R.id.row_title, foreground)
                 val body = when {
                     note.locked -> "Open Kept to view"
@@ -114,15 +123,23 @@ class NotesWidgetService : RemoteViewsService() {
                     else -> Html.fromHtml(boundedWidgetText(note.body, 8192), 0).toString()
                 }
                 setTextViewText(R.id.row_body, boundedWidgetText(body, if (single) 4096 else 1024))
+                setViewVisibility(R.id.row_body, if (body.isBlank()) View.GONE else View.VISIBLE)
                 setTextColor(R.id.row_body, foreground)
-                setInt(R.id.row_body, "setMaxLines", if (single) 8 else 6)
+                setInt(R.id.row_body, "setMaxLines", if (compact) 1 else if (reminder != null) 4 else 5)
+                if (reminder != null) {
+                    val label = "⏰ ${ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder))}"
+                    setTextViewText(R.id.row_reminder, label)
+                    setTextColor(R.id.row_reminder, foreground)
+                    setContentDescription(R.id.row_reminder, "Reminder ${ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder))}")
+                    setViewVisibility(R.id.row_reminder, View.VISIBLE)
+                } else setViewVisibility(R.id.row_reminder, View.GONE)
                 setViewVisibility(R.id.row_checks, View.GONE)
                 setInt(R.id.widget_card_background, "setColorFilter", color)
                 setOnClickFillInIntent(R.id.widget_row, Intent().putExtra("noteSyncId", note.syncId))
             }
         }
         override fun getLoadingView(): RemoteViews? = null
-        override fun getViewTypeCount() = 2
+        override fun getViewTypeCount() = 3
         override fun getItemId(position: Int): Long {
             val row = rows.getOrNull(position) ?: return 0
             return if (row.item == null) row.note.id else "${row.note.syncId}:${row.item.optLong("id", row.itemIndex.toLong())}".hashCode().toLong()
@@ -135,6 +152,22 @@ internal fun singleNoteWidgetChecklistItems(note: Note): List<JSONObject> =
     if (note.checklist && !note.locked) note.items else emptyList()
 
 internal fun boundedWidgetText(text: String, maxCharacters: Int) = text.take(maxCharacters.coerceAtLeast(0))
+
+internal fun widgetNoteHeightDp(note: Note, single: Boolean = false): Int {
+    val title = if (note.locked) "Locked note" else note.title
+    val body = when {
+        note.locked -> "Open Kept to view"
+        single && note.checklist -> "Checklist · ${note.items.size} item(s)"
+        note.checklist -> note.items.take(8).joinToString("\n") {
+            (if (it.optBoolean("done")) "☑ " else "☐ ") + Html.fromHtml(it.text("data"), Html.FROM_HTML_MODE_COMPACT).toString()
+        }
+        else -> Html.fromHtml(note.body, Html.FROM_HTML_MODE_COMPACT).toString()
+    }
+    val longestFieldLines = listOf(title, body).filter { it.isNotBlank() }.maxOfOrNull { text ->
+        text.trim().lineSequence().sumOf { line -> maxOf(1, (line.length + 39) / 40) }
+    } ?: 0
+    return if (longestFieldLines <= 1) 64 else 160
+}
 
 internal fun widgetForegroundColor(background: Int): Int =
     if (Color.luminance(background) > .4f) Color.rgb(41, 39, 32) else Color.rgb(245, 243, 239)

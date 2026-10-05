@@ -198,6 +198,7 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
     val reorderEnabled = canReorderNotes(filter, search)
     val visible = NoteOrder.visible(notes, filter).filter { note -> search.isBlank() ||
         (!note.locked && (note.title + " " + Html.fromHtml(note.body, 0) + " " + note.items.joinToString { it.text("data") }).contains(search, true)) }
+    val remindersByNote = remember(reminders, notes) { ReminderFormat.indexByNote(notes, reminders) }
     val selectedNotes = notes.filter { it.syncId in selectedIds }
     val canTrashSelected = selectedNotes.isNotEmpty() && selectedNotes.all { it.owner == app.settings.userId }
     val allSelectedTrashed = selectedNotes.isNotEmpty() && selectedNotes.all { it.trashed }
@@ -280,12 +281,12 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
                 contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp) {
                 val pinned = visible.filter { it.pinned }; val other = visible.filter { !it.pinned }
                 if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(pinned, key = { it.syncId }) { note -> NoteCard(app, note, note.syncId in selectedIds, reorderEnabled, noteBounds,
+                items(pinned, key = { it.syncId }) { note -> NoteCard(app, note, remindersByNote[note.syncId], note.syncId in selectedIds, reorderEnabled, noteBounds,
                     onClick = { if (selectedIds.isEmpty()) onEdit(note) else toggleSelected(note.syncId) }, onLongClick = { selectNote(note.syncId) }, onDrop = { target ->
                         if (reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
                     }) }
                 if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(other, key = { it.syncId }) { note -> NoteCard(app, note, note.syncId in selectedIds, reorderEnabled, noteBounds,
+                items(other, key = { it.syncId }) { note -> NoteCard(app, note, remindersByNote[note.syncId], note.syncId in selectedIds, reorderEnabled, noteBounds,
                     onClick = { if (selectedIds.isEmpty()) onEdit(note) else toggleSelected(note.syncId) }, onLongClick = { selectNote(note.syncId) }, onDrop = { target ->
                         if (reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
                     }) }
@@ -379,7 +380,7 @@ private fun ReminderList(app: KeptApplication, reminders: List<JSONObject>, note
         reminder.text("status") == "pending" && reminder.text("dueAtUtc").isNotEmpty() &&
             (reminder.optLong("noteId") == 0L || notes.any { it.id == reminder.optLong("noteId") || it.syncId == reminder.text("noteSyncId") })
     }
-        .sortedBy { runCatching { Instant.parse(it.text("dueAtUtc")) }.getOrDefault(Instant.MAX) }
+        .sortedBy { runCatching { Instant.parse(ReminderFormat.displayDueAt(it)) }.getOrDefault(Instant.MAX) }
     if (rows.isEmpty()) Box(modifier, contentAlignment = Alignment.Center) { Text("No upcoming reminders") }
     else LazyColumn(modifier, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items(rows, key = { it.text("syncId") }) { reminder ->
@@ -387,8 +388,7 @@ private fun ReminderList(app: KeptApplication, reminders: List<JSONObject>, note
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(if (note?.locked == true) "Locked note reminder" else reminder.text("title", note?.title ?: "Reminder"), style = MaterialTheme.typography.titleMedium)
-                    Text(runCatching { Instant.parse(reminder.text("dueAtUtc")).atZone(ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a")) }
-                        .getOrDefault(reminder.text("dueAtUtc")))
+                     Text(ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder)))
                     runCatching { JSONObject(reminder.text("repeatRule")) }.getOrNull()?.text("type")?.takeIf { it.isNotBlank() }?.let { type ->
                         val description = if (type == "custom_days") "every ${runCatching { JSONObject(reminder.text("repeatRule")).optInt("intervalDays", 1) }.getOrDefault(1)} days" else type
                         Text("Repeats: $description", style = MaterialTheme.typography.labelMedium)
@@ -410,7 +410,7 @@ private fun ReminderList(app: KeptApplication, reminders: List<JSONObject>, note
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NoteCard(app: KeptApplication, note: Note, selected: Boolean, reorderEnabled: Boolean, bounds: MutableMap<String, Rect>,
+private fun NoteCard(app: KeptApplication, note: Note, reminder: JSONObject?, selected: Boolean, reorderEnabled: Boolean, bounds: MutableMap<String, Rect>,
     onClick: () -> Unit, onLongClick: () -> Unit, onDrop: (String) -> Unit) {
     var coordinates by remember(note.syncId) { mutableStateOf<LayoutCoordinates?>(null) }
     var target by remember(note.syncId) { mutableStateOf(note.syncId) }
@@ -442,6 +442,13 @@ private fun NoteCard(app: KeptApplication, note: Note, selected: Boolean, reorde
                 if (note.checklist) note.items.take(8).forEach { item -> Row {
                     Text(if (item.optBoolean("done")) "☑  " else "☐  "); Text(Html.fromHtml(item.text("data"), 0).toString(), maxLines = 3)
                 } } else if (note.body.isNotBlank()) Text(Html.fromHtml(note.body, 0).toString(), maxLines = 12)
+                reminder?.let { activeReminder ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Schedule, "Reminder", Modifier.size(16.dp))
+                        Text(ReminderFormat.dateTime(ReminderFormat.displayDueAt(activeReminder)), Modifier.padding(start = 5.dp),
+                            style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    }
+                }
                 if (note.labels.isNotEmpty()) Text(note.labels.joinToString(" · "), style = MaterialTheme.typography.labelSmall)
                 if ((note.raw.optJSONArray("collaborators")?.length() ?: 0) > 0) Icon(Icons.Outlined.PeopleOutline, "Shared note", Modifier.size(18.dp))
             }
@@ -487,7 +494,7 @@ private fun SettingsDialog(activity: MainActivity, app: KeptApplication, reminde
         Text(if (scheduler.precise()) "Precise reminders enabled" else "Reminder delivery may be delayed without alarm access")
         if (!scheduler.precise()) TextButton(onClick = { activity.requestPreciseAlarms() }) { Text("Allow precise reminders") }
         val nextDelivery = ReminderPlanner.nextDelivery(reminders, occurrences, Instant.now())
-        Text(nextDelivery?.let { "Next reminder: ${it.atZone(ZoneId.systemDefault())}" }
+        Text(nextDelivery?.let { "Next reminder: ${ReminderFormat.dateTime(it.toString())}" }
             ?: "No upcoming reminders", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = { if (scheduler.notificationsAllowed()) scheduler.testNotification() else activity.requestNotifications() }) { Text("Send test notification") }
         Text("Client certificate: ${alias.ifBlank { "none" }}", Modifier.padding(top = 12.dp))

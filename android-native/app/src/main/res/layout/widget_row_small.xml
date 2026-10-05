@@ -1,11 +1,12 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_row"
-    android:layout_width="match_parent" android:layout_height="160dp" android:background="@drawable/widget_note_card"
+    android:layout_width="match_parent" android:layout_height="64dp" android:background="@drawable/widget_note_card"
     android:clipToOutline="true">
     <ImageView android:id="@+id/widget_card_background" android:layout_width="match_parent" android:layout_height="match_parent"
         android:src="@drawable/widget_note_card" android:scaleType="fitXY" android:importantForAccessibility="no" />
-    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="10dp">
-        <TextView android:id="@+id/row_title" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="14sp" android:textStyle="bold" android:textColor="#292720" android:maxLines="2" />
-        <TextView android:id="@+id/row_body" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:textColor="#49463E" android:maxLines="4" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical"
+        android:gravity="center_vertical" android:paddingHorizontal="10dp" android:paddingVertical="6dp">
+        <TextView android:id="@+id/row_title" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="14sp" android:textStyle="bold" android:textColor="#292720" android:maxLines="1" />
+        <TextView android:id="@+id/row_body" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:textColor="#49463E" android:maxLines="1" />
         <TextView android:id="@+id/row_reminder" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:textStyle="bold" android:maxLines="1" android:visibility="gone" />
         <LinearLayout android:id="@+id/row_checks" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone" />
     </LinearLayout>

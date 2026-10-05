@@ -43,7 +43,9 @@ class WidgetConfigActivity : ComponentActivity() {
                                     getSharedPreferences("widgets", MODE_PRIVATE).edit().putString("filter_$id", filter)
                                         .putString("profile_$id", app.settings.profile).commit()
                                     NotesWidget.render(this@WidgetConfigActivity, id)
-                                    AppWidgetManager.getInstance(this@WidgetConfigActivity).notifyAppWidgetViewDataChanged(intArrayOf(id), dev.kept.android.R.id.widget_list)
+                                    AppWidgetManager.getInstance(this@WidgetConfigActivity).apply {
+                                        notifyAppWidgetViewDataChanged(intArrayOf(id), dev.kept.android.R.id.widget_list)
+                                    }
                                     setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id))
                                     finish()
                                 }, modifier = Modifier.fillMaxWidth()) { Text(label) }

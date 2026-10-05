@@ -5,6 +5,7 @@ import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Intent
 import android.text.*
+import android.text.format.DateFormat
 import android.text.style.*
 import android.widget.EditText
 import androidx.activity.compose.BackHandler
@@ -46,6 +47,9 @@ import kotlinx.coroutines.flow.first
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.*
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 
 @Composable
 internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: Note, reminders: List<JSONObject>, onClose: () -> Unit, onError: (String) -> Unit) {
@@ -73,7 +77,8 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
     val metadataNote = incoming ?: cachedNote ?: note
     val owner = note.owner == app.settings.userId
     val syncStatus by app.repository.status.collectAsStateWithLifecycle()
-    val selectedReminder = reminders.find { it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId }
+    val selectedReminder = reminders.find { it.text("status") == "pending" && it.text("dueAtUtc").isNotBlank() &&
+        (it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId) }
     fun change(block: (JSONObject) -> Unit) { draftViewModel.change(block) }
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
     fun close() { action { draftViewModel.flushAndQueueSync(); onClose() } }
@@ -286,7 +291,9 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
             }
             if (metadataNote.labels.isNotEmpty()) Text(metadataNote.labels.joinToString(" · "), style = MaterialTheme.typography.labelMedium)
             if (metadataNote.binder.isNotEmpty()) Text("Binder: ${metadataNote.binder}", style = MaterialTheme.typography.labelMedium)
-            selectedReminder?.let { TextButton(onClick = { reminderDialog = true }) { Icon(Icons.Outlined.Schedule, null); Text(it.text("dueAtUtc")) } }
+            selectedReminder?.let { TextButton(onClick = { reminderDialog = true }) {
+                Icon(Icons.Outlined.Schedule, null); Text(ReminderFormat.dateTime(ReminderFormat.displayDueAt(it)))
+            } }
          }
          }
     }
@@ -391,12 +398,10 @@ private fun StyledEditor(initial: String, reset: String, textColor: Color, onCha
 private fun ReminderDialog(activity: MainActivity, app: KeptApplication, existing: JSONObject?, onClose: () -> Unit,
     onSave: (String, String, String?) -> Unit, onRemove: () -> Unit) {
     val systemZone = ZoneId.systemDefault()
-    val savedTimezone = existing?.text("timezone")?.takeIf { it.isNotBlank() } ?: systemZone.id
-    val pickerZone = runCatching { ZoneId.of(savedTimezone) }.getOrDefault(systemZone)
-    var timezone by remember(existing?.text("syncId"), savedTimezone) { mutableStateOf(pickerZone.id) }
+    val timezone = systemZone.id
     var time by remember(existing?.text("syncId"), existing?.text("dueAtUtc"), timezone) {
-        mutableStateOf(runCatching { Instant.parse(existing?.text("dueAtUtc")) }.getOrNull()?.atZone(pickerZone)
-            ?: ZonedDateTime.now(pickerZone).plusHours(1).withSecond(0).withNano(0))
+        mutableStateOf(runCatching { Instant.parse(existing?.let { ReminderFormat.displayDueAt(it) }) }.getOrNull()?.atZone(systemZone)
+            ?: ZonedDateTime.now(systemZone).plusHours(1).withSecond(0).withNano(0))
     }
     val existingRepeat = remember(existing?.text("repeatRule")) { runCatching { JSONObject(existing?.text("repeatRule") ?: "") }.getOrNull() }
     var repeat by remember { mutableStateOf(existingRepeat?.text("type") ?: "none") }
@@ -408,8 +413,19 @@ private fun ReminderDialog(activity: MainActivity, app: KeptApplication, existin
             TextButton(onClick = { time = ZonedDateTime.now(time.zone).withHour(time.hour).withMinute(time.minute).withSecond(0).withNano(0) }) { Text("Today") }
             TextButton(onClick = { time = ZonedDateTime.now(time.zone).plusDays(1).withHour(time.hour).withMinute(time.minute).withSecond(0).withNano(0) }) { Text("Tomorrow") }
         }
-        TextButton(onClick = { DatePickerDialog(activity, { _, year, month, day -> time = time.withDayOfMonth(1).withYear(year).withMonth(month + 1).withDayOfMonth(day) }, time.year, time.monthValue - 1, time.dayOfMonth).show() }) { Text(time.toLocalDate().toString()) }
-        TextButton(onClick = { TimePickerDialog(activity, { _, hour, minute -> time = time.withHour(hour).withMinute(minute) }, time.hour, time.minute, true).show() }) { Text(time.toLocalTime().toString()) }
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            TextButton(onClick = { DatePickerDialog(activity, { _, year, month, day ->
+                time = time.withDayOfMonth(1).withYear(year).withMonth(month + 1).withDayOfMonth(day)
+            }, time.year, time.monthValue - 1, time.dayOfMonth).show() }) {
+                Icon(Icons.Outlined.CalendarToday, null); Spacer(Modifier.width(6.dp))
+                Text(time.format(DateTimeFormatter.ofPattern("EEE, MMM d", Locale.getDefault())))
+            }
+            TextButton(onClick = { TimePickerDialog(activity, { _, hour, minute -> time = time.withHour(hour).withMinute(minute) },
+                time.hour, time.minute, DateFormat.is24HourFormat(activity)).show() }) {
+                Icon(Icons.Outlined.Schedule, null); Spacer(Modifier.width(6.dp))
+                Text(time.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(Locale.getDefault())))
+            }
+        }
         Text("Repeat")
         Row(Modifier.horizontalScroll(rememberScrollState())) { listOf("none", "daily", "weekly", "monthly", "custom_days").forEach { type ->
             FilterChip(repeat == type, { repeat = type }, label = { Text(if (type == "custom_days") "Every N days" else type.replaceFirstChar { it.uppercase() }) }, modifier = Modifier.padding(2.dp))
@@ -420,7 +436,7 @@ private fun ReminderDialog(activity: MainActivity, app: KeptApplication, existin
             Text("Move note to top when it fires", Modifier.weight(1f))
             Switch(moveToTop, { moveToTop = it })
         }
-        Text("Time zone: $timezone", style = MaterialTheme.typography.bodySmall)
+        Text("Phone time · $timezone", style = MaterialTheme.typography.bodySmall)
         if (!scheduler.notificationsAllowed()) TextButton(onClick = activity::requestNotifications) { Text("Allow reminder notifications") }
         if (!scheduler.precise()) TextButton(onClick = activity::requestPreciseAlarms) { Text("Allow precise delivery (otherwise may be delayed)") }
     } }, confirmButton = { TextButton(onClick = { onSave(time.toInstant().toString(), timezone, if (repeat == "none") null else JSONObject()

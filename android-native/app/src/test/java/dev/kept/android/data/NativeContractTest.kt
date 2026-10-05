@@ -13,6 +13,7 @@ import org.robolectric.RuntimeEnvironment
 import dev.kept.android.widgets.singleNoteWidgetChecklistItems
 import dev.kept.android.widgets.boundedWidgetText
 import dev.kept.android.widgets.widgetForegroundColor
+import dev.kept.android.widgets.widgetNoteHeightDp
 import dev.kept.android.ui.canReorderNotes
 import dev.kept.android.ui.moveDraggedNote
 import androidx.datastore.preferences.SharedPreferencesMigration
@@ -103,6 +104,36 @@ class NativeContractTest {
     @Test fun widgetTextIsBoundedBeforeRemoteViewsSerialization() {
         assertEquals(128, boundedWidgetText("x".repeat(10_000), 128).length)
     }
+    @Test fun widgetUsesCompactCardsForSingleLineNotesAndUniformCardsForLongerNotes() {
+        val short = Note(JSONObject().put("noteTitle", "").put("noteBody", "A short note"))
+        val multiline = Note(JSONObject().put("noteTitle", "").put("noteBody", "First line<br>Second line"))
+        val titleAndBody = Note(JSONObject().put("noteTitle", "Shopping").put("noteBody", "Milk and bread"))
+        assertEquals(64, widgetNoteHeightDp(short))
+        assertEquals(160, widgetNoteHeightDp(multiline))
+        assertEquals(64, widgetNoteHeightDp(titleAndBody))
+    }
+    @Test fun widgetListMeasuresCompactAndRegularRowsAtDifferentHeights() {
+        val context = RuntimeEnvironment.getApplication()
+        val host = android.widget.RemoteViews(context.packageName, dev.kept.android.R.layout.notes_widget)
+            .apply(context, android.widget.FrameLayout(context))
+        val list = host.findViewById<android.widget.ListView>(dev.kept.android.R.id.widget_list)
+        val layouts = listOf(dev.kept.android.R.layout.widget_row_small, dev.kept.android.R.layout.widget_row)
+        list.adapter = object : android.widget.BaseAdapter() {
+            override fun getCount() = layouts.size
+            override fun getItem(position: Int) = layouts[position]
+            override fun getItemId(position: Int) = position.toLong()
+            override fun getView(position: Int, recycled: android.view.View?, parent: android.view.ViewGroup): android.view.View =
+                android.widget.RemoteViews(context.packageName, layouts[position]).apply(context, parent)
+        }
+        val density = context.resources.displayMetrics.density
+        val width = (320 * density).toInt()
+        val height = (600 * density).toInt()
+        host.measure(android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
+            android.view.View.MeasureSpec.makeMeasureSpec(height, android.view.View.MeasureSpec.EXACTLY))
+        host.layout(0, 0, width, height)
+        assertEquals((64 * density + .5f).toInt(), list.getChildAt(0).height)
+        assertEquals((160 * density + .5f).toInt(), list.getChildAt(1).height)
+    }
     @Test fun noteWidgetChoosesReadableForegroundForDarkAndLightColors() {
         val darkRed = android.graphics.Color.parseColor("#5B0000")
         val lightYellow = android.graphics.Color.parseColor("#FFF8B8")
@@ -116,6 +147,23 @@ class NativeContractTest {
             "#5b2121", "#5b3a21", "#4a4a1a", "#1a4a1a", "#1a4a4a", "#1a2e4a", "#0f172a", "#2e1a4a",
             "#4a1a2e", "#3a211a", "#334155"
         ), NotePalette.colors.map { it.hex })
+    }
+    @Test fun reminderDateTimeUsesTheRequestedLocalZoneAndShortFormat() {
+        assertEquals("Jan 1 · 10:30 AM", ReminderFormat.dateTime("2030-01-01T09:30:00Z",
+            java.time.ZoneId.of("Europe/Rome"), java.util.Locale.US))
+    }
+    @Test fun recurringReminderDisplaysItsNextUpcomingDate() {
+        val reminder = JSONObject().put("syncId", "daily").put("dueAtUtc", "2030-01-01T09:00:00Z")
+            .put("scheduleAnchorAtUtc", "2030-01-01T09:00:00Z").put("timezone", "UTC")
+            .put("repeatRule", "{\"type\":\"daily\"}")
+        assertEquals("2030-01-03T09:00:00.000Z", ReminderFormat.displayDueAt(reminder, java.time.Instant.parse("2030-01-03T00:00:00Z")))
+    }
+    @Test fun reminderIndexShowsTheNearestPendingReminderForEachNote() {
+        val note = Note(JSONObject().put("id", 55).put("syncId", "note-55"))
+        val later = JSONObject().put("syncId", "later").put("noteId", 55).put("status", "pending").put("dueAtUtc", "2030-01-02T09:00:00Z")
+        val earlier = JSONObject().put("syncId", "earlier").put("noteSyncId", "note-55").put("status", "pending").put("dueAtUtc", "2030-01-01T09:00:00Z")
+        val dismissed = JSONObject().put("syncId", "dismissed").put("noteSyncId", "note-55").put("status", "dismissed").put("dueAtUtc", "2030-01-01T08:00:00Z")
+        assertEquals("earlier", ReminderFormat.indexByNote(listOf(note), listOf(later, earlier, dismissed))[note.syncId]?.text("syncId"))
     }
     @Test fun recurrenceMatchesSharedCrossLanguageFixtures() {
         val cases = fixtures.getJSONArray("recurrence")
