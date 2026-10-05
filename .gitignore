@@ -57,3 +57,10 @@ Thumbs.db
 /migrate-and-clean.js
 /scratch/
 /IOS_CLIENT_BRIEF.md
+
+# Native Android build output and private device references
+/android-native/.gradle/
+/android-native/.kotlin/
+/android-native/**/build/
+/android-native/local.properties
+/android-native/references/

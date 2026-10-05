@@ -1,0 +1,490 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+package dev.kept.android.ui
+
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import android.content.Intent
+import android.graphics.Bitmap
+import android.net.Uri
+import android.text.Html
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.staggeredgrid.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.kept.android.KeptApplication
+import dev.kept.android.MainActivity
+import dev.kept.android.data.*
+import dev.kept.android.reminders.ReminderScheduler
+import kotlinx.coroutines.*
+import org.json.JSONArray
+import org.json.JSONObject
+import java.time.*
+
+private data class PendingLogin(val origin: String, val headers: String, val response: JSONObject)
+
+@Composable
+fun KeptScreen(activity: MainActivity, app: KeptApplication) {
+    val repo = app.repository
+    val scope = rememberCoroutineScope()
+    var signedIn by remember { mutableStateOf(app.settings.token.isNotBlank()) }
+    var dark by remember { mutableStateOf(app.settings.darkMode) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var editing by remember { mutableStateOf<Note?>(null) }
+    var showSettings by remember { mutableStateOf(false) }
+    val incoming by activity.incoming.collectAsStateWithLifecycle()
+    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { error = problem.message ?: "Could not complete this action" } } }
+    MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = Color(0xFFFFCF45)) else lightColorScheme(primary = Color(0xFF765900))) {
+        Surface(Modifier.fillMaxSize()) {
+            if (!signedIn) LoginScreen(activity, app,
+                onLogin = { signedIn = true; repo.authenticated(); action { SyncWorker.schedule(app); repo.sync(); repo.foreground(true) } },
+                onCancel = { signedIn = true }, onError = { error = it })
+            else {
+                val notes by remember(app.settings.profile) { repo.notes() }.collectAsStateWithLifecycle(emptyList())
+                val reminders by remember(app.settings.profile) { repo.reminders() }.collectAsStateWithLifecycle(emptyList())
+                val occurrences by remember(app.settings.profile) { repo.occurrences() }.collectAsStateWithLifecycle(emptyList())
+                val conflicts by remember(app.settings.profile) { repo.conflicts() }.collectAsStateWithLifecycle(emptyList())
+                LaunchedEffect(incoming, signedIn) {
+                    val intent = incoming ?: return@LaunchedEffect
+                    try {
+                        if (intent.hasExtra("itemId")) {
+                            repo.toggleChecklist(intent.getStringExtra("noteSyncId") ?: "", intent.getLongExtra("itemId", 0))
+                            activity.incoming.value = null; activity.finish(); return@LaunchedEffect
+                        }
+                        intent.getStringExtra("noteSyncId")?.let { id -> editing = repo.note(id) }
+                        val createChecklist = intent.getBooleanExtra("createChecklist", false)
+                        if (intent.getBooleanExtra("createNote", false) || createChecklist || intent.action in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) {
+                            val note = Note.create(app.settings.userId, createChecklist)
+                            val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+                            note.raw.put("noteTitle", intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty())
+                                .put("noteBody", Html.escapeHtml(text).replace("\n", "<br>"))
+                            repo.save(note); editing = note
+                            val uris = if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+                                else listOfNotNull(intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
+                            for (uri in uris) repo.attach(note, Media(app).stage(uri))
+                        }
+                    } catch (problem: Exception) { error = problem.message }
+                    activity.incoming.value = null
+                }
+                if (editing != null) key(editing!!.syncId) {
+                    NoteEditor(activity, app, editing!!, reminders, onClose = { editing = null }, onError = { error = it })
+                } else HomeScreen(app, notes, reminders, conflicts, onEdit = { editing = it }, onCreate = { checklist ->
+                    action { val note = Note.create(app.settings.userId, checklist); repo.save(note); editing = note }
+                }, onSettings = { showSettings = true }, onReauthenticate = { signedIn = false }, onError = { error = it })
+                if (showSettings) SettingsDialog(activity, app, reminders, occurrences, dark, onDark = { dark = it; app.settings.darkMode = it },
+                    onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedIn = false; showSettings = false } }, onError = { error = it })
+            }
+            error?.let { message -> AlertDialog(onDismissRequest = { error = null }, title = { Text("Kept") }, text = { Text(message) },
+                confirmButton = { TextButton(onClick = { error = null }) { Text("OK") } }) }
+        }
+    }
+}
+
+@Composable
+private fun LoginScreen(activity: MainActivity, app: KeptApplication, onLogin: () -> Unit, onCancel: () -> Unit, onError: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var server by remember { mutableStateOf(app.settings.origin) }
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var totp by remember { mutableStateOf("") }
+    var certificate by remember { mutableStateOf(app.settings.aliasFor(server)) }
+    var headers by remember { mutableStateOf(app.settings.headersFor(server)) }
+    var connectionStatus by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var pendingLogin by remember { mutableStateOf<PendingLogin?>(null) }
+    fun activate(login: PendingLogin) {
+        app.settings.origin = login.origin
+        app.settings.headers = login.headers
+        app.settings.token = login.response.getString("token")
+        app.settings.userId = login.response.getJSONObject("user").getLong("id")
+        pendingLogin = null
+        onLogin()
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Spacer(Modifier.height(35.dp))
+        Icon(Icons.Outlined.Lightbulb, null, Modifier.size(52.dp), tint = MaterialTheme.colorScheme.primary)
+        Text("Your notes. Your server.", style = MaterialTheme.typography.headlineMedium)
+        Text("Sign in to Kept", style = MaterialTheme.typography.titleMedium)
+        app.settings.message.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        OutlinedTextField(server, { value ->
+            server = value
+            certificate = app.settings.aliasFor(value)
+            headers = app.settings.headersFor(value)
+            connectionStatus = null
+        }, label = { Text("Server address") }, placeholder = { Text("https://notes.example.com") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedButton(onClick = { activity.chooseCertificate(server) { certificate = it } }, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Outlined.VerifiedUser, null); Spacer(Modifier.width(8.dp)); Text(if (certificate.isBlank()) "Select client certificate (optional)" else "Certificate: $certificate")
+        }
+        if (certificate.isNotBlank()) TextButton(onClick = { certificate = ""; app.settings.setAliasFor(server, "") }) { Text("Use no client certificate") }
+        OutlinedButton(onClick = { scope.launch {
+            busy = true
+            connectionStatus = null
+            try { connectionStatus = app.repository.api.testConnection(server, headers) }
+            catch (problem: Exception) { connectionStatus = problem.message ?: "Connection test failed" }
+            finally { busy = false }
+        } }, enabled = !busy && server.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+            Text(if (busy) "Testing connection…" else "Test server connection")
+        }
+        connectionStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (it.startsWith("Connected")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
+        OutlinedTextField(username, { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(password, { password = it }, label = { Text("Password") }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(totp, { totp = it }, label = { Text("2FA or backup code, if enabled") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(headers, { headers = it }, label = { Text("Gateway headers (optional JSON)") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
+        Button(onClick = { scope.launch {
+            busy = true
+            try {
+                if (headers.isNotBlank()) JSONObject(headers)
+                val response = app.repository.api.login(server, username, password, totp, headers)
+                val targetOrigin = server.trim().trimEnd('/')
+                val target = PendingLogin(targetOrigin, headers, response)
+                val targetUserId = response.getJSONObject("user").getLong("id")
+                if (ConnectionProfilePolicy.requiresConfirmation(app.settings.snapshot(), targetOrigin, targetUserId)) pendingLogin = target
+                else activate(target)
+            } catch (problem: Exception) { onError(problem.message ?: "Sign-in failed") }
+            finally { busy = false }
+        } }, enabled = !busy && server.isNotBlank() && username.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+            if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Sign in")
+        }
+    }
+    pendingLogin?.let { login ->
+        val displayName = login.response.getJSONObject("user").text("displayName", login.response.getJSONObject("user").text("username", "this account"))
+        AlertDialog(onDismissRequest = { pendingLogin = null; onCancel() }, title = { Text("Switch Kept profile?") },
+            text = { Text("Sign in as $displayName on ${login.origin}? Your cached notes and pending work stay isolated in the previous profile.") },
+            confirmButton = { TextButton(onClick = { activate(login) }) { Text("Switch profile") } },
+            dismissButton = { TextButton(onClick = { pendingLogin = null; onCancel() }) { Text("Stay with previous profile") } })
+    }
+}
+
+@Composable
+private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<JSONObject>, conflicts: List<Outbox>, onEdit: (Note) -> Unit,
+    onCreate: (Boolean) -> Unit, onSettings: () -> Unit, onReauthenticate: () -> Unit, onError: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val status by app.repository.status.collectAsStateWithLifecycle()
+    val connectionState by app.repository.connectionState.collectAsStateWithLifecycle()
+    var search by remember { mutableStateOf("") }
+    var filter by remember { mutableStateOf("home") }
+    var grid by remember { mutableStateOf(true) }
+    var selected by remember { mutableStateOf<String?>(null) }
+    var conflict by remember { mutableStateOf<Outbox?>(null) }
+    val noteBounds = remember { mutableStateMapOf<String, Rect>() }
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val reorderEnabled = canReorderNotes(filter, search)
+    val visible = NoteOrder.visible(notes, filter).filter { note -> search.isBlank() ||
+        (!note.locked && (note.title + " " + Html.fromHtml(note.body, 0) + " " + note.items.joinToString { it.text("data") }).contains(search, true)) }
+    LaunchedEffect(search, filter) { if (!reorderEnabled) selected = null }
+    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
+    ModalNavigationDrawer(drawerState = drawer, drawerContent = {
+        ModalDrawerSheet(Modifier.verticalScroll(rememberScrollState())) {
+            Text("Kept", Modifier.padding(24.dp), style = MaterialTheme.typography.headlineMedium)
+            val choices = listOf("home" to "Notes", "reminders" to "Reminders", "shared" to "Shared notes", "archive" to "Archive", "trash" to "Trash") +
+                notes.flatMap { it.labels }.distinct().sorted().map { "label:$it" to it } + notes.map { it.binder }.filter { it.isNotBlank() }.distinct().sorted().map { "binder:$it" to it }
+            choices.forEach { (value, label) -> NavigationDrawerItem(label = { Text(label) }, selected = filter == value,
+                onClick = { filter = value; selected = null; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp)) }
+        }
+    }) {
+        Scaffold(topBar = {
+            Column(Modifier.statusBarsPadding().padding(horizontal = 12.dp)) {
+                Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.Menu, "Navigation") }
+                        TextField(search, { search = it }, placeholder = { Text("Search your notes") }, modifier = Modifier.weight(1f), singleLine = true,
+                            colors = TextFieldDefaults.colors(unfocusedContainerColor = Color.Transparent, focusedContainerColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent, focusedIndicatorColor = Color.Transparent))
+                        IconButton(onClick = { grid = !grid }) { Icon(if (grid) Icons.Outlined.ViewAgenda else Icons.Outlined.GridView, "Switch grid or list") }
+                        IconButton(onClick = onSettings) { Icon(Icons.Outlined.AccountCircle, "Settings") }
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(status, Modifier.weight(1f).padding(start = 12.dp), style = MaterialTheme.typography.labelSmall, maxLines = 2)
+                    if (connectionState is ConnectionState.SessionExpired) {
+                        TextButton(onClick = onReauthenticate) { Text("Sign in again") }
+                    }
+                    IconButton(onClick = { action { app.repository.sync() } }) { Icon(Icons.Outlined.Sync, "Synchronize") }
+                }
+                if (conflicts.isNotEmpty()) TextButton(onClick = { conflict = conflicts.first() }) { Text("${conflicts.size} edit(s) need attention") }
+                selected?.let { id ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Move note", Modifier.weight(1f))
+                        IconButton(onClick = { val ids = visible.map { it.syncId }.toMutableList(); val index = ids.indexOf(id)
+                            if (index > 0 && visible[index].pinned == visible[index - 1].pinned) { java.util.Collections.swap(ids, index, index - 1); action { app.repository.reorder(ids) } }
+                        }) { Icon(Icons.Outlined.ArrowUpward, "Move earlier") }
+                        IconButton(onClick = { val ids = visible.map { it.syncId }.toMutableList(); val index = ids.indexOf(id)
+                            if (index >= 0 && index + 1 < ids.size && visible[index].pinned == visible[index + 1].pinned) { java.util.Collections.swap(ids, index, index + 1); action { app.repository.reorder(ids) } }
+                        }) { Icon(Icons.Outlined.ArrowDownward, "Move later") }
+                        IconButton(onClick = { selected = null }) { Icon(Icons.Outlined.Close, "End selection") }
+                    }
+                }
+            }
+        }, bottomBar = {
+            Surface(shadowElevation = 4.dp, color = MaterialTheme.colorScheme.surfaceContainer) {
+                Row(Modifier.navigationBarsPadding().fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { onCreate(false) }, modifier = Modifier.weight(1f)) { Text("Take a note…", Modifier.fillMaxWidth()) }
+                    IconButton(onClick = { onCreate(true) }) { Icon(Icons.Outlined.CheckBox, "Create checklist") }
+                    IconButton(onClick = { onCreate(false) }) { Icon(Icons.Outlined.Add, "Create note") }
+                }
+            }
+        }) { padding ->
+            if (filter == "reminders") ReminderList(app, reminders, notes, Modifier.fillMaxSize().padding(padding), onOpenNote = { note -> if (note != null) onEdit(note) }, onError = onError)
+            else if (visible.isEmpty()) Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Outlined.Lightbulb, null, Modifier.size(80.dp)); Text("Your notes appear here", Modifier.padding(16.dp)) }
+            } else LazyVerticalStaggeredGrid(columns = if (grid) StaggeredGridCells.Adaptive(170.dp) else StaggeredGridCells.Fixed(1), modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp) {
+                val pinned = visible.filter { it.pinned }; val other = visible.filter { !it.pinned }
+                if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
+                items(pinned, key = { it.syncId }) { note -> NoteCard(app, note, selected == note.syncId, reorderEnabled, noteBounds,
+                    onClick = { onEdit(note) }, onLongClick = { if (reorderEnabled) selected = note.syncId }, onDrop = { target ->
+                        if (reorderEnabled) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
+                    }) }
+                if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
+                items(other, key = { it.syncId }) { note -> NoteCard(app, note, selected == note.syncId, reorderEnabled, noteBounds,
+                    onClick = { onEdit(note) }, onLongClick = { if (reorderEnabled) selected = note.syncId }, onDrop = { target ->
+                        if (reorderEnabled) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
+                    }) }
+            }
+        }
+    }
+    conflict?.let { entry ->
+        val result = JSONObject(entry.conflict!!)
+        val latest = result.optJSONObject("latest")
+        val primaryResolution = when (entry.type) {
+            "note.upsert" -> if (latest == null) ConflictResolution.SAVE_AS_COPY else ConflictResolution.REPLACE_WITH_DRAFT
+            "reminder.upsert" -> if (latest == null) ConflictResolution.DISCARD else ConflictResolution.REPLACE_WITH_DRAFT
+            "media.upload" -> ConflictResolution.SAVE_AS_COPY
+            else -> ConflictResolution.DISCARD
+        }
+        val primaryLabel = when (entry.type) {
+            "note.upsert" -> if (latest == null) "Save draft as copy" else "Replace server version"
+            "reminder.upsert" -> if (latest == null) "Discard schedule" else "Keep my schedule"
+            "media.upload" -> "Save as copy"
+            "reminder.action" -> "Discard outdated action"
+            "note.view-state" -> "Use server preference"
+            else -> "Resolve"
+        }
+        fun resolveWith(choice: ConflictResolution) {
+            action {
+                app.repository.resolve(entry, choice)
+                app.repository.sync()
+                conflict = null
+            }
+        }
+        AlertDialog(onDismissRequest = { conflict = null }, title = { Text("Keep your draft safe") },
+            text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(result.text("error", "This edit conflicts with a newer version."))
+                if (entry.type == "note.upsert") {
+                    val draft = JSONObject(entry.payload)
+                    Text("Your draft: ${draft.text("noteTitle")}", Modifier.padding(top = 12.dp))
+                    Text(Html.fromHtml(draft.text("noteBody"), 0).toString())
+                    latest?.let { server ->
+                        Text("Server version: ${server.text("noteTitle")}", Modifier.padding(top = 12.dp))
+                        Text(Html.fromHtml(server.text("noteBody"), 0).toString())
+                        val localItems = draft.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
+                        val serverItems = server.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
+                        val differing = (localItems.keys + serverItems.keys).filter { id ->
+                            localItems[id]?.toString() != serverItems[id]?.toString()
+                        }
+                        if (differing.isNotEmpty()) {
+                            Text("Checklist differences", Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
+                            differing.take(30).forEach { id ->
+                                val localText = localItems[id]?.opt("data")?.toString() ?: "(missing)"
+                                val serverText = serverItems[id]?.opt("data")?.toString() ?: "(missing)"
+                                Text("Item $id · local: $localText · server: $serverText", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                } else if (entry.type == "media.upload") {
+                    val upload = JSONObject(entry.payload)
+                    Text("Pending file: ${upload.text("name", "attachment")}", Modifier.padding(top = 12.dp))
+                    Text("You can save the local note and file as a new note on this account, or discard the pending upload.")
+                } else if (entry.type == "reminder.upsert") {
+                    val local = JSONObject(entry.payload)
+                    Text("Your schedule: ${local.text("dueAtUtc")} · ${local.text("repeatRule", "once")}", Modifier.padding(top = 12.dp))
+                    latest?.let { Text("Server schedule: ${it.text("dueAtUtc")} · ${it.text("repeatRule", "once")}") }
+                } else if (entry.type == "reminder.action") {
+                    Text("This reminder action is no longer valid for the current schedule. The reminder itself is unchanged.")
+                }
+            } }, confirmButton = { Row(Modifier.horizontalScroll(rememberScrollState())) {
+                TextButton(onClick = { resolveWith(primaryResolution) }) { Text(primaryLabel) }
+                if (entry.type == "note.upsert" && latest != null) {
+                    TextButton(onClick = { resolveWith(ConflictResolution.SAVE_AS_COPY) }) { Text("Save as copy") }
+                }
+            } }, dismissButton = { TextButton(onClick = {
+                resolveWith(if (latest != null) ConflictResolution.USE_SERVER else ConflictResolution.DISCARD)
+            }) { Text(if (latest != null) "Use server" else "Discard") } })
+    }
+}
+
+@Composable
+private fun ReminderList(app: KeptApplication, reminders: List<JSONObject>, notes: List<Note>, modifier: Modifier,
+    onOpenNote: (Note?) -> Unit, onError: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var removing by remember { mutableStateOf<JSONObject?>(null) }
+    val rows = reminders.filter { reminder ->
+        reminder.text("status") == "pending" && reminder.text("dueAtUtc").isNotEmpty() &&
+            (reminder.optLong("noteId") == 0L || notes.any { it.id == reminder.optLong("noteId") || it.syncId == reminder.text("noteSyncId") })
+    }
+        .sortedBy { runCatching { Instant.parse(it.text("dueAtUtc")) }.getOrDefault(Instant.MAX) }
+    if (rows.isEmpty()) Box(modifier, contentAlignment = Alignment.Center) { Text("No upcoming reminders") }
+    else LazyColumn(modifier, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(rows, key = { it.text("syncId") }) { reminder ->
+            val note = notes.find { it.id == reminder.optLong("noteId") || it.syncId == reminder.text("noteSyncId") }
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(if (note?.locked == true) "Locked note reminder" else reminder.text("title", note?.title ?: "Reminder"), style = MaterialTheme.typography.titleMedium)
+                    Text(runCatching { Instant.parse(reminder.text("dueAtUtc")).atZone(ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a")) }
+                        .getOrDefault(reminder.text("dueAtUtc")))
+                    runCatching { JSONObject(reminder.text("repeatRule")) }.getOrNull()?.text("type")?.takeIf { it.isNotBlank() }?.let { type ->
+                        val description = if (type == "custom_days") "every ${runCatching { JSONObject(reminder.text("repeatRule")).optInt("intervalDays", 1) }.getOrDefault(1)} days" else type
+                        Text("Repeats: $description", style = MaterialTheme.typography.labelMedium)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        if (note != null) TextButton(onClick = { onOpenNote(note) }) { Text("Open note") }
+                        TextButton(onClick = { scope.launch { runCatching { app.repository.dismissReminder(reminder.text("syncId")) }.onFailure { onError(it.message ?: "Could not dismiss reminder") } } }) { Text("Dismiss") }
+                        TextButton(onClick = { removing = reminder }) { Text("Delete") }
+                    }
+                }
+            }
+        }
+    }
+    removing?.let { reminder -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("Delete reminder?") },
+        text = { Text("This removes the reminder from this account.") },
+        confirmButton = { TextButton(onClick = { scope.launch { runCatching { app.repository.deleteReminder(reminder.text("syncId")) }.onFailure { onError(it.message ?: "Could not delete reminder") }; removing = null } }) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } }) }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun NoteCard(app: KeptApplication, note: Note, selected: Boolean, reorderEnabled: Boolean, bounds: MutableMap<String, Rect>,
+    onClick: () -> Unit, onLongClick: () -> Unit, onDrop: (String) -> Unit) {
+    var coordinates by remember(note.syncId) { mutableStateOf<LayoutCoordinates?>(null) }
+    var target by remember(note.syncId) { mutableStateOf(note.syncId) }
+    DisposableEffect(note.syncId) { onDispose { bounds.remove(note.syncId) } }
+    val color = runCatching { Color(android.graphics.Color.parseColor(note.raw.text("bgColor"))) }.getOrDefault(MaterialTheme.colorScheme.surface)
+    val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF1F1F1)
+    Surface(shape = RoundedCornerShape(12.dp), color = color, contentColor = foreground,
+        border = BorderStroke(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().onGloballyPositioned { coordinates = it; bounds[note.syncId] = it.boundsInWindow() }
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick,
+                onLongClickLabel = "Drag to reorder note".takeIf { reorderEnabled })
+            .pointerInput(note.syncId, bounds.keys.toList(), reorderEnabled) {
+                if (reorderEnabled) detectDragGesturesAfterLongPress(
+                    onDragStart = { target = note.syncId; onLongClick() },
+                    onDrag = { change, _ ->
+                        val point: Offset? = coordinates?.takeIf { it.isAttached }?.localToWindow(change.position)
+                        point?.let { location -> bounds.entries.firstOrNull { it.value.contains(location) }?.key?.let { target = it } }
+                        change.consume()
+                    },
+                    onDragEnd = { if (target != note.syncId) onDrop(target) },
+                    onDragCancel = { target = note.syncId }
+                )
+            }) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (note.locked) { Icon(Icons.Outlined.Lock, "Locked note"); Text("Locked note") }
+            else {
+                note.raw.optJSONArray("images")?.objects()?.firstOrNull()?.let { MediaImage(app, it.text("dataUrl")) }
+                if (note.title.isNotBlank()) Text(note.title, style = MaterialTheme.typography.titleMedium, maxLines = 3)
+                if (note.checklist) note.items.take(8).forEach { item -> Row {
+                    Text(if (item.optBoolean("done")) "☑  " else "☐  "); Text(Html.fromHtml(item.text("data"), 0).toString(), maxLines = 3)
+                } } else if (note.body.isNotBlank()) Text(Html.fromHtml(note.body, 0).toString(), maxLines = 12)
+                if (note.labels.isNotEmpty()) Text(note.labels.joinToString(" · "), style = MaterialTheme.typography.labelSmall)
+                if ((note.raw.optJSONArray("collaborators")?.length() ?: 0) > 0) Icon(Icons.Outlined.PeopleOutline, "Shared note", Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+internal fun canReorderNotes(filter: String, search: String) = search.isBlank() && filter in setOf("home", "pinned")
+
+internal fun moveDraggedNote(visible: List<Note>, source: Note, targetId: String): List<String>? {
+    val from = visible.indexOfFirst { it.syncId == source.syncId }
+    val to = visible.indexOfFirst { it.syncId == targetId }
+    if (from < 0 || to < 0 || from == to || visible[from].pinned != visible[to].pinned) return null
+    val ids = visible.map { it.syncId }.toMutableList()
+    ids.add(to, ids.removeAt(from))
+    return ids
+}
+
+@Composable
+internal fun MediaImage(app: KeptApplication, path: String) {
+    var bitmap by remember(app.settings.profile, path) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(app.settings.profile, path) {
+        bitmap = Media(app).preview(path)
+    }
+    bitmap?.let { Image(it.asImageBitmap(), "Note image", Modifier.fillMaxWidth().heightIn(max = 240.dp)) }
+}
+
+@Composable
+private fun SettingsDialog(activity: MainActivity, app: KeptApplication, reminders: List<JSONObject>, occurrences: List<JSONObject>, dark: Boolean, onDark: (Boolean) -> Unit,
+    onClose: () -> Unit, onLogout: () -> Unit, onError: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val scheduler = app.reminders
+    var alias by remember { mutableStateOf(app.settings.alias) }
+    var confirmLogout by remember { mutableStateOf(false) }
+    var pendingCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(app.settings.profile) { pendingCount = app.repository.store.pending(app.settings.profile).size }
+    AlertDialog(onDismissRequest = onClose, title = { Text("Kept settings") }, text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+        Text(app.settings.origin, style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically) { Text("Dark theme", Modifier.weight(1f)); Switch(dark, onDark) }
+        Text("Time reminders", style = MaterialTheme.typography.titleMedium)
+        Text(if (scheduler.notificationsAllowed()) "Notifications and reminder channel enabled" else "Notifications or the reminder channel are disabled")
+        TextButton(onClick = { activity.requestNotifications(); activity.notificationSettings() }) { Text("Notification settings") }
+        Text(if (scheduler.precise()) "Precise reminders enabled" else "Reminder delivery may be delayed without alarm access")
+        if (!scheduler.precise()) TextButton(onClick = { activity.requestPreciseAlarms() }) { Text("Allow precise reminders") }
+        val nextDelivery = ReminderPlanner.nextDelivery(reminders, occurrences, Instant.now())
+        Text(nextDelivery?.let { "Next reminder: ${it.atZone(ZoneId.systemDefault())}" }
+            ?: "No upcoming reminders", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall)
+        TextButton(onClick = { if (scheduler.notificationsAllowed()) scheduler.testNotification() else activity.requestNotifications() }) { Text("Send test notification") }
+        Text("Client certificate: ${alias.ifBlank { "none" }}", Modifier.padding(top = 12.dp))
+        TextButton(onClick = { activity.chooseCertificate(app.settings.origin) { alias = it; SyncWorker.enqueue(app) } }) { Text("Replace client certificate") }
+        Text("Widgets follow your note order and show cached notes offline.", style = MaterialTheme.typography.bodySmall)
+        TextButton(onClick = { scope.launch {
+            try {
+                val report = withContext(Dispatchers.IO) {
+                    val store = app.database.store()
+                    val connection = app.settings.snapshot()
+                    val profile = connection.profile
+                    val pending = store.pending(profile)
+                    val payload = RedactedDiagnostics.build(
+                        app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: "unknown",
+                        android.os.Build.VERSION.SDK_INT, android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL,
+                        connection, app.repository.connectionState.value::class.simpleName ?: "Unknown",
+                        store.list(profile, "note").size, reminders.size, pending, scheduler.notificationsAllowed(),
+                        scheduler.precise(), app.settings.message.isNotBlank())
+                    val folder = java.io.File(app.cacheDir, "diagnostics").apply { mkdirs() }
+                    java.io.File(folder, "kept-diagnostics.txt").apply { writeText(payload.toString(2)) }
+                }
+                val uri = FileProvider.getUriForFile(app, "dev.kept.android.files", report)
+                activity.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_SUBJECT, "Redacted Kept diagnostics").putExtra(Intent.EXTRA_STREAM, uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Share diagnostics"))
+            } catch (problem: Exception) { onError(problem.message ?: "Could not create diagnostics") }
+        } }) { Text("Export redacted diagnostics") }
+        TextButton(onClick = { confirmLogout = true }) { Text("Sign out and clear local data") }
+    } }, confirmButton = { TextButton(onClick = onClose) { Text("Done") } })
+    if (confirmLogout) AlertDialog(onDismissRequest = { confirmLogout = false }, title = { Text("Sign out?") },
+        text = { Text(if (pendingCount > 0) "This clears cached notes, attachments, and $pendingCount unsynchronized change(s), including recovered drafts and pending uploads, from this device." else "This clears cached notes and attachments from this device.") },
+        confirmButton = { TextButton(onClick = { confirmLogout = false; onLogout() }) { Text("Clear and sign out") } },
+        dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text("Cancel") } })
+}

@@ -1,0 +1,16 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@drawable/widget_background" android:padding="6dp">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
+        <TextView android:id="@+id/widget_title" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+            android:gravity="center_vertical" android:paddingStart="6dp" android:paddingEnd="0dp" android:text="Kept" android:textStyle="bold" android:textColor="#3C3529" android:textSize="15sp" />
+        <TextView android:id="@+id/widget_add" android:layout_width="48dp" android:layout_height="match_parent" android:gravity="center"
+            android:text="＋" android:textSize="24sp" android:textColor="#3C3529" android:contentDescription="Create a note" />
+        <TextView android:id="@+id/widget_add_checklist" android:layout_width="48dp" android:layout_height="match_parent" android:gravity="center"
+            android:text="☑" android:textSize="20sp" android:textColor="#3C3529" android:contentDescription="Create a checklist" />
+        <TextView android:id="@+id/widget_refresh" android:layout_width="48dp" android:layout_height="match_parent" android:gravity="center"
+            android:text="↻" android:textSize="24sp" android:textColor="#3C3529" android:contentDescription="Refresh notes" />
+    </LinearLayout>
+    <TextView android:id="@+id/widget_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="#6C6250" android:textSize="11sp" android:maxLines="1" android:visibility="gone" />
+    <ListView android:id="@+id/widget_list" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:divider="@android:color/transparent" android:dividerHeight="3dp" />
+    <TextView android:id="@+id/widget_empty" android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="8dp" android:text="No notes in this view" android:textColor="#6C6250" />
+</LinearLayout>

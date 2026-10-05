@@ -1,0 +1,9 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="horizontal" android:gravity="center_vertical" android:background="@drawable/widget_background" android:padding="4dp">
+    <TextView android:id="@+id/quick_create_note" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+        android:gravity="center" android:minHeight="48dp" android:text="＋  Note" android:textColor="#3C3529" android:textSize="15sp"
+        android:contentDescription="Create a note" android:background="@drawable/widget_card" android:clickable="true" android:focusable="true" />
+    <TextView android:id="@+id/quick_create_checklist" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+        android:layout_marginStart="4dp" android:gravity="center" android:minHeight="48dp" android:text="☑  List" android:textColor="#3C3529" android:textSize="15sp"
+        android:contentDescription="Create a checklist" android:background="@drawable/widget_card" android:clickable="true" android:focusable="true" />
+</LinearLayout>

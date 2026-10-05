@@ -1,0 +1,4 @@
+<TextView xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/check_item"
+    android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical"
+    android:paddingStart="4dp" android:paddingEnd="4dp" android:textSize="14sp" android:textColor="#49463E"
+    android:maxLines="2" android:ellipsize="end" android:clickable="true" android:focusable="true" />
