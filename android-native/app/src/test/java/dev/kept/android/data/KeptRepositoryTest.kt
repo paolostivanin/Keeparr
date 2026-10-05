@@ -80,6 +80,24 @@ class KeptRepositoryTest {
         assertEquals(0L, pending.baseRevision)
     }
 
+    @Test fun bulkTrashQueuesOwnedNotesAndRestoreClearsTheirTrashedState() = runBlocking {
+        val notes = listOf(
+            Note(Note.create(profile.userId).raw.put("noteTitle", "First").put("bgColor", "#5b2121")),
+            Note(Note.create(profile.userId).raw.put("noteTitle", "Second").put("bgColor", "#fddcbb"))
+        )
+        notes.forEach { repository.store.put(Record(profile.profile, "note", it.syncId, it.raw.toString())) }
+
+        repository.setTrashed(notes.map { it.syncId }, true)
+
+        assertTrue(notes.all { repository.note(it.syncId)!!.trashed })
+        assertEquals(listOf("#5b2121", "#fddcbb"), notes.map { repository.note(it.syncId)!!.raw.getString("bgColor") })
+        assertEquals(2, repository.store.pending(profile.profile).count { it.type == "note.upsert" })
+        repository.setTrashed(notes.map { it.syncId }, false)
+        assertTrue(notes.all { !repository.note(it.syncId)!!.trashed })
+        assertEquals(listOf("#5b2121", "#fddcbb"), notes.map { repository.note(it.syncId)!!.raw.getString("bgColor") })
+        assertTrue(repository.store.pending(profile.profile).all { !JSONObject(it.payload).optBoolean("trashed") })
+    }
+
     @Test fun rapidEditorChangesPersistTheLatestDraftBeforeRemoteSync() = runBlocking {
         val original = Note(Note.create(profile.userId).raw.put("id", 55).put("revision", 4))
         repository.save(original, synchronize = false)
@@ -104,6 +122,24 @@ class KeptRepositoryTest {
         assertEquals(null, editor.incoming.value)
         assertFalse(editor.dirty.value)
         assertEquals(5L, editor.draft.value.getLong("revision"))
+    }
+
+    @Test fun acceptedServerCanonicalizationDoesNotKeepTheEditorDirty() = runBlocking {
+        val initial = Note(JSONObject().put("id", 56).put("syncId", "canonical-editor").put("revision", 3)
+            .put("ownerUserId", profile.userId).put("noteTitle", "Before").put("noteBody", "<b>rich</b>")
+            .put("checkBoxes", JSONArray()).put("images", JSONArray()).put("labels", JSONArray()))
+        repository.store.put(Record(profile.profile, "note", initial.syncId, initial.raw.toString()))
+        val editor = NoteEditorViewModel(repository, initial)
+        editor.change { it.put("noteTitle", "Edited") }
+        withTimeoutOrNull(5_000) { while (editor.localSaving.value) delay(10) }
+            ?: error("editor draft did not persist")
+        val submitted = Note(editor.draft.value.copyJson())
+        val canonical = Note(submitted.raw.copyJson().put("revision", 4).put("noteBody", "<p dir=\"ltr\"><b>rich</b></p>"))
+
+        editor.acceptServerSnapshot(canonical, submitted)
+
+        assertEquals(canonical.body, editor.draft.value.getString("noteBody"))
+        assertFalse(editor.dirty.value)
     }
 
     @Test fun noteUploadAndSuccessorEditHaveExplicitOutboxDependencies() = runBlocking {

@@ -45,7 +45,9 @@ class NoteEditorViewModel(
     init {
         viewModelScope.launch(Dispatchers.IO) {
             repository.acceptedNoteSnapshots.collect { accepted ->
-                if (accepted.profile == profile && accepted.note.syncId == serverBase.syncId) acceptServerSnapshot(accepted.note)
+                if (accepted.profile == profile && accepted.note.syncId == serverBase.syncId) {
+                    acceptServerSnapshot(accepted.note, accepted.submitted)
+                }
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -96,11 +98,15 @@ class NoteEditorViewModel(
         }
     }
 
-    @Synchronized internal fun acceptServerSnapshot(accepted: Note) {
+    @Synchronized internal fun acceptServerSnapshot(accepted: Note, submitted: Note? = null) {
+        val current = Note(_draft.value)
+        val acceptedSubmission = submitted ?: accepted
+        val noLaterEditThanAcceptedOperation = EditorSnapshotPolicy.sameEditableContent(current, acceptedSubmission)
         serverBase = accepted
-        val rebased = _draft.value.copyJson().put("id", accepted.id).put("revision", accepted.revision)
+        val rebased = if (noLaterEditThanAcceptedOperation) accepted.raw.copyJson()
+            else _draft.value.copyJson().put("id", accepted.id).put("revision", accepted.revision)
         _draft.value = rebased
-        _dirty.value = !EditorSnapshotPolicy.sameEditableContent(Note(rebased), accepted)
+        _dirty.value = !noLaterEditThanAcceptedOperation && !EditorSnapshotPolicy.sameEditableContent(Note(rebased), accepted)
         if (_incoming.value?.revision?.let { it <= accepted.revision } == true) _incoming.value = null
     }
 

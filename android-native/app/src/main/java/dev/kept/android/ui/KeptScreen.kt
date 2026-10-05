@@ -32,6 +32,8 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -134,7 +136,8 @@ private fun LoginScreen(activity: MainActivity, app: KeptApplication, onLogin: (
             certificate = app.settings.aliasFor(value)
             headers = app.settings.headersFor(value)
             connectionStatus = null
-        }, label = { Text("Server address") }, placeholder = { Text("https://notes.example.com") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        }, label = { Text("Server address") }, placeholder = { Text("https://notes.example.com") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false))
         OutlinedButton(onClick = { activity.chooseCertificate(server) { certificate = it } }, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Outlined.VerifiedUser, null); Spacer(Modifier.width(8.dp)); Text(if (certificate.isBlank()) "Select client certificate (optional)" else "Certificate: $certificate")
         }
@@ -187,14 +190,22 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
     var search by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf("home") }
     var grid by remember { mutableStateOf(true) }
-    var selected by remember { mutableStateOf<String?>(null) }
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var confirmBulkTrash by remember { mutableStateOf(false) }
     var conflict by remember { mutableStateOf<Outbox?>(null) }
     val noteBounds = remember { mutableStateMapOf<String, Rect>() }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val reorderEnabled = canReorderNotes(filter, search)
     val visible = NoteOrder.visible(notes, filter).filter { note -> search.isBlank() ||
         (!note.locked && (note.title + " " + Html.fromHtml(note.body, 0) + " " + note.items.joinToString { it.text("data") }).contains(search, true)) }
-    LaunchedEffect(search, filter) { if (!reorderEnabled) selected = null }
+    val selectedNotes = notes.filter { it.syncId in selectedIds }
+    val canTrashSelected = selectedNotes.isNotEmpty() && selectedNotes.all { it.owner == app.settings.userId }
+    val allSelectedTrashed = selectedNotes.isNotEmpty() && selectedNotes.all { it.trashed }
+    LaunchedEffect(search, filter) { selectedIds = emptySet() }
+    fun selectNote(id: String) { selectedIds = selectedIds + id }
+    fun toggleSelected(id: String) {
+        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+    }
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
         ModalDrawerSheet(Modifier.verticalScroll(rememberScrollState())) {
@@ -202,7 +213,7 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
             val choices = listOf("home" to "Notes", "reminders" to "Reminders", "shared" to "Shared notes", "archive" to "Archive", "trash" to "Trash") +
                 notes.flatMap { it.labels }.distinct().sorted().map { "label:$it" to it } + notes.map { it.binder }.filter { it.isNotBlank() }.distinct().sorted().map { "binder:$it" to it }
             choices.forEach { (value, label) -> NavigationDrawerItem(label = { Text(label) }, selected = filter == value,
-                onClick = { filter = value; selected = null; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp)) }
+                onClick = { filter = value; selectedIds = emptySet(); scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp)) }
         }
     }) {
         Scaffold(topBar = {
@@ -225,17 +236,32 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
                     IconButton(onClick = { action { app.repository.sync() } }) { Icon(Icons.Outlined.Sync, "Synchronize") }
                 }
                 if (conflicts.isNotEmpty()) TextButton(onClick = { conflict = conflicts.first() }) { Text("${conflicts.size} edit(s) need attention") }
-                selected?.let { id ->
+                selectedIds.takeIf { it.isNotEmpty() }?.let { selection ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Move note", Modifier.weight(1f))
-                        IconButton(onClick = { val ids = visible.map { it.syncId }.toMutableList(); val index = ids.indexOf(id)
-                            if (index > 0 && visible[index].pinned == visible[index - 1].pinned) { java.util.Collections.swap(ids, index, index - 1); action { app.repository.reorder(ids) } }
-                        }) { Icon(Icons.Outlined.ArrowUpward, "Move earlier") }
-                        IconButton(onClick = { val ids = visible.map { it.syncId }.toMutableList(); val index = ids.indexOf(id)
-                            if (index >= 0 && index + 1 < ids.size && visible[index].pinned == visible[index + 1].pinned) { java.util.Collections.swap(ids, index, index + 1); action { app.repository.reorder(ids) } }
-                        }) { Icon(Icons.Outlined.ArrowDownward, "Move later") }
-                        IconButton(onClick = { selected = null }) { Icon(Icons.Outlined.Close, "End selection") }
+                        Text("${selection.size} selected", Modifier.weight(1f))
+                        if (selection.size == 1 && reorderEnabled) {
+                            val selectedId = selection.single()
+                            val ids = visible.map { it.syncId }.toMutableList()
+                            val index = ids.indexOf(selectedId)
+                            IconButton(onClick = {
+                                if (index > 0 && visible[index].pinned == visible[index - 1].pinned) {
+                                    java.util.Collections.swap(ids, index, index - 1); action { app.repository.reorder(ids) }
+                                }
+                            }, enabled = index > 0 && visible[index].pinned == visible[index - 1].pinned) { Icon(Icons.Outlined.ArrowUpward, "Move earlier") }
+                            IconButton(onClick = {
+                                if (index >= 0 && index + 1 < ids.size && visible[index].pinned == visible[index + 1].pinned) {
+                                    java.util.Collections.swap(ids, index, index + 1); action { app.repository.reorder(ids) }
+                                }
+                            }, enabled = index >= 0 && index + 1 < ids.size && visible[index].pinned == visible[index + 1].pinned) { Icon(Icons.Outlined.ArrowDownward, "Move later") }
+                        }
+                        if (canTrashSelected) IconButton(onClick = {
+                            if (allSelectedTrashed) action { app.repository.setTrashed(selection.toList(), false); selectedIds = emptySet() }
+                            else confirmBulkTrash = true
+                        }) { Icon(if (allSelectedTrashed) Icons.Outlined.RestoreFromTrash else Icons.Outlined.DeleteOutline,
+                            if (allSelectedTrashed) "Restore selected notes" else "Move selected notes to Trash") }
+                        IconButton(onClick = { selectedIds = emptySet() }) { Icon(Icons.Outlined.Close, "Clear selection") }
                     }
+                    if (!canTrashSelected) Text("Only notes you own can be moved to Trash.", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }, bottomBar = {
@@ -254,14 +280,14 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
                 contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp) {
                 val pinned = visible.filter { it.pinned }; val other = visible.filter { !it.pinned }
                 if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(pinned, key = { it.syncId }) { note -> NoteCard(app, note, selected == note.syncId, reorderEnabled, noteBounds,
-                    onClick = { onEdit(note) }, onLongClick = { if (reorderEnabled) selected = note.syncId }, onDrop = { target ->
-                        if (reorderEnabled) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
+                items(pinned, key = { it.syncId }) { note -> NoteCard(app, note, note.syncId in selectedIds, reorderEnabled, noteBounds,
+                    onClick = { if (selectedIds.isEmpty()) onEdit(note) else toggleSelected(note.syncId) }, onLongClick = { selectNote(note.syncId) }, onDrop = { target ->
+                        if (reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
                     }) }
                 if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(other, key = { it.syncId }) { note -> NoteCard(app, note, selected == note.syncId, reorderEnabled, noteBounds,
-                    onClick = { onEdit(note) }, onLongClick = { if (reorderEnabled) selected = note.syncId }, onDrop = { target ->
-                        if (reorderEnabled) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
+                items(other, key = { it.syncId }) { note -> NoteCard(app, note, note.syncId in selectedIds, reorderEnabled, noteBounds,
+                    onClick = { if (selectedIds.isEmpty()) onEdit(note) else toggleSelected(note.syncId) }, onLongClick = { selectNote(note.syncId) }, onDrop = { target ->
+                        if (reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
                     }) }
             }
         }
@@ -334,6 +360,14 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
                 resolveWith(if (latest != null) ConflictResolution.USE_SERVER else ConflictResolution.DISCARD)
             }) { Text(if (latest != null) "Use server" else "Discard") } })
     }
+    if (confirmBulkTrash) AlertDialog(onDismissRequest = { confirmBulkTrash = false }, title = { Text("Move notes to Trash?") },
+        text = { Text("${selectedIds.size} selected note(s) will move to Trash. You can restore them later.") },
+        confirmButton = { TextButton(onClick = { action {
+            app.repository.setTrashed(selectedIds.toList(), true)
+            selectedIds = emptySet()
+            confirmBulkTrash = false
+        } }) { Text("Move to Trash") } },
+        dismissButton = { TextButton(onClick = { confirmBulkTrash = false }) { Text("Cancel") } })
 }
 
 @Composable

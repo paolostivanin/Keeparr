@@ -139,6 +139,16 @@ async function integrationTest() {
     assert.deepEqual(original.futureMetadata, { schema: 7, flags: ['keep-me'] }, 'note creation returns unrecognized fields');
     assert.equal(original.clientExtension, 'preserved');
     const mutate = (token, mutations) => request('/sync/mutations', token, { mutations });
+    const coloredNote = await request('/notes', owner.token, { noteTitle: 'Colored restore', bgColor: '#5b2121', checkBoxes: [], images: [], labels: [] });
+    const trashColored = await mutate(owner.token, [{ type: 'note.upsert', syncId: coloredNote.syncId, baseRevision: coloredNote.revision,
+      operationId: 'trash-colored-note', payload: { ...coloredNote, trashed: true } }]);
+    assert.equal(trashColored.results[0].ok, true);
+    const coloredInTrash = await request(`/notes/${coloredNote.id}`, owner.token);
+    assert.equal(coloredInTrash.bgColor, '#5b2121');
+    const restoreColored = await mutate(owner.token, [{ type: 'note.upsert', syncId: coloredNote.syncId, baseRevision: coloredInTrash.revision,
+      operationId: 'restore-colored-note', payload: { ...coloredInTrash, trashed: false } }]);
+    assert.equal(restoreColored.results[0].ok, true);
+    assert.equal((await request(`/notes/${coloredNote.id}`, owner.token)).bgColor, '#5b2121', 'restore preserves the note color');
     const oldClientNote = await request(`/notes/${original.id}`, owner.token);
     const { futureMetadata: _futureMetadata, clientExtension: _clientExtension, ...oldClientPayload } = oldClientNote;
     const oldClientSave = await mutate(owner.token, [{ type: 'note.upsert', syncId: oldClientNote.syncId,

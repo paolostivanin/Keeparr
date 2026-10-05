@@ -34,6 +34,8 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     val incomingNoteSnapshots = _incomingNoteSnapshots.asSharedFlow()
     private val editMutex = Mutex()
     private val syncMutex = Mutex()
+    private val reconcileScheduleLock = Any()
+    private var pendingReconcile: Job? = null
     private var socket: WebSocket? = null
     private var socketConnection: ConnectionSnapshot? = null
     private var reconnect: Job? = null
@@ -80,6 +82,38 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                 dependsOnOperationId = predecessor?.operationId))
         }
         changed()
+    }
+
+    suspend fun setTrashed(syncIds: List<String>, trashed: Boolean) = editMutex.withLock {
+        val profile = settings.profile
+        val edits = syncIds.distinct().mapNotNull { syncId ->
+            val row = store.record(profile, "note", syncId) ?: return@mapNotNull null
+            val note = Note(JSONObject(row.payload))
+            require(note.owner == settings.userId) { "Only notes you own can be moved to or restored from Trash." }
+            val raw = note.raw.copyJson().put("trashed", trashed)
+            val conflicted = store.conflicted(profile, "note.upsert", syncId)
+            val queued = store.queued(profile, "note.upsert", syncId)
+            val inFlight = store.inFlight(profile, "note.upsert", syncId)
+            val pendingMedia = store.pending(profile).lastOrNull { entry ->
+                entry.type == "media.upload" && entry.conflict == null &&
+                    runCatching { JSONObject(entry.payload).text("noteSyncId") == syncId }.getOrDefault(false)
+            }
+            val outbox = when {
+                conflicted != null -> conflicted.copy(payload = raw.toString())
+                queued != null -> queued.copy(payload = raw.toString())
+                else -> Outbox(UUID.randomUUID().toString(), profile, "note.upsert", syncId, raw.toString(),
+                    baseRevision = note.revision, dependsOnOperationId = pendingMedia?.operationId ?: inFlight?.operationId)
+            }
+            raw to outbox
+        }
+        if (edits.isEmpty()) return@withLock
+        database.withTransaction {
+            edits.forEach { (raw, outbox) ->
+                store.put(Record(profile, "note", outbox.syncId, raw.toString()))
+                store.enqueue(outbox)
+            }
+        }
+        if (profile == settings.profile) changed()
     }
 
     suspend fun setReminder(note: Note, due: String, timezone: String, repeat: String?) = editMutex.withLock {
@@ -175,7 +209,13 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
 
     private fun changed(synchronize: Boolean = true, reconcile: Boolean = true) {
         status.value = "Saved on device · waiting to sync"
-        if (reconcile) app.scope.launch { reconcile() }
+        if (reconcile) synchronized(reconcileScheduleLock) {
+            pendingReconcile?.cancel()
+            pendingReconcile = app.scope.launch {
+                delay(250)
+                reconcile()
+            }
+        }
         if (synchronize) app.enqueueSync(app)
     }
 
@@ -263,6 +303,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                     val result = response.getJSONArray("results").getJSONObject(0)
                     var retryError: ApiException? = null
                     var acceptedNote: Note? = null
+                    var acceptedNoteSubmission: Note? = null
                     var incomingNote: Note? = null
                     database.withTransaction {
                         if (result.optBoolean("ok")) {
@@ -281,6 +322,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                                             ?.firstOrNull { it.text("syncId") == entry.syncId }
                                     acceptedNote = Note(acceptedSnapshot?.copyJson()
                                         ?: JSONObject(entry.payload).put("id", result.getLong("id")).put("revision", acceptedRevision))
+                                    acceptedNoteSubmission = Note(JSONObject(entry.payload))
                                 }
                             }
                             val reminderPayload = result.optJSONObject("payload")
@@ -311,7 +353,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                         }
                         response.optJSONObject("snapshot")?.let { applySnapshot(profile, it, acceptedThisSync) }
                     }
-                    acceptedNote?.let { _acceptedNoteSnapshots.tryEmit(ProfiledNoteSnapshot(profile, it)) }
+                    acceptedNote?.let { _acceptedNoteSnapshots.tryEmit(ProfiledNoteSnapshot(profile, it, acceptedNoteSubmission)) }
                     incomingNote?.let { _incomingNoteSnapshots.tryEmit(ProfiledNoteSnapshot(profile, it)) }
                     retryError?.let { throw it }
                 } catch (error: Exception) {

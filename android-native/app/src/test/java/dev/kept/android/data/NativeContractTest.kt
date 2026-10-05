@@ -12,6 +12,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import dev.kept.android.widgets.singleNoteWidgetChecklistItems
 import dev.kept.android.widgets.boundedWidgetText
+import dev.kept.android.widgets.widgetForegroundColor
 import dev.kept.android.ui.canReorderNotes
 import dev.kept.android.ui.moveDraggedNote
 import androidx.datastore.preferences.SharedPreferencesMigration
@@ -101,6 +102,20 @@ class NativeContractTest {
     }
     @Test fun widgetTextIsBoundedBeforeRemoteViewsSerialization() {
         assertEquals(128, boundedWidgetText("x".repeat(10_000), 128).length)
+    }
+    @Test fun noteWidgetChoosesReadableForegroundForDarkAndLightColors() {
+        val darkRed = android.graphics.Color.parseColor("#5B0000")
+        val lightYellow = android.graphics.Color.parseColor("#FFF8B8")
+        assertTrue(android.graphics.Color.luminance(widgetForegroundColor(darkRed)) > .8f)
+        assertTrue(android.graphics.Color.luminance(widgetForegroundColor(lightYellow)) < .2f)
+    }
+    @Test fun nativeNotePaletteMatchesTheKeptWebPalette() {
+        assertEquals(listOf(
+            "", "#cbf0f8", "#fddcbb", "#fdcfe8", "#fff8b8", "#d7aefb", "#fef7cc", "#e8d7ff",
+            "#ccff90", "#ffd8b5", "#f8c7c0", "#e6f4d7", "#d2e3fc", "#ffb74d", "#abc4ff", "#ffc2d1",
+            "#5b2121", "#5b3a21", "#4a4a1a", "#1a4a1a", "#1a4a4a", "#1a2e4a", "#0f172a", "#2e1a4a",
+            "#4a1a2e", "#3a211a", "#334155"
+        ), NotePalette.colors.map { it.hex })
     }
     @Test fun recurrenceMatchesSharedCrossLanguageFixtures() {
         val cases = fixtures.getJSONArray("recurrence")
@@ -260,6 +275,14 @@ class NativeContractTest {
         assertEquals(8L, EditorSnapshotPolicy.apply(draft, accepted, dirty = true)?.revision)
         val externalEdit = Note(accepted.raw.copyJson().put("noteTitle", "Different server content"))
         assertEquals(null, EditorSnapshotPolicy.apply(draft, externalEdit, dirty = true))
+    }
+    @Test fun serverAttachmentMetadataDoesNotKeepAnAcceptedNoteDirty() {
+        val draft = Note(JSONObject().put("id", 55).put("syncId", "with-attachment").put("revision", 7)
+            .put("noteTitle", "Accepted title").put("attachments", JSONArray().put(JSONObject().put("syncId", "file-1"))))
+        val accepted = Note(draft.raw.copyJson().put("revision", 8).put("isDemo", false).put("trashedAt", "")
+            .also { it.remove("attachments") })
+        assertTrue(EditorSnapshotPolicy.sameEditableContent(draft, accepted))
+        assertEquals(8L, EditorSnapshotPolicy.apply(draft, accepted, dirty = true)?.revision)
     }
     @Test fun editorAdoptsAcceptedServerIdentityWithoutReplacingLocalDraftContent() {
         val local = Note(JSONObject().put("id", -3).put("syncId", "new-note").put("revision", 0).put("noteTitle", "Draft"))

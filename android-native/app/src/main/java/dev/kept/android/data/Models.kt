@@ -42,16 +42,16 @@ data class Note(val raw: JSONObject) {
     }
 }
 
-data class ProfiledNoteSnapshot(val profile: String, val note: Note)
+data class ProfiledNoteSnapshot(val profile: String, val note: Note, val submitted: Note? = null)
 
 enum class ConflictResolution { USE_SERVER, REPLACE_WITH_DRAFT, SAVE_AS_COPY, DISCARD }
 
 object EditorSnapshotPolicy {
     private val serverManagedFields = setOf(
-        "id", "revision", "ownerUserId", "createdAt", "updatedAt", "lwwPhysicalMs", "lwwLogical",
+        "id", "revision", "ownerUserId", "createdAt", "updatedAt", "trashedAt", "isDemo", "lwwPhysicalMs", "lwwLogical",
         "lwwDeviceId", "lwwOperationId", "collaborators", "ownerDisplayName", "ownerUsername",
         "ownerAvatarDataUrl", "ownerAvatarPreset", "lastEditorUserId", "lastEditorDisplayName",
-        "completedChecklistCollapsed"
+        "completedChecklistCollapsed", "attachments"
     )
 
     fun sameEditableContent(first: Note, second: Note): Boolean {
