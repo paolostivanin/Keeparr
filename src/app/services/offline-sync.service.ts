@@ -206,7 +206,7 @@ export class OfflineSyncService {
         filename: string;
         syncId: string;
       };
-      const note = (await this.store.listNotes(this.currentPartition)).find(item => item.syncId === payload.noteSyncId);
+      const note = await this.store.getNoteBySyncId(this.currentPartition, payload.noteSyncId);
       if (!note?.id || note.id < 0) continue;
       const blob = await this.store.getBlob(this.currentPartition, payload.blobKey);
       if (!blob) {
