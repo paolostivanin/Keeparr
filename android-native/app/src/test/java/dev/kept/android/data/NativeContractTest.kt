@@ -13,7 +13,7 @@ import org.robolectric.RuntimeEnvironment
 import dev.kept.android.widgets.singleNoteWidgetChecklistItems
 import dev.kept.android.widgets.boundedWidgetText
 import dev.kept.android.widgets.widgetForegroundColor
-import dev.kept.android.widgets.widgetNoteHeightDp
+import dev.kept.android.widgets.widgetNoteBodyText
 import dev.kept.android.ui.canReorderNotes
 import dev.kept.android.ui.moveDraggedNote
 import androidx.datastore.preferences.SharedPreferencesMigration
@@ -104,35 +104,82 @@ class NativeContractTest {
     @Test fun widgetTextIsBoundedBeforeRemoteViewsSerialization() {
         assertEquals(128, boundedWidgetText("x".repeat(10_000), 128).length)
     }
-    @Test fun widgetUsesCompactCardsForSingleLineNotesAndUniformCardsForLongerNotes() {
-        val short = Note(JSONObject().put("noteTitle", "").put("noteBody", "A short note"))
-        val multiline = Note(JSONObject().put("noteTitle", "").put("noteBody", "First line<br>Second line"))
-        val titleAndBody = Note(JSONObject().put("noteTitle", "Shopping").put("noteBody", "Milk and bread"))
-        assertEquals(64, widgetNoteHeightDp(short))
-        assertEquals(160, widgetNoteHeightDp(multiline))
-        assertEquals(64, widgetNoteHeightDp(titleAndBody))
-    }
-    @Test fun widgetListMeasuresCompactAndRegularRowsAtDifferentHeights() {
+    private fun measuredWidgetRow(body: String, title: String = ""): android.view.View {
         val context = RuntimeEnvironment.getApplication()
-        val host = android.widget.RemoteViews(context.packageName, dev.kept.android.R.layout.notes_widget)
-            .apply(context, android.widget.FrameLayout(context))
-        val list = host.findViewById<android.widget.ListView>(dev.kept.android.R.id.widget_list)
-        val layouts = listOf(dev.kept.android.R.layout.widget_row_small, dev.kept.android.R.layout.widget_row)
-        list.adapter = object : android.widget.BaseAdapter() {
-            override fun getCount() = layouts.size
-            override fun getItem(position: Int) = layouts[position]
-            override fun getItemId(position: Int) = position.toLong()
-            override fun getView(position: Int, recycled: android.view.View?, parent: android.view.ViewGroup): android.view.View =
-                android.widget.RemoteViews(context.packageName, layouts[position]).apply(context, parent)
+        val views = android.widget.RemoteViews(context.packageName, dev.kept.android.R.layout.widget_row)
+        views.setTextViewText(dev.kept.android.R.id.row_title, title)
+        views.setViewVisibility(dev.kept.android.R.id.row_title, if (title.isBlank()) android.view.View.GONE else android.view.View.VISIBLE)
+        views.setTextViewText(dev.kept.android.R.id.row_body, body)
+        views.setInt(dev.kept.android.R.id.row_body, "setMaxLines", dev.kept.android.widgets.WIDGET_CARD_MAX_LINES)
+        val row = views.apply(context, android.widget.FrameLayout(context))
+        val width = (320 * context.resources.displayMetrics.density).toInt()
+        row.measure(android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
+            android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED))
+        row.layout(0, 0, width, row.measuredHeight)
+        return row
+    }
+    @Test fun widgetCardsGrowWithTheirTextAndStopAtTheLineLimit() {
+        val one = measuredWidgetRow("One line").height
+        val four = measuredWidgetRow("1\n2\n3\n4").height
+        val six = measuredWidgetRow("1\n2\n3\n4\n5\n6").height
+        val twenty = measuredWidgetRow((1..20).joinToString("\n")).height
+        assertTrue("a short note gets a smaller card than a four-line note", one < four)
+        assertTrue(four < six)
+        assertEquals("longer notes are capped at the line limit", six, twenty)
+    }
+    @Test fun widgetCardsLeaveNoBlankSpaceBelowTheirLastLine() {
+        for (body in listOf("One line", "1\n2\n3", (1..20).joinToString("\n"))) {
+            val row = measuredWidgetRow(body, title = "Title")
+            val content = (row as android.view.ViewGroup).getChildAt(1) as android.view.ViewGroup
+            val lastText = row.findViewById<android.view.View>(dev.kept.android.R.id.row_body)
+            assertEquals(lastText.bottom + content.paddingBottom, row.height)
         }
-        val density = context.resources.displayMetrics.density
-        val width = (320 * density).toInt()
-        val height = (600 * density).toInt()
-        host.measure(android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
-            android.view.View.MeasureSpec.makeMeasureSpec(height, android.view.View.MeasureSpec.EXACTLY))
-        host.layout(0, 0, width, height)
-        assertEquals((64 * density + .5f).toInt(), list.getChildAt(0).height)
-        assertEquals((160 * density + .5f).toInt(), list.getChildAt(1).height)
+    }
+    @Test fun widgetBodyTextHasNoBlankLinesOrEdgeWhitespace() {
+        val note = Note(JSONObject().put("noteBody", "<p dir=\"ltr\">Milk</p>\n<p dir=\"ltr\">Eggs</p>\n"))
+        assertEquals("Milk\nEggs", widgetNoteBodyText(note, single = false))
+        val checklist = Note(JSONObject().put("isCbox", true).put("checkBoxes", JSONArray()
+            .put(JSONObject().put("id", 1).put("done", true).put("data", "<p>Milk</p>"))
+            .put(JSONObject().put("id", 2).put("done", false).put("data", "Eggs"))))
+        assertEquals("☑ Milk\n☐ Eggs", widgetNoteBodyText(checklist, single = false))
+    }
+    @Test fun showCheckboxesSplitsAndroidAndWebBodiesIntoUncheckedItems() {
+        val android = JSONObject().put("noteBody", "<p dir=\"ltr\">Milk &amp; eggs</p>\n<p dir=\"ltr\">Bread</p>\n")
+        val androidItems = NoteFormat.showCheckboxes(android, 100)
+        assertEquals(listOf("Milk &amp; eggs", "Bread"), androidItems.map { it.getString("data") })
+        assertEquals(listOf(100L, 101L), androidItems.map { it.getLong("id") })
+        assertTrue(android.getBoolean("isCbox")); assertEquals("", android.getString("noteBody"))
+        assertTrue(androidItems.none { it.getBoolean("done") })
+
+        val web = JSONObject().put("noteBody", "First<br><br>Second<div>Third<br>Fourth</div>&nbsp;<div><br></div>")
+        assertEquals(listOf("First", "Second", "Third", "Fourth"), NoteFormat.showCheckboxes(web, 1).map { Html.fromHtml(it.getString("data"), 0).toString() })
+        assertEquals(emptyList<JSONObject>(), NoteFormat.showCheckboxes(JSONObject().put("noteBody", "<p><br></p>"), 1))
+    }
+    @Test fun showCheckboxesKeepsExistingItemsAndNeverReusesTheirIds() {
+        val raw = JSONObject().put("noteBody", "New line").put("checkBoxes", JSONArray()
+            .put(JSONObject().put("id", 5).put("done", true).put("data", "Old")))
+        NoteFormat.showCheckboxes(raw, 2)
+        val items = raw.getJSONArray("checkBoxes").objects()
+        assertEquals(listOf(5L, 6L), items.map { it.getLong("id") })
+        assertTrue(items[0].getBoolean("done"))
+    }
+    @Test fun hideCheckboxesDropsCheckedItemsAndAppendsTheRestToTheBody() {
+        val raw = JSONObject().put("isCbox", true).put("noteBody", "<div>Intro</div>").put("checkBoxes", JSONArray()
+            .put(JSONObject().put("id", 1).put("done", true).put("data", "Done thing"))
+            .put(JSONObject().put("id", 2).put("done", false).put("data", "Milk &amp; eggs").put("indentLevel", 2))
+            .put(JSONObject().put("id", 3).put("done", false).put("data", "<p> </p>"))
+            .put(JSONObject().put("id", 4).put("done", false).put("data", "Bread")))
+        assertEquals(1, NoteFormat.checkedItemCount(raw.getJSONArray("checkBoxes").objects()))
+        NoteFormat.hideCheckboxes(raw)
+        assertEquals("<div>Intro</div><div>Milk &amp; eggs</div><div>Bread</div>", raw.getString("noteBody"))
+        assertFalse(raw.getBoolean("isCbox")); assertEquals(0, raw.getJSONArray("checkBoxes").length())
+        assertTrue("converted bodies stay editable in the native editor", NoteFormat.editable(raw.getString("noteBody")))
+    }
+    @Test fun hideCheckboxesIsOfferedOnlyWhenNoUncheckedItemWouldLoseContent() {
+        val structured = JSONObject().put("id", 1).put("done", false).put("data", JSONObject().put("kind", "rich"))
+        assertFalse(NoteFormat.canHideCheckboxes(listOf(structured)))
+        assertTrue(NoteFormat.canHideCheckboxes(listOf(structured.copyJson().put("done", true))))
+        assertTrue(NoteFormat.canHideCheckboxes(listOf(JSONObject().put("done", false).put("data", "Plain"))))
     }
     @Test fun noteWidgetChoosesReadableForegroundForDarkAndLightColors() {
         val darkRed = android.graphics.Color.parseColor("#5B0000")

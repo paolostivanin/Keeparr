@@ -5042,7 +5042,6 @@ async function applySyncNoteMutation(userId, mutation) {
     noteData.trashed = Boolean(note.trashed);
     // Preserve the owner/global note value; the requester's pin state lives in user_pins.
     noteData.pinned = Boolean(note.pinned);
-    noteData.isCbox = Boolean(note.isCbox);
     noteData.locked = Boolean(note.locked);
     noteData.lockSalt = note.lockSalt || '';
     noteData.lockHash = note.lockHash || '';
@@ -6222,7 +6221,6 @@ app.put('/api/notes/:id', requireAuth, asyncRoute(async (req, res) => {
     next.trashed = Boolean(note.trashed);
     // Preserve the owner/global note value; the requester's pin state lives in user_pins.
     next.pinned = Boolean(note.pinned);
-    next.isCbox = Boolean(note.isCbox);
     next.locked = Boolean(note.locked);
     next.lockSalt = note.lockSalt || '';
     next.lockHash = note.lockHash || '';
@@ -6307,7 +6305,6 @@ app.patch('/api/notes/:id', requireAuth, asyncRoute(async (req, res) => {
     next.trashed = Boolean(existing.trashed);
     // Preserve the owner/global note value; the requester's pin state lives in user_pins.
     next.pinned = Boolean(existing.pinned);
-    next.isCbox = Boolean(existing.isCbox);
     next.locked = Boolean(existing.locked);
     next.lockSalt = existing.lockSalt || '';
     next.lockHash = existing.lockHash || '';

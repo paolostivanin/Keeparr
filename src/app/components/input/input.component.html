@@ -319,7 +319,7 @@
         </div>
         <button type="button" class="mobile-icon format" [class.active]="showTextFormatting" [disabled]="!canFormatText()"
           (click)="toggleTextFormatting($event)" title="Formatting options">A</button>
-        <div class="mobile-icon check" (click)="toggleCbox()" title="Add checkboxes">
+        <div class="mobile-icon check" (click)="toggleCbox()" [title]="isCbox.value ? 'Hide checkboxes' : 'Show checkboxes'">
           <div class="glyph check"></div>
         </div>
         <div #colorMenuTtBtnMobile class="mobile-icon color" (click)="openTooltip(colorMenuTtBtnMobile,colorMenuTt)" title="Background options">

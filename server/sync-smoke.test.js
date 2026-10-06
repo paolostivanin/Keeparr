@@ -344,6 +344,7 @@ async function main() {
         ...collaboratorView,
         noteTitle: 'Shared note edited by collaborator',
         noteBody: '<div>Collaborator edit persisted</div>',
+        isCbox: true,
         checkBoxes: [{ id: 1, data: 'Collaborator checklist edit', done: false, indent: 0 }]
       })
     });
@@ -351,6 +352,7 @@ async function main() {
     assert.strictEqual(ownerAfterCollaboratorEdit.noteTitle, 'Shared note edited by collaborator', 'collaborator should be able to edit shared note title');
     assert.strictEqual(ownerAfterCollaboratorEdit.noteBody, '<div>Collaborator edit persisted</div>', 'collaborator should be able to edit shared note body');
     assert.strictEqual(ownerAfterCollaboratorEdit.checkBoxes[0].data, 'Collaborator checklist edit', 'collaborator should be able to edit shared note checklist items');
+    assert.strictEqual(ownerAfterCollaboratorEdit.isCbox, true, 'collaborator should be able to show checkboxes on a shared note');
 
     const collaboratorSyncBeforeLeave = await request('/sync/changes?cursor=0&limit=500', { headers: collabHeaders });
     await request(`/notes/${sharedNote.id}`, {

@@ -12,6 +12,36 @@ import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class DatabaseMigrationTest {
+    @Test fun v3OutboxRowsKeepTheirDataAndStartWithoutAnAttempt() {
+        val context = RuntimeEnvironment.getApplication()
+        val configuration = SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(null)
+            .callback(object : SupportSQLiteOpenHelper.Callback(3) {
+                override fun onCreate(database: SupportSQLiteDatabase) {
+                    database.execSQL("""CREATE TABLE outbox (
+                        operationId TEXT NOT NULL, profile TEXT NOT NULL, type TEXT NOT NULL, syncId TEXT NOT NULL,
+                        payload TEXT NOT NULL, baseRevision INTEGER, baseScheduleVersion INTEGER, conflict TEXT,
+                        state TEXT NOT NULL, dependsOnOperationId TEXT, createdAt INTEGER NOT NULL, PRIMARY KEY(operationId))""")
+                }
+                override fun onUpgrade(database: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+            }).build()
+        val helper = FrameworkSQLiteOpenHelperFactory().create(configuration)
+        val database = helper.writableDatabase
+        try {
+            database.execSQL("INSERT INTO outbox VALUES ('op', 'profile', 'note.upsert', 'note', 'draft', 3, NULL, NULL, 'in_flight', 'dep', 7)")
+
+            MIGRATION_3_4.migrate(database)
+
+            database.query("SELECT payload, state, dependsOnOperationId, attempted FROM outbox WHERE operationId = 'op'").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("draft", cursor.getString(0))
+                assertEquals("in_flight", cursor.getString(1))
+                assertEquals("dep", cursor.getString(2))
+                assertEquals(0, cursor.getInt(3))
+            }
+        } finally { helper.close() }
+    }
+
     @Test fun v1OutboxRowsSurviveMigrationAndCanRepresentSuccessorOperations() {
         val context = RuntimeEnvironment.getApplication()
         val configuration = SupportSQLiteOpenHelper.Configuration.builder(context)

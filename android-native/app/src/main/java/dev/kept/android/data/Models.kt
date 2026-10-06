@@ -2,6 +2,8 @@ package dev.kept.android.data
 
 import android.text.Html
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
+import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 import org.json.JSONArray
 import org.json.JSONObject
@@ -145,6 +147,56 @@ object NoteFormat {
             return document.body().html()
         }
         return Html.escapeHtml(visibleText)
+    }
+
+    private val blockTags = setOf("p", "div", "li", "ul", "ol", "blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6")
+
+    // One entry per visible line: <br> and block elements end a line, blank lines are skipped.
+    fun bodyLines(html: String): List<String> {
+        val lines = mutableListOf<String>()
+        val current = StringBuilder()
+        fun flush() {
+            val text = current.toString().replace('\u00a0', ' ').trim()
+            if (text.isNotEmpty()) lines += text
+            current.clear()
+        }
+        fun walk(node: Node) {
+            if (node is TextNode) current.append(node.wholeText.replace(Regex("\\s+"), " "))
+            else if (node is Element && node.tagName() == "br") flush()
+            else if (node is Element) {
+                val block = node.tagName() in blockTags
+                if (block) flush()
+                node.childNodes().forEach(::walk)
+                if (block) flush()
+            }
+        }
+        Jsoup.parseBodyFragment(html).body().childNodes().forEach(::walk)
+        flush()
+        return lines
+    }
+
+    // "Show checkboxes": every body line becomes an unchecked item appended after any items already on the note.
+    fun showCheckboxes(raw: JSONObject, firstId: Long): List<JSONObject> {
+        val existing = raw.optJSONArray("checkBoxes")?.objects().orEmpty()
+        val start = maxOf(firstId, (existing.maxOfOrNull { it.optLong("id") } ?: 0L) + 1)
+        val added = bodyLines(raw.optString("noteBody")).mapIndexed { index, line ->
+            JSONObject().put("id", start + index).put("done", false).put("data", Html.escapeHtml(line)).put("indentLevel", 0)
+        }
+        raw.put("isCbox", true).put("noteBody", "").put("checkBoxes", JSONArray(existing + added))
+        return added
+    }
+
+    fun checkedItemCount(items: List<JSONObject>) = items.count { it.optBoolean("done") }
+
+    // Structured (non-string) items cannot become plain lines without losing their content.
+    fun canHideCheckboxes(items: List<JSONObject>) = items.all { it.optBoolean("done") || it.opt("data") is String }
+
+    // "Hide checkboxes": unchecked items become lines after the existing body; checked items are dropped.
+    fun hideCheckboxes(raw: JSONObject) {
+        val lines = raw.optJSONArray("checkBoxes")?.objects().orEmpty().filter { !it.optBoolean("done") }
+            .map { it.text("data") }.filter { Jsoup.parseBodyFragment(it).text().isNotBlank() }
+        raw.put("noteBody", raw.optString("noteBody") + lines.joinToString("") { "<div>$it</div>" })
+            .put("isCbox", false).put("checkBoxes", JSONArray())
     }
 }
 

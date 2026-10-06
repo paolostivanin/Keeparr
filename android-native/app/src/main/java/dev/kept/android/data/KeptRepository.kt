@@ -34,6 +34,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     val incomingNoteSnapshots = _incomingNoteSnapshots.asSharedFlow()
     private val editMutex = Mutex()
     private val syncMutex = Mutex()
+    private val acceptedRevisions = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val reconcileScheduleLock = Any()
     private var pendingReconcile: Job? = null
     private var socket: WebSocket? = null
@@ -51,22 +52,33 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
 
     suspend fun save(note: Note, synchronize: Boolean = true, profile: String = settings.profile) = editMutex.withLock {
         if (synchronize && profile != settings.profile) error("This draft belongs to a different Kept profile.")
-        val conflicted = store.conflicted(profile, "note.upsert", note.syncId)
-        val queued = store.queued(profile, "note.upsert", note.syncId)
-        val inFlight = store.inFlight(profile, "note.upsert", note.syncId)
-        val pendingMedia = store.pending(profile).lastOrNull { entry ->
-            entry.type == "media.upload" && entry.conflict == null &&
-                runCatching { JSONObject(entry.payload).text("noteSyncId") == note.syncId }.getOrDefault(false)
+        // Outbox reads must share the write transaction: a sync acknowledgement landing between them would leave the new
+        // entry depending on a deleted operation, and it would never be sent.
+        database.withTransaction {
+            val raw = note.raw.copyJson().put("revision", knownRevision(profile, note))
+            store.put(Record(profile, "note", note.syncId, raw.toString()))
+            store.enqueue(noteUpsertEntry(profile, note.syncId, raw))
         }
-        val entry = when {
-            conflicted != null -> conflicted.copy(payload = note.raw.toString())
-            queued != null -> queued.copy(payload = note.raw.toString())
-            else -> Outbox(UUID.randomUUID().toString(), profile, "note.upsert", note.syncId, note.raw.toString(),
-                baseRevision = note.revision, dependsOnOperationId = pendingMedia?.operationId ?: inFlight?.operationId)
-        }
-        database.withTransaction { store.put(Record(profile, "note", note.syncId, note.raw.toString())); store.enqueue(entry) }
         if (profile == settings.profile) changed(synchronize, reconcile = true)
     }
+
+    // Only call inside a transaction.
+    private suspend fun noteUpsertEntry(profile: String, syncId: String, raw: JSONObject): Outbox {
+        val conflicted = store.conflicted(profile, "note.upsert", syncId)
+        if (conflicted != null) return conflicted.copy(payload = raw.toString())
+        val queued = store.queued(profile, "note.upsert", syncId)
+        if (queued != null && !queued.attempted) return queued.copy(payload = raw.toString())
+        val pendingMedia = store.pending(profile).lastOrNull { entry ->
+            entry.type == "media.upload" && entry.conflict == null &&
+                runCatching { JSONObject(entry.payload).text("noteSyncId") == syncId }.getOrDefault(false)
+        }
+        val predecessor = queued ?: store.inFlight(profile, "note.upsert", syncId)
+        return Outbox(UUID.randomUUID().toString(), profile, "note.upsert", syncId, raw.toString(),
+            baseRevision = raw.optLong("revision"), dependsOnOperationId = pendingMedia?.operationId ?: predecessor?.operationId)
+    }
+
+    // The editor's copy can trail an acknowledgement this repository already applied.
+    private fun knownRevision(profile: String, note: Note) = maxOf(note.revision, acceptedRevisions["$profile\u0000${note.syncId}"] ?: 0L)
 
     suspend fun reorder(ids: List<String>) = editMutex.withLock {
         val profile = settings.profile
@@ -86,64 +98,51 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
 
     suspend fun setTrashed(syncIds: List<String>, trashed: Boolean) = editMutex.withLock {
         val profile = settings.profile
-        val edits = syncIds.distinct().mapNotNull { syncId ->
-            val row = store.record(profile, "note", syncId) ?: return@mapNotNull null
-            val note = Note(JSONObject(row.payload))
-            require(note.owner == settings.userId) { "Only notes you own can be moved to or restored from Trash." }
-            val raw = note.raw.copyJson().put("trashed", trashed)
-            val conflicted = store.conflicted(profile, "note.upsert", syncId)
-            val queued = store.queued(profile, "note.upsert", syncId)
-            val inFlight = store.inFlight(profile, "note.upsert", syncId)
-            val pendingMedia = store.pending(profile).lastOrNull { entry ->
-                entry.type == "media.upload" && entry.conflict == null &&
-                    runCatching { JSONObject(entry.payload).text("noteSyncId") == syncId }.getOrDefault(false)
+        val edited = database.withTransaction {
+            var count = 0
+            syncIds.distinct().forEach { syncId ->
+                val row = store.record(profile, "note", syncId) ?: return@forEach
+                val note = Note(JSONObject(row.payload))
+                require(note.owner == settings.userId) { "Only notes you own can be moved to or restored from Trash." }
+                val raw = note.raw.copyJson().put("trashed", trashed).put("revision", knownRevision(profile, note))
+                store.put(Record(profile, "note", syncId, raw.toString()))
+                store.enqueue(noteUpsertEntry(profile, syncId, raw))
+                count++
             }
-            val outbox = when {
-                conflicted != null -> conflicted.copy(payload = raw.toString())
-                queued != null -> queued.copy(payload = raw.toString())
-                else -> Outbox(UUID.randomUUID().toString(), profile, "note.upsert", syncId, raw.toString(),
-                    baseRevision = note.revision, dependsOnOperationId = pendingMedia?.operationId ?: inFlight?.operationId)
-            }
-            raw to outbox
+            count
         }
-        if (edits.isEmpty()) return@withLock
-        database.withTransaction {
-            edits.forEach { (raw, outbox) ->
-                store.put(Record(profile, "note", outbox.syncId, raw.toString()))
-                store.enqueue(outbox)
-            }
-        }
+        if (edited == 0) return@withLock
         if (profile == settings.profile) changed()
     }
 
     suspend fun setReminder(note: Note, due: String, timezone: String, repeat: String?) = editMutex.withLock {
         val profile = settings.profile
-        require(store.record(profile, "note", note.syncId) != null) { "This note belongs to a different Kept profile." }
-        val existing = store.list(profile, "reminder").map { JSONObject(it.payload) }
-            .find { it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId }
-        val raw = existing?.copyJson() ?: JSONObject().put("id", -System.currentTimeMillis()).put("syncId", "reminder-${UUID.randomUUID()}")
-        val requestedRule = Recurrence.normalizeRule(repeat)
-        val existingRule = Recurrence.normalizeRule(existing?.text("repeatRule"))
-        val definitionChanged = existing == null || !Recurrence.sameInstant(existing.text("dueAtUtc"), due) ||
-            existing.text("timezone", "UTC") != timezone || existingRule != requestedRule
-        raw.put("noteId", note.id).put("noteSyncId", note.syncId).put("userId", settings.userId).put("dueAtUtc", due)
-            .put("timezone", timezone).put("repeatRule", requestedRule ?: JSONObject.NULL).put("status", "pending")
-            .put("title", if (note.locked) "Kept reminder" else note.title).put("body", if (note.locked) "" else Html.fromHtml(note.body, 0).toString().take(500))
-        val id = raw.getString("syncId")
-        val conflicted = store.conflicted(profile, "reminder.upsert", id)
-        val queued = store.queued(profile, "reminder.upsert", id)
-        val inFlight = store.inFlight(profile, "reminder.upsert", id)
-        val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == note.syncId }
-        val previous = conflicted ?: queued
-        val baseScheduleVersion = previous?.baseScheduleVersion
-            ?: existing?.takeIf { it.optLong("id") > 0 }?.optLong("scheduleVersion")
-            ?: 0L
-        val hasPendingDefinitionChange = previous != null && JSONObject(previous.payload).optLong("scheduleVersion") > baseScheduleVersion
-        val scheduleVersion = baseScheduleVersion + if (definitionChanged || hasPendingDefinitionChange) 1 else 0
-        val scheduleAnchorAtUtc = if (definitionChanged) due else existing?.text("scheduleAnchorAtUtc")?.takeIf { it.isNotBlank() }
-            ?: existing?.text("dueAtUtc")?.takeIf { it.isNotBlank() } ?: due
-        raw.put("scheduleVersion", scheduleVersion.coerceAtLeast(1)).put("scheduleAnchorAtUtc", scheduleAnchorAtUtc)
         database.withTransaction {
+            require(store.record(profile, "note", note.syncId) != null) { "This note belongs to a different Kept profile." }
+            val existing = store.list(profile, "reminder").map { JSONObject(it.payload) }
+                .find { it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId }
+            val raw = existing?.copyJson() ?: JSONObject().put("id", -System.currentTimeMillis()).put("syncId", "reminder-${UUID.randomUUID()}")
+            val requestedRule = Recurrence.normalizeRule(repeat)
+            val existingRule = Recurrence.normalizeRule(existing?.text("repeatRule"))
+            val definitionChanged = existing == null || !Recurrence.sameInstant(existing.text("dueAtUtc"), due) ||
+                existing.text("timezone", "UTC") != timezone || existingRule != requestedRule
+            raw.put("noteId", note.id).put("noteSyncId", note.syncId).put("userId", settings.userId).put("dueAtUtc", due)
+                .put("timezone", timezone).put("repeatRule", requestedRule ?: JSONObject.NULL).put("status", "pending")
+                .put("title", if (note.locked) "Kept reminder" else note.title).put("body", if (note.locked) "" else Html.fromHtml(note.body, 0).toString().take(500))
+            val id = raw.getString("syncId")
+            val conflicted = store.conflicted(profile, "reminder.upsert", id)
+            val queued = store.queued(profile, "reminder.upsert", id)
+            val inFlight = store.inFlight(profile, "reminder.upsert", id)
+            val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == note.syncId }
+            val previous = conflicted ?: queued
+            val baseScheduleVersion = previous?.baseScheduleVersion
+                ?: existing?.takeIf { it.optLong("id") > 0 }?.optLong("scheduleVersion")
+                ?: 0L
+            val hasPendingDefinitionChange = previous != null && JSONObject(previous.payload).optLong("scheduleVersion") > baseScheduleVersion
+            val scheduleVersion = baseScheduleVersion + if (definitionChanged || hasPendingDefinitionChange) 1 else 0
+            val scheduleAnchorAtUtc = if (definitionChanged) due else existing?.text("scheduleAnchorAtUtc")?.takeIf { it.isNotBlank() }
+                ?: existing?.text("dueAtUtc")?.takeIf { it.isNotBlank() } ?: due
+            raw.put("scheduleVersion", scheduleVersion.coerceAtLeast(1)).put("scheduleAnchorAtUtc", scheduleAnchorAtUtc)
             store.put(Record(profile, "reminder", id, raw.toString()))
             val dependency = previous?.dependsOnOperationId ?: inFlight?.operationId
                 ?: noteCreation?.takeIf { note.id <= 0 }?.operationId
@@ -156,11 +155,11 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     }
 
     suspend fun deleteReminder(id: String) = editMutex.withLock {
-        val existing = store.record(settings.profile, "reminder", id) ?: return@withLock
-        val raw = JSONObject(existing.payload)
-        val queued = store.queued(settings.profile, "reminder.upsert", id)
-        val inFlight = store.inFlight(settings.profile, "reminder.upsert", id)
-        database.withTransaction {
+        val found = database.withTransaction {
+            val existing = store.record(settings.profile, "reminder", id) ?: return@withTransaction false
+            val raw = JSONObject(existing.payload)
+            val queued = store.queued(settings.profile, "reminder.upsert", id)
+            val inFlight = store.inFlight(settings.profile, "reminder.upsert", id)
             store.remove(settings.profile, "reminder", id)
             if (raw.optLong("id") < 0 && inFlight == null) {
                 queued?.let { store.acknowledge(it.operationId) }
@@ -169,25 +168,27 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                 store.enqueue(Outbox(UUID.randomUUID().toString(), settings.profile, "reminder.delete", id, raw.toString(),
                     baseScheduleVersion = raw.optLong("scheduleVersion").takeIf { it > 0 }, dependsOnOperationId = inFlight?.operationId))
             }
+            true
         }
-        changed()
+        if (found) changed()
     }
 
     suspend fun dismissReminder(id: String) = editMutex.withLock {
-        val existing = store.record(settings.profile, "reminder", id) ?: return@withLock
-        val raw = JSONObject(existing.payload).put("status", "dismissed")
-        val queued = store.queued(settings.profile, "reminder.upsert", id)
-        val conflicted = store.conflicted(settings.profile, "reminder.upsert", id)
-        val inFlight = store.inFlight(settings.profile, "reminder.upsert", id)
-        val previous = conflicted ?: queued
-        database.withTransaction {
+        val found = database.withTransaction {
+            val existing = store.record(settings.profile, "reminder", id) ?: return@withTransaction false
+            val raw = JSONObject(existing.payload).put("status", "dismissed")
+            val queued = store.queued(settings.profile, "reminder.upsert", id)
+            val conflicted = store.conflicted(settings.profile, "reminder.upsert", id)
+            val inFlight = store.inFlight(settings.profile, "reminder.upsert", id)
+            val previous = conflicted ?: queued
             store.put(Record(settings.profile, "reminder", id, raw.toString()))
             val dependency = previous?.dependsOnOperationId ?: inFlight?.operationId
             store.enqueue(previous?.copy(payload = raw.toString(), dependsOnOperationId = dependency)
                 ?: Outbox(UUID.randomUUID().toString(), settings.profile, "reminder.upsert", id, raw.toString(),
                     baseScheduleVersion = raw.optLong("scheduleVersion").takeIf { it > 0 }, dependsOnOperationId = dependency))
+            true
         }
-        changed()
+        if (found) changed()
     }
 
     suspend fun occurrenceAction(occurrence: JSONObject, state: String, until: String? = null) = editMutex.withLock {
@@ -241,7 +242,15 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         val profile = connection.profile
         try {
             status.value = "Syncing…"
-            database.withTransaction { store.requeueInFlight(profile) }
+            database.withTransaction {
+                store.requeueInFlight(profile)
+                // An edit queued behind an operation that was already acknowledged would otherwise wait forever.
+                for (orphan in store.orphaned(profile)) {
+                    val revision = if (orphan.type == "note.upsert") store.record(profile, "note", orphan.syncId)
+                        ?.let { JSONObject(it.payload).optLong("revision") } else null
+                    store.enqueue(orphan.copy(dependsOnOperationId = null, baseRevision = revision ?: orphan.baseRevision))
+                }
+            }
             val acceptedThisSync = mutableSetOf<String>()
             while (true) {
                 val entry = database.withTransaction {
@@ -315,7 +324,8 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                                     val saved = JSONObject(current.payload)
                                     val baseRevision = entry.baseRevision ?: saved.optLong("revision", 0)
                                     acceptedRevision = baseRevision + 1
-                                    saved.put("id", result.getLong("id")).put("revision", acceptedRevision)
+                                    acceptedRevisions["$profile\u0000${entry.syncId}"] = acceptedRevision
+                                    saved.put("id", result.getLong("id")).put("revision", maxOf(acceptedRevision, saved.optLong("revision")))
                                     store.put(current.copy(payload = saved.toString()))
                                     val acceptedSnapshot = result.optJSONObject("payload")
                                         ?: response.optJSONObject("snapshot")?.optJSONArray("notes")?.objects()
@@ -572,7 +582,8 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                         store.acknowledge(entry.operationId)
                         store.put(Record(entry.profile, "note", entry.syncId, merged.toString()))
                         store.enqueue(entry.copy(operationId = UUID.randomUUID().toString(), payload = merged.toString(),
-                            baseRevision = latest.getLong("revision"), state = OutboxState.QUEUED, dependsOnOperationId = null, conflict = null))
+                            baseRevision = latest.getLong("revision"), state = OutboxState.QUEUED, dependsOnOperationId = null, conflict = null,
+                            attempted = false))
                         store.remove(entry.profile, "recovery", entry.syncId)
                     }
                     ConflictResolution.SAVE_AS_COPY -> {
@@ -739,17 +750,17 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
 
     suspend fun shareUsers(): List<JSONObject> = JSONArray(api.call("/api/sharing/users")).objects()
     suspend fun setChecklistCollapsed(note: Note, collapsed: Boolean, profile: String = settings.profile) = editMutex.withLock {
-        require(store.record(profile, "note", note.syncId) != null) { "This note belongs to a different Kept profile." }
         val raw = note.raw.copyJson().put("completedChecklistCollapsed", collapsed)
-        val queued = store.queued(profile, "note.view-state", note.syncId)
-        val conflicted = store.conflicted(profile, "note.view-state", note.syncId)
-        val inFlight = store.inFlight(profile, "note.view-state", note.syncId)
-        val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == note.syncId }
-        val previous = conflicted ?: queued
-        val dependency = previous?.dependsOnOperationId ?: inFlight?.operationId
-            ?: noteCreation?.takeIf { note.id <= 0 }?.operationId
         val payload = JSONObject().put("completedChecklistCollapsed", collapsed).toString()
         database.withTransaction {
+            require(store.record(profile, "note", note.syncId) != null) { "This note belongs to a different Kept profile." }
+            val queued = store.queued(profile, "note.view-state", note.syncId)
+            val conflicted = store.conflicted(profile, "note.view-state", note.syncId)
+            val inFlight = store.inFlight(profile, "note.view-state", note.syncId)
+            val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == note.syncId }
+            val previous = conflicted ?: queued
+            val dependency = previous?.dependsOnOperationId ?: inFlight?.operationId
+                ?: noteCreation?.takeIf { note.id <= 0 }?.operationId
             store.put(Record(profile, "note", note.syncId, raw.toString()))
             store.enqueue(previous?.copy(payload = payload, dependsOnOperationId = dependency)
                 ?: Outbox(UUID.randomUUID().toString(), profile, "note.view-state", note.syncId, payload,
@@ -779,11 +790,13 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
 
     suspend fun attach(note: Note, file: JSONObject) = editMutex.withLock {
         val profile = settings.profile
-        require(store.record(profile, "note", note.syncId) != null) { "This note belongs to a different Kept profile." }
         val key = "${note.syncId}:${file.getString("file")}" // Multiple uploads on one note remain separate.
-        val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == note.syncId }
-        store.enqueue(Outbox(UUID.randomUUID().toString(), profile, "media.upload", key,
-            file.copyJson().put("noteSyncId", note.syncId).toString(), dependsOnOperationId = noteCreation?.operationId))
+        database.withTransaction {
+            require(store.record(profile, "note", note.syncId) != null) { "This note belongs to a different Kept profile." }
+            val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == note.syncId }
+            store.enqueue(Outbox(UUID.randomUUID().toString(), profile, "media.upload", key,
+                file.copyJson().put("noteSyncId", note.syncId).toString(), dependsOnOperationId = noteCreation?.operationId))
+        }
         changed()
     }
 

@@ -20,7 +20,7 @@ class KeptApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         settings = ConnectionSettings(this)
-        database = Room.databaseBuilder(this, KeptDatabase::class.java, "kept.sqlite").addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        database = Room.databaseBuilder(this, KeptDatabase::class.java, "kept.sqlite").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
         reminders = ReminderScheduler(this)
         repository = KeptRepository(this, database, settings, KeptApi(this, settings))
         scope.launch {

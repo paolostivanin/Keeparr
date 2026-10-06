@@ -22,6 +22,7 @@ import { NoteLockService } from 'src/app/services/note-lock.service';
 import { UserPreferencesService } from 'src/app/services/user-preferences.service';
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
 import { MAX_INDENT_LEVEL, descendantIndexes, maxIndentLevelAt, normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
+import { canHideCheckboxes, checkBoxesToBodyHtml, linesToCheckBoxes, splitBodyIntoLines } from 'src/app/utils/checklist-conversion';
 import { environment } from 'src/environments/environment';
 
 declare var Snackbar: any;
@@ -394,29 +395,72 @@ export class InputComponent implements OnInit {
     }
   }
 
+  /** Keep-style toggle: "Show checkboxes" turns each body line into an item, "Hide checkboxes" turns unchecked items back into text. */
   toggleCbox() {
-    const currentBodyHtml = this.noteBody?.nativeElement.innerHTML || ''
-    if (this.isCbox.value) {
-      if (this.checkBoxes.length) {
-        this.isHybridNote = false
-        this.isCbox.next(false)
-        this.cd.detectChanges()
-        this.restoreBodyHtmlAfterTemplateSwap(currentBodyHtml)
-        this.noteBody?.nativeElement.focus()
-        this.updateCheckboxMenuLabel()
-        return
-      }
-      this.isCbox.next(false)
-      return
-    }
+    if (this.isCbox.value) this.hideCheckboxes()
+    else this.showCheckboxes()
+  }
 
-    if (this.hasMeaningfulBody(this.noteBody?.nativeElement.innerHTML)) {
-      this.isHybridNote = true
-    }
+  private showCheckboxes() {
+    const body = this.noteBody?.nativeElement
+    const { lines, leftoverHtml } = body ? splitBodyIntoLines(body) : { lines: [], leftoverHtml: '' }
+    this.syncCboxDomIntoModel()
+    const added = linesToCheckBoxes(lines, this.checkBoxes)
+    this.checkBoxes = [...this.checkBoxes, ...added]
+    this.isHybridNote = this.hasMeaningfulBody(leftoverHtml)
     this.isCbox.next(true)
     this.cd.detectChanges()
-    this.restoreBodyHtmlAfterTemplateSwap(currentBodyHtml)
-    requestAnimationFrame(() => this.cboxPh?.nativeElement.focus())
+    this.restoreBodyHtmlAfterTemplateSwap(leftoverHtml)
+    this.updateInputLength({ body: this.cleanEditorBodyForSave(leftoverHtml).length, cb: this.checkBoxes.length })
+    this.resetCboxHistory()
+    this.queueCoEditAutosave()
+    requestAnimationFrame(() => {
+      const last = added[added.length - 1]
+      const target = last
+        ? document.querySelector(`[data-cbox-id="${last.id}"]`) as HTMLDivElement | null
+        : this.cboxPh?.nativeElement
+      if (!target) return
+      target.focus()
+      this.placeCaretAtEnd(target)
+    })
+  }
+
+  private hideCheckboxes() {
+    this.syncCboxDomIntoModel()
+    if (!canHideCheckboxes(this.checkBoxes)) {
+      alert('This list has items the text view cannot show, so its checkboxes cannot be hidden.')
+      return
+    }
+    const checkedCount = this.checkBoxes.filter(item => item.done).length
+    if (checkedCount && !confirm(`Hide checkboxes? ${checkedCount} checked ${checkedCount === 1 ? 'item' : 'items'} will be removed.`)) return
+    const keptBody = this.isHybridNote ? (this.noteBody?.nativeElement.innerHTML || '') : ''
+    const html = keptBody + checkBoxesToBodyHtml(this.checkBoxes)
+    this.checkBoxes = []
+    this.isHybridNote = false
+    this.isCbox.next(false)
+    this.cd.detectChanges()
+    const body = this.noteBody?.nativeElement
+    if (body) {
+      body.innerHTML = html
+      this.hydrateEditorLinkPreviews()
+      this.hydrateInlineImageButtons()
+      body.focus()
+      this.placeCaretAtEnd(body)
+    }
+    this.updateInputLength({ body: this.cleanEditorBodyForSave(html).length, cb: 0 })
+    this.resetCboxHistory()
+    this.updateCheckboxMenuLabel()
+    this.queueCoEditAutosave()
+  }
+
+  private placeCaretAtEnd(el: HTMLElement) {
+    const selection = window.getSelection()
+    if (!selection) return
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    range.collapse(false)
+    selection.removeAllRanges()
+    selection.addRange(range)
   }
 
   showMobileNewNoteStarters() {
@@ -462,11 +506,7 @@ export class InputComponent implements OnInit {
   }
 
   private updateCheckboxMenuLabel() {
-    if (this.isCbox.value) {
-      this.moreMenuEls.checkbox.value = this.isHybridNote ? 'Checklists shown' : 'Add text'
-    } else {
-      this.moreMenuEls.checkbox.value = 'Show checkboxes'
-    }
+    this.moreMenuEls.checkbox.value = this.isCbox.value ? 'Hide checkboxes' : 'Show checkboxes'
   }
 
   private restoreBodyHtmlAfterTemplateSwap(html: string) {

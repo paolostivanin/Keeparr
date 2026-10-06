@@ -31,7 +31,7 @@ class NotesWidget : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.notes_widget)
             val service = Intent(context, NotesWidgetService::class.java)
                 .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
-                .setData(Uri.parse("keptnative://widget/$id/list-v5"))
+                .setData(Uri.parse("keptnative://widget/$id/list-v6"))
             views.setRemoteAdapter(R.id.widget_list, service)
             val itemAction = Intent(context, MainActivity::class.java).setAction(TOGGLE)
                 .setData(Uri.parse("keptnative://widget/action/$id"))
@@ -107,25 +107,16 @@ class NotesWidgetService : RemoteViewsService() {
                     .apply { if (interactiveChecklistItem) putExtra("itemId", item.optLong("id")).putExtra("widgetToggle", true) })
                 return itemRow
             }
-            val compact = widgetNoteHeightDp(note, single) == 64
-            val layout = if (compact) R.layout.widget_row_small else R.layout.widget_row
-            return RemoteViews(app.packageName, layout).apply {
+            return RemoteViews(app.packageName, R.layout.widget_row).apply {
                 val title = if (note.locked) "Locked note" else (if (note.pinned) "📌 " else "") + note.title
                 setTextViewText(R.id.row_title, boundedWidgetText(title, 160))
                 setViewVisibility(R.id.row_title, if (title.isBlank()) View.GONE else View.VISIBLE)
                 setTextColor(R.id.row_title, foreground)
-                val body = when {
-                    note.locked -> "Open Kept to view"
-                    single && note.checklist -> "Checklist · ${note.items.size} item(s)"
-                    note.checklist -> note.items.take(8).joinToString("\n") {
-                        (if (it.optBoolean("done")) "☑ " else "☐ ") + Html.fromHtml(boundedWidgetText(it.text("data"), 512), 0).toString().let { text -> boundedWidgetText(text, 128) }
-                    }
-                    else -> Html.fromHtml(boundedWidgetText(note.body, 8192), 0).toString()
-                }
+                val body = widgetNoteBodyText(note, single)
                 setTextViewText(R.id.row_body, boundedWidgetText(body, if (single) 4096 else 1024))
                 setViewVisibility(R.id.row_body, if (body.isBlank()) View.GONE else View.VISIBLE)
                 setTextColor(R.id.row_body, foreground)
-                setInt(R.id.row_body, "setMaxLines", if (compact) 1 else if (reminder != null) 4 else 5)
+                setInt(R.id.row_body, "setMaxLines", if (single) WIDGET_SINGLE_NOTE_MAX_LINES else WIDGET_CARD_MAX_LINES)
                 if (reminder != null) {
                     val label = "⏰ ${ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder))}"
                     setTextViewText(R.id.row_reminder, label)
@@ -139,7 +130,7 @@ class NotesWidgetService : RemoteViewsService() {
             }
         }
         override fun getLoadingView(): RemoteViews? = null
-        override fun getViewTypeCount() = 3
+        override fun getViewTypeCount() = 2
         override fun getItemId(position: Int): Long {
             val row = rows.getOrNull(position) ?: return 0
             return if (row.item == null) row.note.id else "${row.note.syncId}:${row.item.optLong("id", row.itemIndex.toLong())}".hashCode().toLong()
@@ -153,20 +144,20 @@ internal fun singleNoteWidgetChecklistItems(note: Note): List<JSONObject> =
 
 internal fun boundedWidgetText(text: String, maxCharacters: Int) = text.take(maxCharacters.coerceAtLeast(0))
 
-internal fun widgetNoteHeightDp(note: Note, single: Boolean = false): Int {
-    val title = if (note.locked) "Locked note" else note.title
-    val body = when {
-        note.locked -> "Open Kept to view"
-        single && note.checklist -> "Checklist · ${note.items.size} item(s)"
-        note.checklist -> note.items.take(8).joinToString("\n") {
-            (if (it.optBoolean("done")) "☑ " else "☐ ") + Html.fromHtml(it.text("data"), Html.FROM_HTML_MODE_COMPACT).toString()
-        }
-        else -> Html.fromHtml(note.body, Html.FROM_HTML_MODE_COMPACT).toString()
+internal const val WIDGET_CARD_MAX_LINES = 6
+internal const val WIDGET_SINGLE_NOTE_MAX_LINES = 30
+
+// Compact mode keeps one newline between paragraphs; the legacy flag adds blank lines that eat the card's line budget.
+private fun widgetPlainText(html: String, maxCharacters: Int) =
+    Html.fromHtml(boundedWidgetText(html, maxCharacters), Html.FROM_HTML_MODE_COMPACT).toString().trim()
+
+internal fun widgetNoteBodyText(note: Note, single: Boolean): String = when {
+    note.locked -> "Open Kept to view"
+    single && note.checklist -> "Checklist · ${note.items.size} item(s)"
+    note.checklist -> note.items.take(8).joinToString("\n") {
+        (if (it.optBoolean("done")) "☑ " else "☐ ") + boundedWidgetText(widgetPlainText(it.text("data"), 512), 128)
     }
-    val longestFieldLines = listOf(title, body).filter { it.isNotBlank() }.maxOfOrNull { text ->
-        text.trim().lineSequence().sumOf { line -> maxOf(1, (line.length + 39) / 40) }
-    } ?: 0
-    return if (longestFieldLines <= 1) 64 else 160
+    else -> widgetPlainText(note.body, 8192)
 }
 
 internal fun widgetForegroundColor(background: Int): Int =

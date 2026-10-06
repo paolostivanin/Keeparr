@@ -1141,6 +1141,90 @@ class KeptRepositoryTest {
         assertEquals(3L, repository.note(note.syncId)?.revision)
     }
 
+    private fun syncNote(id: Long, syncId: String, revision: Long, title: String = "Base") = Note(JSONObject().put("id", id)
+        .put("syncId", syncId).put("revision", revision).put("ownerUserId", profile.userId).put("noteTitle", title).put("noteBody", "")
+        .put("checkBoxes", JSONArray()).put("images", JSONArray()).put("labels", JSONArray()))
+
+    // Accepts every note.upsert, records what was sent and answers with a snapshot of the sent note at base + 1.
+    private fun acceptAllUpserts(sent: MutableList<JSONObject>) {
+        (repository.api as FakeNativeApi).callHandler = { path, _, body ->
+            when {
+                path == "/api/sync/mutations" -> {
+                    val mutation = body!!.getJSONArray("mutations").getJSONObject(0)
+                    sent += mutation
+                    val payload = mutation.getJSONObject("payload")
+                    JSONObject().put("results", JSONArray().put(JSONObject().put("ok", true).put("resourceType", "note")
+                        .put("syncId", mutation.getString("syncId")).put("id", payload.optLong("id", 1))))
+                        .put("snapshot", JSONObject().put("notes", JSONArray().put(payload.copyJson().put("revision", mutation.getLong("baseRevision") + 1)))
+                            .put("reminders", JSONArray()).put("attachments", JSONArray()).put("occurrences", JSONArray()).put("cursor", 0)).toString()
+                }
+                path.startsWith("/api/sync/changes?") -> JSONObject().put("changes", JSONArray()).put("cursor", 0).put("hasMore", false).toString()
+                path == "/api/native/reminders/occurrences" -> "[]"
+                else -> error("Unexpected request $path")
+            }
+        }
+    }
+
+    @Test fun syncReleasesAnEditQueuedBehindAnOperationThatNoLongerExists() = runBlocking {
+        profile.token = "test-session"
+        val note = syncNote(90, "orphaned-edit", 4, "Full text")
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.toString()))
+        repository.store.enqueue(Outbox("orphan", profile.profile, "note.upsert", note.syncId, note.raw.toString(),
+            baseRevision = 1, dependsOnOperationId = "acknowledged-long-ago"))
+        repository.store.cursor(SyncState(profile.profile, 0))
+        val sent = mutableListOf<JSONObject>()
+        acceptAllUpserts(sent)
+
+        repository.sync()
+
+        assertEquals(listOf("orphan"), sent.map { it.getString("operationId") })
+        assertEquals("the stale base revision is replaced by the stored note's revision", 4L, sent.single().getLong("baseRevision"))
+        assertTrue(repository.store.pending(profile.profile).isEmpty())
+    }
+
+    @Test fun editsAfterAFailedAttemptChainBehindTheSentOperationInsteadOfRewritingIt() = runBlocking {
+        profile.token = "test-session"
+        val note = syncNote(91, "retried-edit", 1, "Draft one")
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.toString()))
+        repository.store.enqueue(Outbox("first", profile.profile, "note.upsert", note.syncId, note.raw.toString(), baseRevision = 1))
+        repository.store.cursor(SyncState(profile.profile, 0))
+        (repository.api as FakeNativeApi).callHandler = { _, _, _ -> throw ApiException(503, "offline") }
+        assertTrue(runCatching { repository.sync() }.isFailure)
+
+        repository.save(Note(note.raw.copyJson().put("noteTitle", "Draft two")))
+
+        val pending = repository.store.pending(profile.profile)
+        val first = pending.single { it.operationId == "first" }
+        assertTrue(first.attempted)
+        assertEquals("Draft one", JSONObject(first.payload).getString("noteTitle"))
+        val second = pending.single { it.operationId != "first" }
+        assertEquals("first", second.dependsOnOperationId)
+        assertEquals("Draft two", JSONObject(second.payload).getString("noteTitle"))
+
+        val sent = mutableListOf<JSONObject>()
+        acceptAllUpserts(sent)
+        repository.sync()
+
+        assertEquals(listOf("first", second.operationId), sent.map { it.getString("operationId") })
+        assertEquals(listOf(1L, 2L), sent.map { it.getLong("baseRevision") })
+        assertTrue(repository.store.pending(profile.profile).isEmpty())
+    }
+
+    @Test fun saveUsesTheAcceptedRevisionWhenTheEditorCopyIsStale() = runBlocking {
+        profile.token = "test-session"
+        val note = syncNote(92, "stale-editor", 1)
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.toString()))
+        repository.store.enqueue(Outbox("accepted", profile.profile, "note.upsert", note.syncId, note.raw.toString(), baseRevision = 1))
+        repository.store.cursor(SyncState(profile.profile, 0))
+        acceptAllUpserts(mutableListOf())
+        repository.sync()
+
+        repository.save(Note(note.raw.copyJson().put("noteTitle", "Typed before the editor saw the acknowledgement")))
+
+        assertEquals(2L, repository.store.pending(profile.profile).single().baseRevision)
+        assertEquals(2L, repository.note(note.syncId)?.revision)
+    }
+
     private class FakeProfile(override var origin: String, override var userId: Long) : ConnectionProfile {
         private val aliases = mutableMapOf<String, String>()
         private val gatewayHeaders = mutableMapOf<String, String>()
