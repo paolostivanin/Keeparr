@@ -197,7 +197,7 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val reorderEnabled = canReorderNotes(filter, search)
     val visible = NoteOrder.visible(notes, filter).filter { note -> search.isBlank() ||
-        (!note.locked && (note.title + " " + Html.fromHtml(note.body, 0) + " " + note.items.joinToString { it.text("data") }).contains(search, true)) }
+        (!note.locked && (note.title + " " + NoteFormat.displayText(note.body) + " " + note.items.joinToString { it.text("data") }).contains(search, true)) }
     val remindersByNote = remember(reminders, notes) { ReminderFormat.indexByNote(notes, reminders) }
     val selectedNotes = notes.filter { it.syncId in selectedIds }
     val canTrashSelected = selectedNotes.isNotEmpty() && selectedNotes.all { it.owner == app.settings.userId }
@@ -323,10 +323,10 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
                 if (entry.type == "note.upsert") {
                     val draft = JSONObject(entry.payload)
                     Text("Your draft: ${draft.text("noteTitle")}", Modifier.padding(top = 12.dp))
-                    Text(Html.fromHtml(draft.text("noteBody"), 0).toString())
+                    Text(NoteFormat.displayText(draft.text("noteBody")))
                     latest?.let { server ->
                         Text("Server version: ${server.text("noteTitle")}", Modifier.padding(top = 12.dp))
-                        Text(Html.fromHtml(server.text("noteBody"), 0).toString())
+                        Text(NoteFormat.displayText(server.text("noteBody")))
                         val localItems = draft.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
                         val serverItems = server.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
                         val differing = (localItems.keys + serverItems.keys).filter { id ->
@@ -440,8 +440,8 @@ private fun NoteCard(app: KeptApplication, note: Note, reminder: JSONObject?, se
                 note.raw.optJSONArray("images")?.objects()?.firstOrNull()?.let { MediaImage(app, it.text("dataUrl")) }
                 if (note.title.isNotBlank()) Text(note.title, style = MaterialTheme.typography.titleMedium, maxLines = 3)
                 if (note.checklist) note.items.take(8).forEach { item -> Row {
-                    Text(if (item.optBoolean("done")) "☑  " else "☐  "); Text(Html.fromHtml(item.text("data"), 0).toString(), maxLines = 3)
-                } } else if (note.body.isNotBlank()) Text(Html.fromHtml(note.body, 0).toString(), maxLines = 12)
+                    Text(if (item.optBoolean("done")) "☑  " else "☐  "); Text(NoteFormat.displayText(item.text("data")), maxLines = 3)
+                } } else if (note.body.isNotBlank()) Text(remember(note.body) { NoteFormat.displayText(note.body) }, maxLines = 12)
                 reminder?.let { activeReminder ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Outlined.Schedule, "Reminder", Modifier.size(16.dp))

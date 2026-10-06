@@ -1,6 +1,8 @@
 package dev.kept.android.data
 
 import android.text.Html
+import android.text.SpannableStringBuilder
+import android.text.Spanned
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
@@ -33,6 +35,14 @@ data class Note(val raw: JSONObject) {
     val trashed get() = raw.optBoolean("trashed")
     val labels get() = raw.optJSONArray("labels")?.objects().orEmpty().filter { it.optBoolean("added") }.map { it.text("name") }
 
+    // Anything the user would lose by discarding the note; bgColor and pinned are cosmetic and don't count.
+    val hasContent get() = Jsoup.parseBodyFragment(title).text().isNotBlank() ||
+        NoteFormat.bodyLines(body).isNotEmpty() || body.contains("<img", ignoreCase = true) ||
+        (body.isNotBlank() && !NoteFormat.editable(body)) ||
+        items.any { it.opt("data") !is String || Jsoup.parseBodyFragment(it.text("data")).text().isNotBlank() } ||
+        (raw.optJSONArray("images")?.length() ?: 0) > 0 || (raw.optJSONArray("attachments")?.length() ?: 0) > 0 ||
+        labels.isNotEmpty() || binder.isNotBlank()
+
     companion object {
         fun create(userId: Long, checklist: Boolean = false) = Note(JSONObject().apply {
             put("syncId", "note-${UUID.randomUUID()}"); put("id", -System.currentTimeMillis()); put("revision", 0)
@@ -45,6 +55,8 @@ data class Note(val raw: JSONObject) {
 }
 
 data class ProfiledNoteSnapshot(val profile: String, val note: Note, val submitted: Note? = null)
+
+enum class Discard { DISCARDED, SYNCED, KEPT }
 
 enum class ConflictResolution { USE_SERVER, REPLACE_WITH_DRAFT, SAVE_AS_COPY, DISCARD }
 
@@ -108,6 +120,40 @@ object NoteOrder {
 object NoteFormat {
     private val supported = setOf("br", "p", "div", "b", "strong", "i", "em", "u", "s", "strike", "a", "span")
     private val attributePattern = Regex("""([a-zA-Z_:][a-zA-Z0-9_:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+
+    // The web renders bodies with white-space: pre-wrap, so a raw newline is a visible line break there while
+    // Html.fromHtml collapses it into a space. Turning each one into <br> makes Android show what the web shows.
+    private fun breakRawNewlines(parent: Element) {
+        for (child in parent.childNodes().toList()) {
+            if (child is Element) breakRawNewlines(child)
+            else if (child is TextNode && child.wholeText.contains('\n')) {
+                child.wholeText.replace("\r\n", "\n").split('\n').forEachIndexed { index, part ->
+                    if (index > 0) child.before(Element("br"))
+                    if (part.isNotEmpty()) child.before(TextNode(part))
+                }
+                child.remove()
+            }
+        }
+    }
+
+    // The one conversion behind the editor and every read-only view, so they cannot disagree.
+    fun spanned(html: String): Spanned {
+        val document = Jsoup.parseBodyFragment(html)
+        document.outputSettings().prettyPrint(false)
+        breakRawNewlines(document.body())
+        val result = SpannableStringBuilder(Html.fromHtml(document.body().html(), Html.FROM_HTML_MODE_COMPACT))
+        // fromHtml ends every block with a newline; serializing it back would add a blank line on each reload.
+        var end = result.length
+        while (end > 0 && result[end - 1] == '\n') end--
+        result.delete(end, result.length)
+        return result
+    }
+
+    fun displayText(html: String): String = spanned(html).toString()
+
+    // One <p> per line, with <br> for blank lines: unlike the consecutive mode this round-trips blank lines. The
+    // newlines toHtml puts between tags are formatting only, and the web would render them as extra blank lines.
+    fun serialize(text: Spanned): String = Html.toHtml(text, Html.TO_HTML_PARAGRAPH_LINES_INDIVIDUAL).replace("\n", "")
 
     fun editable(html: String): Boolean = Regex("<\\s*(/?)\\s*([a-zA-Z0-9]+)([^>]*)>").findAll(html).all { match ->
         val tag = match.groupValues[2].lowercase()

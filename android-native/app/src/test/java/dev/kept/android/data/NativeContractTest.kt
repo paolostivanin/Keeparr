@@ -387,4 +387,28 @@ class NativeContractTest {
         assertEquals(1L, updated.revision)
         assertEquals("Draft", updated.title)
     }
+
+    @Test fun bodyTextShowsTheSameLinesTheWebShows() {
+        // Block elements add no blank line of their own (the legacy Html flag did), but explicit blank lines stay.
+        assertEquals("a\nb", NoteFormat.displayText("<div>a</div><div>b</div>"))
+        assertEquals("a\nb", NoteFormat.displayText("<p dir=\"ltr\">a</p><p dir=\"ltr\">b</p>"))
+        assertEquals("a\n\nb", NoteFormat.displayText("<div>a</div><div><br></div><div>b</div>"))
+        // The web renders bodies with white-space: pre-wrap, so raw newlines are visible there.
+        assertEquals("eth esterno\n\n• Centralina", NoteFormat.displayText("eth esterno\n\n• Centralina"))
+        assertEquals("a\n\nb", NoteFormat.displayText("<div>a</div>\n<div>b</div>"))
+        assertEquals("a\n\nb", NoteFormat.displayText("<p>a<br>\nb</p>"))
+        assertEquals("a & b", NoteFormat.displayText("<div>a &amp; b</div>\n"))
+    }
+
+    @Test fun editorSerializationKeepsBlankLinesAndAddsNoStrayNewlines() {
+        for (text in listOf("a\nb", "a\n\nb", "a\n\n\nb\nc", "single")) {
+            val html = NoteFormat.serialize(android.text.SpannableStringBuilder(text))
+            assertFalse("raw newlines render as extra blank lines on the web: $html", html.contains('\n'))
+            assertEquals(text, NoteFormat.spanned(html).toString())
+            assertEquals("the overview matches the editor", text, NoteFormat.displayText(html))
+        }
+        // Reloading and saving again must not grow the note.
+        val once = NoteFormat.serialize(NoteFormat.spanned("<p>a</p><p>b</p>"))
+        assertEquals(once, NoteFormat.serialize(NoteFormat.spanned(once)))
+    }
 }

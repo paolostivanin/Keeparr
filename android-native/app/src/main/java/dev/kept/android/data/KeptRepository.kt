@@ -62,6 +62,29 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         if (profile == settings.profile) changed(synchronize, reconcile = true)
     }
 
+    // Drops a never-synced, contentless note along with its queued upsert. SYNCED means the server may already know the
+    // blank note, so the caller should trash it instead; KEPT means something (content, a reminder, an upload) needs it.
+    suspend fun discardIfEmpty(syncId: String, profile: String = settings.profile): Discard = editMutex.withLock {
+        val outcome = database.withTransaction {
+            val note = store.record(profile, "note", syncId)?.let { Note(JSONObject(it.payload)) } ?: return@withTransaction Discard.KEPT
+            val pending = store.pending(profile)
+            val upserts = pending.filter { it.type == "note.upsert" && it.syncId == syncId }
+            val referenced = store.list(profile, "reminder").any { JSONObject(it.payload).text("noteSyncId") == syncId } ||
+                pending.any { entry ->
+                    entry.type == "media.upload" &&
+                        runCatching { JSONObject(entry.payload).text("noteSyncId") == syncId }.getOrDefault(false)
+                }
+            if (note.hasContent || referenced) return@withTransaction Discard.KEPT
+            if (note.id > 0 || note.revision > 0 || upserts.any { it.state == OutboxState.IN_FLIGHT || it.attempted || it.conflict != null })
+                return@withTransaction Discard.SYNCED
+            store.remove(profile, "note", syncId)
+            upserts.forEach { store.acknowledge(it.operationId) }
+            Discard.DISCARDED
+        }
+        if (outcome == Discard.DISCARDED && profile == settings.profile) changed(synchronize = false)
+        outcome
+    }
+
     // Only call inside a transaction.
     private suspend fun noteUpsertEntry(profile: String, syncId: String, raw: JSONObject): Outbox {
         val conflicted = store.conflicted(profile, "note.upsert", syncId)
@@ -128,7 +151,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                 existing.text("timezone", "UTC") != timezone || existingRule != requestedRule
             raw.put("noteId", note.id).put("noteSyncId", note.syncId).put("userId", settings.userId).put("dueAtUtc", due)
                 .put("timezone", timezone).put("repeatRule", requestedRule ?: JSONObject.NULL).put("status", "pending")
-                .put("title", if (note.locked) "Kept reminder" else note.title).put("body", if (note.locked) "" else Html.fromHtml(note.body, 0).toString().take(500))
+                .put("title", if (note.locked) "Kept reminder" else note.title).put("body", if (note.locked) "" else NoteFormat.displayText(note.body).take(500))
             val id = raw.getString("syncId")
             val conflicted = store.conflicted(profile, "reminder.upsert", id)
             val queued = store.queued(profile, "reminder.upsert", id)

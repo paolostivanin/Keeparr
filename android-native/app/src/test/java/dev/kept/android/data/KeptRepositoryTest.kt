@@ -124,6 +124,62 @@ class KeptRepositoryTest {
         assertEquals(5L, editor.draft.value.getLong("revision"))
     }
 
+    @Test fun hasContentIgnoresBlankMarkupButCountsRealContent() {
+        fun note(edit: (JSONObject) -> Unit = {}) = Note(Note.create(profile.userId).raw.also(edit))
+        assertFalse(note().hasContent)
+        assertFalse(note { it.put("noteBody", "<div><br></div>") }.hasContent)
+        assertFalse(note { it.put("noteBody", "<p dir=\"ltr\"></p>") }.hasContent)
+        assertFalse(note { it.put("isCbox", true).put("checkBoxes", JSONArray().put(JSONObject().put("id", 1).put("data", ""))) }.hasContent)
+        assertTrue(note { it.put("noteTitle", "Title") }.hasContent)
+        assertTrue(note { it.put("noteBody", "<div>text</div>") }.hasContent)
+        assertTrue(note { it.put("isCbox", true).put("checkBoxes", JSONArray().put(JSONObject().put("id", 1).put("data", "milk"))) }.hasContent)
+        assertTrue(note { it.put("images", JSONArray().put(JSONObject().put("id", "img"))) }.hasContent)
+        assertTrue(note { it.put("labels", JSONArray().put(JSONObject().put("name", "Home").put("added", true))) }.hasContent)
+    }
+
+    @Test fun closingAnEmptyNewNoteDiscardsItAndItsQueuedUpsert() = runBlocking {
+        val created = Note.create(profile.userId)
+        repository.save(created)
+        NoteEditorViewModel(repository, created).finish()
+        assertEquals(null, repository.note(created.syncId))
+        assertTrue(repository.store.pending(profile.profile).isEmpty())
+    }
+
+    @Test fun closingANewNoteWithContentKeepsIt() = runBlocking {
+        val created = Note.create(profile.userId)
+        repository.save(created)
+        val editor = NoteEditorViewModel(repository, created)
+        editor.change { it.put("noteTitle", "Groceries") }
+        editor.finish()
+        assertEquals("Groceries", repository.note(created.syncId)?.title)
+        assertEquals("Groceries", JSONObject(repository.store.pending(profile.profile).single().payload).getString("noteTitle"))
+    }
+
+    @Test fun closingANewNoteThatSyncedBeforeBeingEmptiedMovesItToTrash() = runBlocking {
+        val created = Note.create(profile.userId)
+        repository.save(created)
+        val editor = NoteEditorViewModel(repository, created)
+        editor.change { it.put("noteTitle", "Typed") }
+        editor.flushAndQueueSync()
+        withTimeoutOrNull(5_000) { while (editor.localSaving.value) delay(10) } ?: error("local editor persistence did not finish")
+        val sent = repository.store.pending(profile.profile).single()
+        repository.store.acknowledge(sent.operationId)
+        val accepted = Note(JSONObject(sent.payload).put("id", 90).put("revision", 1))
+        repository.store.put(Record(profile.profile, "note", created.syncId, accepted.raw.toString()))
+        editor.acceptServerSnapshot(accepted)
+        editor.change { it.put("noteTitle", "") }
+        editor.finish()
+        assertTrue(repository.note(created.syncId)!!.trashed)
+    }
+
+    @Test fun closingAnEmptyNewNoteWithAReminderKeepsIt() = runBlocking {
+        val created = Note.create(profile.userId)
+        repository.save(created)
+        repository.setReminder(created, "2030-01-01T09:00:00Z", "UTC", null)
+        NoteEditorViewModel(repository, created).finish()
+        assertFalse(repository.note(created.syncId)!!.trashed)
+    }
+
     @Test fun acceptedServerCanonicalizationDoesNotKeepTheEditorDirty() = runBlocking {
         val initial = Note(JSONObject().put("id", 56).put("syncId", "canonical-editor").put("revision", 3)
             .put("ownerUserId", profile.userId).put("noteTitle", "Before").put("noteBody", "<b>rich</b>")

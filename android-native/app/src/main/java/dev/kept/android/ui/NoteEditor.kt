@@ -98,7 +98,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
         (it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId) }
     fun change(block: (JSONObject) -> Unit) { draftViewModel.change(block) }
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
-    fun close() { action { draftViewModel.flushAndQueueSync(); onClose() } }
+    fun close() { action { draftViewModel.finish(); onClose() } }
     val bodyHandle = remember { BodyEditorHandle() }
     val keyboard = LocalSoftwareKeyboardController.current
     val itemFocus = remember { mutableMapOf<Long, FocusRequester>() }
@@ -211,8 +211,8 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
                         DropdownMenuItem(text = { Text("Share a copy") }, leadingIcon = { Icon(Icons.Outlined.Share, null) }, onClick = {
                             moreMenuExpanded = false
                             val text = note.title + "\n" + if (note.checklist) note.items.joinToString("\n") {
-                                (if (it.optBoolean("done")) "[x] " else "[ ] ") + Html.fromHtml(it.text("data"), 0)
-                            } else Html.fromHtml(note.body, 0)
+                                (if (it.optBoolean("done")) "[x] " else "[ ] ") + NoteFormat.displayText(it.text("data"))
+                            } else NoteFormat.displayText(note.body)
                             activity.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                                 .putExtra(Intent.EXTRA_TEXT, text), "Share note"))
                         })
@@ -294,7 +294,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
                                 it.put("checkBoxes", ChecklistAdapter.setDone(it.getJSONArray("checkBoxes"), index, done))
                             } })
                             if (NoteFormat.checklistItemEditable(item.opt("data"))) BasicTextField(
-                                value = Html.fromHtml(item.text("data"), 0).toString(),
+                                value = NoteFormat.displayText(item.text("data")),
                                 onValueChange = { text -> change {
                                     it.getJSONArray("checkBoxes").getJSONObject(index).put("data", NoteFormat.editedChecklistItem(item.opt("data"), text))
                                 } }, modifier = Modifier.weight(1f).padding(start = (item.optInt("indentLevel") * 12).dp).focusRequester(requester),
@@ -304,7 +304,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
                                     inner()
                                 } })
                             else Column(Modifier.weight(1f)) {
-                                Text(if (item.opt("data") is String) Html.fromHtml(item.text("data"), 0).toString() else "Structured checklist item")
+                                Text(if (item.opt("data") is String) NoteFormat.displayText(item.text("data")) else "Structured checklist item")
                                 Text("This checklist item is preserved and read-only in the native editor.", style = MaterialTheme.typography.labelSmall)
                             }
                             Box {
@@ -334,7 +334,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
             } else if (NoteFormat.editable(note.body)) {
                 StyledEditor(note.body, reset = note.body, textColor = foreground, handle = bodyHandle, onChange = { html -> change { it.put("noteBody", html) } })
             } else {
-                Text(Html.fromHtml(note.body, 0).toString())
+                Text(NoteFormat.displayText(note.body))
                 Text("This note contains formatting the native editor does not support yet. Its body is preserved; other fields remain editable.", style = MaterialTheme.typography.bodySmall)
             }
             val images = (metadataNote.raw.optJSONArray("images")?.objects().orEmpty() + note.raw.optJSONArray("images")?.objects().orEmpty())
@@ -428,22 +428,22 @@ private fun StyledEditor(initial: String, reset: String, textColor: Color, handl
         Row {
             listOf("B" to android.graphics.Typeface.BOLD, "I" to android.graphics.Typeface.ITALIC).forEach { (label, style) -> TextButton(onClick = {
                 editor?.let { view -> if (view.selectionStart < view.selectionEnd) view.text.setSpan(StyleSpan(style), view.selectionStart, view.selectionEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
-                editor?.let { lastEmitted = Html.toHtml(it.text, Html.TO_HTML_PARAGRAPH_LINES_CONSECUTIVE); onChange(lastEmitted) }
+                editor?.let { lastEmitted = NoteFormat.serialize(it.text); onChange(lastEmitted) }
             }) { Text(label) } }
             TextButton(onClick = {
                 editor?.let { view -> if (view.selectionStart < view.selectionEnd) view.text.setSpan(UnderlineSpan(), view.selectionStart, view.selectionEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
-                editor?.let { lastEmitted = Html.toHtml(it.text, Html.TO_HTML_PARAGRAPH_LINES_CONSECUTIVE); onChange(lastEmitted) }
+                editor?.let { lastEmitted = NoteFormat.serialize(it.text); onChange(lastEmitted) }
             }) { Text("U") }
         }
         AndroidView(factory = { context -> EditText(context).apply {
-            setText(Html.fromHtml(initial, Html.FROM_HTML_MODE_COMPACT)); hint = "Note"; setTextSize(18f); background = null
+            setText(NoteFormat.spanned(initial)); hint = "Note"; setTextSize(18f); background = null
             setPadding(0, 8, 0, 8); minLines = 6; gravity = android.view.Gravity.TOP
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
                 override fun afterTextChanged(s: Editable?) {
                     if (suppressTextWatcher) return
-                    lastEmitted = Html.toHtml(s ?: return, Html.TO_HTML_PARAGRAPH_LINES_CONSECUTIVE)
+                    lastEmitted = NoteFormat.serialize(s ?: return)
                     onChange(lastEmitted)
                 }
             }); editor = this; handle.view = this
@@ -453,7 +453,7 @@ private fun StyledEditor(initial: String, reset: String, textColor: Color, handl
                 val selectionStart = view.selectionStart.coerceAtLeast(0)
                 val selectionEnd = view.selectionEnd.coerceAtLeast(0)
                 suppressTextWatcher = true
-                try { view.setText(Html.fromHtml(reset, Html.FROM_HTML_MODE_COMPACT)) }
+                try { view.setText(NoteFormat.spanned(reset)) }
                 finally { suppressTextWatcher = false }
                 lastEmitted = reset
                 view.setSelection(selectionStart.coerceAtMost(view.text.length), selectionEnd.coerceAtMost(view.text.length))

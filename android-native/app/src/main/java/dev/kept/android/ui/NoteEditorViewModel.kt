@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import dev.kept.android.KeptApplication
+import dev.kept.android.data.Discard
 import dev.kept.android.data.EditorSnapshotPolicy
 import dev.kept.android.data.Note
 import dev.kept.android.data.copyJson
@@ -27,6 +28,7 @@ class NoteEditorViewModel(
     private val profile = repository.settings.profile
     private val _draft = MutableStateFlow(initial.raw.copyJson())
     val draft = _draft.asStateFlow()
+    private val startedAsNew = initial.id <= 0
     private var serverBase = Note(initial.raw.copyJson())
     private val _dirty = MutableStateFlow(false)
     val dirty = _dirty.asStateFlow()
@@ -123,6 +125,21 @@ class NoteEditorViewModel(
                 if (generation == saveGeneration) {
                     break
                 }
+            }
+        }
+    }
+
+    // Closing a note created in this session without content discards it instead of saving a blank note.
+    suspend fun finish() {
+        val draft = Note(_draft.value.copyJson())
+        if (!startedAsNew || draft.hasContent) return flushAndQueueSync()
+        persistenceMutex.withLock {
+            persistenceJob?.cancel()
+            saveGeneration++
+            if (repository.discardIfEmpty(draft.syncId, profile) == Discard.SYNCED && draft.owner == repository.settings.userId &&
+                profile == repository.settings.profile) {
+                // The server may already know this note (an autosave went out before the text was removed).
+                repository.setTrashed(listOf(draft.syncId), true)
             }
         }
     }
