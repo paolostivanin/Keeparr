@@ -53,6 +53,8 @@ export class NavbarComponent implements OnInit {
   showPasswordReset = false
   isFiltersOpen = false
   bgColors = bgColors
+  // Keep the palette's declaration order in pickers instead of keyvalue's alphabetical sort.
+  readonly originalOrder = () => 0
   bgImages = bgImages
   bgImageLabels: Record<string, string> = {
     groceries: 'Groceries',

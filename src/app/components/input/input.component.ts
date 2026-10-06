@@ -23,6 +23,7 @@ import { UserPreferencesService } from 'src/app/services/user-preferences.servic
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
 import { MAX_INDENT_LEVEL, descendantIndexes, maxIndentLevelAt, normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
 import { canHideCheckboxes, checkBoxesToBodyHtml, linesToCheckBoxes, splitBodyIntoLines } from 'src/app/utils/checklist-conversion';
+import { noteColorToHex } from 'src/app/utils/note-color';
 import { environment } from 'src/environments/environment';
 
 declare var Snackbar: any;
@@ -243,6 +244,8 @@ export class InputComponent implements OnInit {
   lastEditedTime = ''
   //
   bgColors = bgColors
+  // Keep the palette's declaration order in pickers instead of keyvalue's alphabetical sort.
+  readonly originalOrder = () => 0
   bgImages = bgImages
   bgImageLabels: Record<string, string> = {
     groceries: 'Groceries',
@@ -534,7 +537,7 @@ export class InputComponent implements OnInit {
       noteTitle: this.noteTitle.nativeElement.innerHTML,
       noteBody: this.noteBody?.nativeElement.innerHTML ? this.cleanEditorBodyForSave(this.noteBody.nativeElement.innerHTML) : '',
       pinned: this.notePin.nativeElement.dataset['pinned'] === "true", // converting string to bool,
-      bgColor: this.noteMain.nativeElement.style.backgroundColor,
+      bgColor: noteColorToHex(this.noteMain.nativeElement.style.backgroundColor),
       bgImage: this.noteMain.nativeElement.style.backgroundImage || this.noteContainer.nativeElement.style.backgroundImage,
       checkBoxes: checkBoxesForSave,
       images: this.images.map(image => ({ ...image, dataUrl: this.auth.canonicalImageUrl(image.dataUrl) })),
@@ -688,7 +691,7 @@ export class InputComponent implements OnInit {
       noteTitle: note.noteTitle || '',
       noteBody: this.auth.canonicalImageHtml(note.noteBody || ''),
       pinned: !!note.pinned,
-      bgColor: note.bgColor || '',
+      bgColor: noteColorToHex(note.bgColor || ''),
       bgImage: note.bgImage || '',
       checkBoxes: this.normalizeCheckBoxes(note.checkBoxes || []),
       images: this.normalizeImages(note.images || []),

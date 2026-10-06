@@ -15,6 +15,11 @@ export enum bgColors {
     creamsicle = '#ffb74d',
     cornflower = '#abc4ff',
     flamingo = '#ffc2d1',
+    coral = '#ffab91',
+    turquoise = '#a7ffeb',
+    lime = '#e6ee9c',
+    sand = '#efe0c8',
+    periwinkle = '#c5cae9',
     red = '#5b2121',
     orange = '#5b3a21',
     yellow = '#4a4a1a',
@@ -26,6 +31,10 @@ export enum bgColors {
     pink = '#4a1a2e',
     brown = '#3a211a',
     gray = '#334155',
+    indigo = '#282a5c',
+    magenta = '#5c1a4a',
+    mustard = '#5c4a14',
+    cyan = '#144a5c',
 }
 export enum bgImages {
     zNone = '',

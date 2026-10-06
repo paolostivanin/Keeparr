@@ -232,8 +232,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
                 }
             })
     }, bottomBar = {
-        val color = runCatching { Color(android.graphics.Color.parseColor(note.raw.text("bgColor"))) }
-            .getOrDefault(MaterialTheme.colorScheme.surface)
+        val color = NotePalette.parse(note.raw.text("bgColor"))?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
         Surface(color = color, tonalElevation = 2.dp) {
             Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -251,7 +250,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
             }
         }
     }) { padding ->
-        val color = runCatching { Color(android.graphics.Color.parseColor(note.raw.text("bgColor"))) }.getOrDefault(MaterialTheme.colorScheme.background)
+        val color = NotePalette.parse(note.raw.text("bgColor"))?.let { Color(it) } ?: MaterialTheme.colorScheme.background
         val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF5F3EF)
         Surface(Modifier.fillMaxSize().padding(padding), color = color, contentColor = foreground) {
         Column(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, indication = null) { focusEditorEnd() }
@@ -401,7 +400,7 @@ private fun NoteColorPicker(selectedColor: String, onDismiss: () -> Unit, onSele
             LazyVerticalGrid(columns = GridCells.Fixed(5), modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 items(NotePalette.colors) { swatch ->
-                    val isSelected = selectedColor.equals(swatch.hex, ignoreCase = true)
+                    val isSelected = NotePalette.sameColor(selectedColor, swatch.hex)
                     val color = if (swatch.hex.isEmpty()) MaterialTheme.colorScheme.surfaceVariant
                         else Color(android.graphics.Color.parseColor(swatch.hex))
                     val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF5F3EF)

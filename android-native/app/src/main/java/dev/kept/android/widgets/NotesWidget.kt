@@ -91,7 +91,7 @@ class NotesWidgetService : RemoteViewsService() {
             val item = row.item
             val reminder = remindersByNoteSyncId[note.syncId]
             val interactiveChecklistItem = item != null && item.has("id") && !note.locked
-            val color = runCatching { Color.parseColor(note.raw.text("bgColor")) }.getOrDefault(Color.WHITE)
+            val color = NotePalette.parse(note.raw.text("bgColor")) ?: Color.WHITE
             val foreground = widgetForegroundColor(color)
             if (item != null) {
                 val itemLabel = item?.let { Html.fromHtml(boundedWidgetText(it.text("data"), 4096), Html.FROM_HTML_MODE_COMPACT)

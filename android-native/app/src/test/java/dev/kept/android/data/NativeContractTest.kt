@@ -191,8 +191,9 @@ class NativeContractTest {
         assertEquals(listOf(
             "", "#cbf0f8", "#fddcbb", "#fdcfe8", "#fff8b8", "#d7aefb", "#fef7cc", "#e8d7ff",
             "#ccff90", "#ffd8b5", "#f8c7c0", "#e6f4d7", "#d2e3fc", "#ffb74d", "#abc4ff", "#ffc2d1",
+            "#ffab91", "#a7ffeb", "#e6ee9c", "#efe0c8", "#c5cae9",
             "#5b2121", "#5b3a21", "#4a4a1a", "#1a4a1a", "#1a4a4a", "#1a2e4a", "#0f172a", "#2e1a4a",
-            "#4a1a2e", "#3a211a", "#334155"
+            "#4a1a2e", "#3a211a", "#334155", "#282a5c", "#5c1a4a", "#5c4a14", "#144a5c"
         ), NotePalette.colors.map { it.hex })
     }
     @Test fun reminderDateTimeUsesTheRequestedLocalZoneAndShortFormat() {

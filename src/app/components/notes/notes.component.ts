@@ -93,6 +93,8 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   labels: LabelI[] = []
   binderName = ''
   bgColors = bgColors
+  // Keep the palette's declaration order in pickers instead of keyvalue's alphabetical sort.
+  readonly originalOrder = () => 0
   bgImages = bgImages
   bgImageLabels: Record<string, string> = {
     groceries: 'Groceries',

@@ -415,7 +415,7 @@
 <!--? color MENU -->
 <div #colorMenuTt data-tooltip="true" data-is-tooltip-open="false" class="colorMenu">
   <div class="first-row">
-    @for (color of bgColors | keyvalue; track color) {
+    @for (color of bgColors | keyvalue: originalOrder; track color) {
       <div [attr.data-bg-color]="color.key" [style.background-color]="color.value"
         (click)="colorMenu.bgColor(color.value)" [class.nocolor]="color.value === ''">
       </div>

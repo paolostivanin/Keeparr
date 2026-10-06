@@ -415,7 +415,7 @@ private fun NoteCard(app: KeptApplication, note: Note, reminder: JSONObject?, se
     var coordinates by remember(note.syncId) { mutableStateOf<LayoutCoordinates?>(null) }
     var target by remember(note.syncId) { mutableStateOf(note.syncId) }
     DisposableEffect(note.syncId) { onDispose { bounds.remove(note.syncId) } }
-    val color = runCatching { Color(android.graphics.Color.parseColor(note.raw.text("bgColor"))) }.getOrDefault(MaterialTheme.colorScheme.surface)
+    val color = NotePalette.parse(note.raw.text("bgColor"))?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
     val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF1F1F1)
     Surface(shape = RoundedCornerShape(12.dp), color = color, contentColor = foreground,
         border = BorderStroke(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
