@@ -84,8 +84,8 @@ fun KeptScreen(activity: MainActivity, app: KeptApplication) {
                             note.raw.put("noteTitle", intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty())
                                 .put("noteBody", Html.escapeHtml(text).replace("\n", "<br>"))
                             repo.save(note); editing = note
-                            val uris = if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
-                                else listOfNotNull(intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
+                            val uris = if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+                                else listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
                             for (uri in uris) repo.attach(note, Media(app).stage(uri))
                         }
                     } catch (problem: Exception) { error = problem.message }

@@ -21,6 +21,9 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Label
+import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -180,7 +183,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
     }
     Scaffold(topBar = {
         TopAppBar(title = {},
-            navigationIcon = { IconButton(onClick = ::close) { Icon(Icons.Outlined.ArrowBack, "Save and go back") } }, actions = {
+            navigationIcon = { IconButton(onClick = ::close) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Save and go back") } }, actions = {
                 IconButton(onClick = { change { it.put("pinned", !note.pinned) } }) {
                     Icon(Icons.Outlined.PushPin, if (note.pinned) "Unpin" else "Pin",
                         tint = if (note.pinned) MaterialTheme.colorScheme.primary else LocalContentColor.current)
@@ -194,7 +197,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
                         DropdownMenuItem(text = { Text("Remind me") }, leadingIcon = { Icon(Icons.Outlined.NotificationAdd, null) },
                             onClick = { moreMenuExpanded = false; reminderDialog = true })
                         if (owner) {
-                            DropdownMenuItem(text = { Text("Labels and binder") }, leadingIcon = { Icon(Icons.Outlined.Label, null) },
+                            DropdownMenuItem(text = { Text("Labels and binder") }, leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Label, null) },
                                 onClick = { moreMenuExpanded = false; organizeDialog = true })
                             DropdownMenuItem(text = { Text("Collaborators") }, leadingIcon = { Icon(Icons.Outlined.PersonAdd, null) },
                                 onClick = { moreMenuExpanded = false; shareDialog = true })
@@ -216,7 +219,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
                             activity.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                                 .putExtra(Intent.EXTRA_TEXT, text), "Share note"))
                         })
-                        DropdownMenuItem(text = { Text("Undo changes") }, leadingIcon = { Icon(Icons.Outlined.Undo, null) },
+                        DropdownMenuItem(text = { Text("Undo changes") }, leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Undo, null) },
                             onClick = { moreMenuExpanded = false; draftViewModel.replace(original.raw.copyJson()) })
                         if (owner) {
                             if (note.trashed) DropdownMenuItem(text = { Text("Restore") }, leadingIcon = { Icon(Icons.Outlined.RestoreFromTrash, null) },

@@ -3,13 +3,13 @@ package dev.kept.android
 import android.Manifest
 import android.app.AlarmManager
 import android.content.Intent
-import android.net.Uri
-import android.os.Build
+import androidx.core.net.toUri
 import android.os.Bundle
 import android.provider.Settings
 import android.security.KeyChain
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
 import dev.kept.android.data.*
@@ -29,6 +29,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         incoming.value = intent
         alarmRecovery = app.scope.launch {
             app.reminders.resetAlarmRegistry()
@@ -46,9 +47,7 @@ class MainActivity : ComponentActivity() {
             if (alias != null) { app.settings.setAliasFor(server, alias); onSelected(alias) }
         } }, null, null, uri?.host, uri?.port?.takeIf { it > 0 } ?: 443, app.settings.aliasFor(server).ifBlank { null })
     }
-    fun requestNotifications() { if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS) }
-    fun requestPreciseAlarms() {
-        if (Build.VERSION.SDK_INT >= 31) startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
-    }
+    fun requestNotifications() = notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+    fun requestPreciseAlarms() = startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, "package:$packageName".toUri()))
     fun notificationSettings() = startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
 }

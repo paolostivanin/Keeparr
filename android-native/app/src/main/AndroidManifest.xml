@@ -34,7 +34,6 @@
         <activity android:name=".widgets.WidgetConfigActivity" android:exported="true">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" /></intent-filter>
         </activity>
-        <service android:name=".widgets.NotesWidgetService" android:permission="android.permission.BIND_REMOTEVIEWS" android:exported="false" />
         <provider android:name="androidx.core.content.FileProvider" android:authorities="dev.kept.android.files" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>

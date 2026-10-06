@@ -5,7 +5,6 @@ import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -52,7 +51,7 @@ interface ReminderController {
 
 private class AndroidReminderAlarmScheduler(context: Context) : ReminderAlarmScheduler {
     private val alarmManager = context.getSystemService(AlarmManager::class.java)
-    override fun canScheduleExactAlarms() = Build.VERSION.SDK_INT < 31 || alarmManager.canScheduleExactAlarms()
+    override fun canScheduleExactAlarms() = alarmManager.canScheduleExactAlarms()
     override fun scheduleExact(atMillis: Long, pendingIntent: PendingIntent) =
         alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMillis, pendingIntent)
     override fun scheduleInexact(atMillis: Long, pendingIntent: PendingIntent) =
@@ -63,8 +62,8 @@ private class AndroidReminderAlarmScheduler(context: Context) : ReminderAlarmSch
 private class AndroidReminderNotificationSink(private val app: KeptApplication) : ReminderNotificationSink {
     override fun notificationsAllowed(): Boolean {
         if (!NotificationManagerCompat.from(app).areNotificationsEnabled()) return false
-        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
-        if (Build.VERSION.SDK_INT >= 26 && app.getSystemService(NotificationManager::class.java)
+        if (ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
+        if (app.getSystemService(NotificationManager::class.java)
                 .getNotificationChannel("kept_time_reminders")?.importance == NotificationManager.IMPORTANCE_NONE) return false
         return true
     }
