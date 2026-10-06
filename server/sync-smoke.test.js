@@ -240,6 +240,19 @@ async function main() {
       'incremental sync payloads should retain the user-specific reordered positions'
     );
 
+    const cursorBeforePatch = (await request('/sync/changes?cursor=0', { headers })).cursor ?? reorderChanges.cursor;
+    const idsBySync = new Map(reordered.snapshot.notes.map(item => [item.syncId, item.id]));
+    await request('/notes/reorder', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ ids: [idsBySync.get('note-second'), idsBySync.get('note-smoke')] })
+    });
+    const patchChanges = await request(`/sync/changes?cursor=${cursorBeforePatch}`, { headers });
+    const patchPayloads = patchChanges.changes.filter(c => c.operation === 'upsert').map(c => c.payload);
+    const pFirst = patchPayloads.find(i => i.syncId === 'note-second');
+    const pSecond = patchPayloads.find(i => i.syncId === 'note-smoke');
+    assert(pFirst && pSecond && pFirst.sortOrder > pSecond.sortOrder, 'PATCH /notes/reorder should appear in sync changes');
+
     const newer = now + 5000;
     const older = now + 1000;
     await request('/sync/mutations', {

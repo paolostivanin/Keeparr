@@ -112,7 +112,9 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             }
             val queued = store.queued(profile, "note.reorder", "order")
             val predecessor = store.inFlight(profile, "note.reorder", "order")
-            val payload = JSONObject().put("syncIds", JSONArray(ids)).toString()
+            val previous = queued?.let { q -> JSONObject(q.payload).optJSONArray("syncIds")?.let { a -> List(a.length()) { a.getString(it) } } }.orEmpty()
+            val merged = ids + previous.filter { it !in ids.toSet() }
+            val payload = JSONObject().put("syncIds", JSONArray(merged)).toString()
             store.enqueue(queued?.copy(payload = payload) ?: Outbox(UUID.randomUUID().toString(), profile, "note.reorder", "order", payload,
                 dependsOnOperationId = predecessor?.operationId))
         }

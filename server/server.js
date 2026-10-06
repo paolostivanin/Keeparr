@@ -4997,7 +4997,7 @@ async function applySyncNoteMutation(userId, mutation) {
         noteData.archived ? 1 : 0,
         noteData.trashed ? 1 : 0,
         noteData.trashed ? now : null,
-        Number(payload.sortOrder || Date.now()),
+        clampClientSortOrder(payload.sortOrder),
         payload.createdAt || now,
         now,
         userId,
@@ -6149,6 +6149,7 @@ app.patch('/api/notes/reorder', requireAuth, asyncRoute(async (req, res) => {
         'INSERT OR REPLACE INTO user_note_positions (userId, noteId, sortOrder) VALUES (?, ?, ?)',
         [req.user.id, orderedIds[index], sortOrder]
       );
+      await recordNoteSyncChange(orderedIds[index], 'upsert', [req.user.id]);
     } catch (err) {
       console.error(`Failed to update position for note ${orderedIds[index]}:`, err);
     }
@@ -6732,6 +6733,13 @@ function parseRepeatRule(value) {
   }
 }
 
+function clampClientSortOrder(value) {
+  const now = Date.now();
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return now;
+  return Math.min(Math.max(n, now - 5 * 60 * 1000), now + 5 * 60 * 1000);
+}
+
 async function floatReminderNoteToTop(userId, noteId) {
   if (!userId || !noteId) return;
   const note = await getAccessibleNote(noteId, userId);
@@ -6740,6 +6748,7 @@ async function floatReminderNoteToTop(userId, noteId) {
     'INSERT OR REPLACE INTO user_note_positions (userId, noteId, sortOrder) VALUES (?, ?, ?)',
     [userId, noteId, Date.now()]
   );
+  await recordNoteSyncChange(noteId, 'upsert', [userId]);
   broadcastRealtime([userId], { type: 'notes-changed', action: 'reordered' });
 }
 
