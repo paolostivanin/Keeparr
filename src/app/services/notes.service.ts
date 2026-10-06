@@ -84,8 +84,8 @@ export class NotesService {
     private offlineSync: OfflineSyncService,
     private preferences: UserPreferencesService
   ) {
-    this.offlineSync.cacheChanged$.subscribe(() => {
-      this.publishCachedNotes(this.searchQuery).catch(console.error);
+    this.offlineSync.cacheChanged$.subscribe(change => {
+      if (change.notesChanged || change.attachmentsChanged) this.publishCachedNotes(this.searchQuery).catch(console.error);
     });
     this.authSubscription = this.auth.currentUser$.subscribe(user => {
       this.disconnectRealtime();

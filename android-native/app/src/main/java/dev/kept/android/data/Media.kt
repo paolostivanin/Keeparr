@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.util.LruCache
 import com.caverock.androidsvg.SVG
 import dev.kept.android.KeptApplication
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
+
+private object DecodedPreviewCache {
+    private val bitmaps = object : LruCache<String, Bitmap>(32 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap) = (value.allocationByteCount / 1024).coerceAtLeast(1)
+    }
+
+    @Synchronized fun get(key: String) = bitmaps.get(key)
+    @Synchronized fun put(key: String, bitmap: Bitmap) { bitmaps.put(key, bitmap) }
+    @Synchronized fun removeProfile(profileKey: String) {
+        bitmaps.snapshot().keys.filter { it.startsWith("$profileKey:") }.forEach(bitmaps::remove)
+    }
+}
 
 interface MediaUploadPort {
     suspend fun upload(entry: Outbox, repository: KeptRepository): JSONObject
@@ -111,8 +124,15 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
         } finally { temporary.delete() }
     }
 
-    suspend fun preview(path: String): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun preview(path: String, maxDimension: Int = 1000): Bitmap? = withContext(Dispatchers.IO) {
         runCatching {
+            val boundedDimension = maxDimension.coerceIn(64, 2048)
+            val profileHash = profileKey(app.settings.profile)
+            val pathHash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest((app.settings.profile + "\u0000" + path).toByteArray())
+                .joinToString("") { "%02x".format(it) }
+            val cacheKey = "$profileHash:$pathHash:$boundedDimension"
+            DecodedPreviewCache.get(cacheKey)?.let { return@withContext it }
             val bytes = if (path.startsWith("data:image/")) {
                 val comma = path.indexOf(',')
                 require(comma >= 0) { "Invalid image data." }
@@ -122,11 +142,11 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
                 else Uri.decode(content).toByteArray(Charsets.UTF_8)
             } else download(path).readBytes()
             require(bytes.size <= 25 * 1024 * 1024) { "Image preview exceeds the size limit." }
-            if (path.startsWith("data:image/svg+xml", true) || bytes.take(256).toByteArray().toString(Charsets.UTF_8).contains("<svg", true)) {
+            val bitmap = if (path.startsWith("data:image/svg+xml", true) || bytes.take(256).toByteArray().toString(Charsets.UTF_8).contains("<svg", true)) {
                 val svg = SVG.getFromString(bytes.toString(Charsets.UTF_8))
                 val intrinsicWidth = svg.documentWidth.takeIf { it.isFinite() && it > 0f } ?: 400f
                 val intrinsicHeight = svg.documentHeight.takeIf { it.isFinite() && it > 0f } ?: 400f
-                val scale = minOf(1f, 1000f / maxOf(intrinsicWidth, intrinsicHeight))
+                val scale = minOf(1f, boundedDimension / maxOf(intrinsicWidth, intrinsicHeight))
                 val width = (intrinsicWidth * scale).toInt().coerceAtLeast(1)
                 val height = (intrinsicHeight * scale).toInt().coerceAtLeast(1)
                 val picture = svg.renderToPicture(width, height)
@@ -134,14 +154,17 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
             } else {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                val sample = maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / 1000)
+                val sample = imageSampleSize(bounds.outWidth, bounds.outHeight, boundedDimension)
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
             }
+            DecodedPreviewCache.put(cacheKey, bitmap)
+            bitmap
         }.getOrNull()
     }
 
     suspend fun clearProfile(profile: String, pendingUploads: Boolean = false) = withContext(Dispatchers.IO) {
         val key = profileKey(profile)
+        DecodedPreviewCache.removeProfile(key)
         File(app.cacheDir, "media").listFiles().orEmpty().filter {
             it.name.startsWith("${key}_") || it.name.matches(Regex("[a-f0-9]{64}"))
         }.forEach(File::delete)
@@ -158,6 +181,14 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
 
     private fun profileKey(profile: String) = java.security.MessageDigest.getInstance("SHA-256")
         .digest(profile.toByteArray()).take(10).joinToString("") { "%02x".format(it) }
+}
+
+internal fun imageSampleSize(width: Int, height: Int, maxDimension: Int): Int {
+    if (width <= 0 || height <= 0) return 1
+    val limit = maxDimension.coerceAtLeast(1)
+    var sample = 1
+    while (maxOf(width / sample, height / sample) > limit && sample <= (1 shl 29)) sample *= 2
+    return sample
 }
 
 internal fun evictProfileCache(folder: File, profileKey: String, current: File, maxBytes: Long = 100L * 1024 * 1024) {

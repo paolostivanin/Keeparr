@@ -50,7 +50,7 @@ type SyncState = {
 @Injectable({ providedIn: 'root' })
 export class OfflineStoreService {
   private readonly databaseName = 'kept-offline-v1';
-  private readonly databaseVersion = 2;
+  private readonly databaseVersion = 3;
   private database?: Promise<IDBDatabase>;
   private lastStampPhysicalMs = 0;
   private lastStampLogical = 0;
@@ -102,35 +102,57 @@ export class OfflineStoreService {
 
   async replaceSnapshot(partition: string, notes: NoteI[], reminders: ReminderI[], attachments: NoteAttachmentI[], cursor: number, serverTime: number) {
     const db = await this.open();
-    await Promise.all([
-      this.clearPartitionStore(db, 'notes', partition),
-      this.clearPartitionStore(db, 'reminders', partition),
-      this.clearPartitionStore(db, 'attachments', partition)
-    ]);
-    await this.transaction(db, ['notes', 'reminders', 'attachments', 'syncState'], 'readwrite', stores => {
-      notes.forEach(note => {
-        const syncId = this.ensureNoteIdentity(note);
-        stores['notes'].put({ key: this.resourceKey(partition, syncId), partition, syncId, value: note });
-      });
-      reminders.forEach(reminder => {
-        const syncId = this.ensureReminderIdentity(reminder);
-        stores['reminders'].put({ key: this.resourceKey(partition, syncId), partition, syncId, value: reminder });
-      });
-      attachments.forEach(attachment => {
-        if (!attachment.syncId) return;
-        stores['attachments'].put({
-          key: this.resourceKey(partition, attachment.syncId),
-          partition,
-          syncId: attachment.syncId,
-          value: attachment
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(['notes', 'reminders', 'attachments', 'syncState'], 'readwrite');
+      const stores = {
+        notes: transaction.objectStore('notes'),
+        reminders: transaction.objectStore('reminders'),
+        attachments: transaction.objectStore('attachments'),
+        syncState: transaction.objectStore('syncState')
+      };
+      let cursorsRemaining = 3;
+      const writeSnapshot = () => {
+        notes.forEach(note => {
+          const syncId = this.ensureNoteIdentity(note);
+          stores.notes.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: note });
         });
-      });
-      stores['syncState'].put({
+        reminders.forEach(reminder => {
+          const syncId = this.ensureReminderIdentity(reminder);
+          stores.reminders.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: reminder });
+        });
+        attachments.forEach(attachment => {
+          if (!attachment.syncId) return;
+          stores.attachments.put({
+            key: this.resourceKey(partition, attachment.syncId),
+            partition,
+            syncId: attachment.syncId,
+            value: attachment
+          });
+        });
+        stores.syncState.put({
         key: partition,
         partition,
         cursor,
         serverOffsetMs: Number(serverTime || Date.now()) - Date.now()
-      } satisfies SyncState);
+        } satisfies SyncState);
+      };
+      for (const store of [stores.notes, stores.reminders, stores.attachments]) {
+        const request = store.index('partition').openKeyCursor(IDBKeyRange.only(partition));
+        request.onerror = () => transaction.abort();
+        request.onsuccess = () => {
+          const keyCursor = request.result;
+          if (keyCursor) {
+            store.delete(keyCursor.primaryKey);
+            keyCursor.continue();
+            return;
+          }
+          cursorsRemaining--;
+          if (cursorsRemaining === 0) writeSnapshot();
+        };
+      }
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error('Could not replace the offline snapshot.'));
+      transaction.onabort = () => reject(transaction.error || new Error('Offline snapshot replacement was aborted.'));
     });
   }
 
@@ -160,15 +182,17 @@ export class OfflineStoreService {
   }
 
   async getNote(partition: string, id: number) {
-    const notes = await this.listNotes(partition);
-    return notes.find(note => note.id === id);
+    const matches = await this.notesWithId(partition, id);
+    return matches.reduce<NoteI | undefined>((best, note) => best ? this.preferNote(best, note) : note, undefined);
+  }
+
+  async getNoteBySyncId(partition: string, syncId: string) {
+    return this.getResourceValue<NoteI>('notes', partition, syncId);
   }
 
   async putNote(partition: string, note: NoteI) {
     const syncId = this.ensureNoteIdentity(note);
-    const existing = note.id != null
-      ? (await this.listRecords<NoteI>('notes', partition)).filter(record => record.value.id === note.id)
-      : [];
+    const existing = note.id != null ? await this.noteRecordsWithId(partition, note.id) : [];
     const preferred = existing.reduce<NoteI | undefined>((best, record) => {
       if (!best) return record.value;
       return this.preferNote(best, record.value);
@@ -185,9 +209,7 @@ export class OfflineStoreService {
 
   async overwriteNoteMetadata(partition: string, note: NoteI) {
     const syncId = this.ensureNoteIdentity(note);
-    const existing = note.id != null
-      ? (await this.listRecords<NoteI>('notes', partition)).filter(record => record.value.id === note.id)
-      : [];
+    const existing = note.id != null ? await this.noteRecordsWithId(partition, note.id) : [];
     const db = await this.open();
     await this.transaction(db, ['notes'], 'readwrite', stores => {
       existing
@@ -206,6 +228,10 @@ export class OfflineStoreService {
     await this.putResource('reminders', partition, syncId, reminder);
   }
 
+  async getReminder(partition: string, syncId: string) {
+    return this.getResourceValue<ReminderI>('reminders', partition, syncId);
+  }
+
   async deleteReminder(partition: string, syncId: string) {
     await this.deleteResource('reminders', partition, syncId);
   }
@@ -213,6 +239,10 @@ export class OfflineStoreService {
   async putAttachment(partition: string, attachment: NoteAttachmentI) {
     if (!attachment.syncId) return;
     await this.putResource('attachments', partition, attachment.syncId, attachment);
+  }
+
+  async getAttachment(partition: string, syncId: string) {
+    return this.getResourceValue<NoteAttachmentI>('attachments', partition, syncId);
   }
 
   async replaceSavedPlaces(partition: string, places: LocationSavedPlace[]) {
@@ -375,6 +405,14 @@ export class OfflineStoreService {
     await this.request(db.transaction(storeName, 'readwrite').objectStore(storeName).put(record));
   }
 
+  private async getResourceValue<T>(storeName: string, partition: string, syncId: string) {
+    const db = await this.open();
+    const record = await this.request<StoredResource<T> | undefined>(
+      db.transaction(storeName).objectStore(storeName).get(this.resourceKey(partition, syncId))
+    );
+    return record?.value;
+  }
+
   private async deleteResource(storeName: string, partition: string, syncId: string) {
     const db = await this.open();
     await this.request(db.transaction(storeName, 'readwrite').objectStore(storeName).delete(this.resourceKey(partition, syncId)));
@@ -383,6 +421,18 @@ export class OfflineStoreService {
   private async listValues<T>(storeName: string, partition: string) {
     const records = await this.listRecords<T>(storeName, partition);
     return records.map(record => record.value);
+  }
+
+  private async noteRecordsWithId(partition: string, id: number) {
+    const db = await this.open();
+    const records = await this.request<StoredResource<NoteI>[]>(
+      db.transaction('notes').objectStore('notes').index('partitionAndId').getAll(IDBKeyRange.only([partition, id]))
+    );
+    return records.map(record => ({ key: record.key, syncId: record.syncId, value: record.value }));
+  }
+
+  private async notesWithId(partition: string, id: number) {
+    return (await this.noteRecordsWithId(partition, id)).map(record => record.value);
   }
 
   private listRecords<T>(storeName: string, partition: string) {
@@ -458,7 +508,12 @@ export class OfflineStoreService {
             if (!db.objectStoreNames.contains(name)) {
               const store = db.createObjectStore(name, { keyPath: 'key' });
               store.createIndex('partition', 'partition', { unique: false });
+              if (name === 'notes') store.createIndex('partitionAndId', ['partition', 'value.id'], { unique: false });
             }
+          }
+          const notes = request.transaction?.objectStore('notes');
+          if (notes && !notes.indexNames.contains('partitionAndId')) {
+            notes.createIndex('partitionAndId', ['partition', 'value.id'], { unique: false });
           }
           if (!db.objectStoreNames.contains('syncState')) db.createObjectStore('syncState', { keyPath: 'key' });
         };

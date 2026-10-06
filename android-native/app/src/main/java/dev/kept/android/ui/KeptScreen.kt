@@ -52,16 +52,25 @@ private data class PendingLogin(val origin: String, val headers: String, val res
 fun KeptScreen(activity: MainActivity, app: KeptApplication) {
     val repo = app.repository
     val scope = rememberCoroutineScope()
-    var signedIn by remember { mutableStateOf(app.settings.token.isNotBlank()) }
-    var dark by remember { mutableStateOf(app.settings.darkMode) }
+    val settingsReady by app.settings.ready.collectAsStateWithLifecycle()
+    var signedIn by remember { mutableStateOf(false) }
+    var dark by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<Note?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     val incoming by activity.incoming.collectAsStateWithLifecycle()
+    LaunchedEffect(settingsReady) {
+        if (settingsReady) {
+            signedIn = app.settings.token.isNotBlank()
+            dark = app.settings.darkMode
+        }
+    }
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { error = problem.message ?: "Could not complete this action" } } }
     MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = Color(0xFFFFCF45)) else lightColorScheme(primary = Color(0xFF765900))) {
         Surface(Modifier.fillMaxSize()) {
-            if (!signedIn) LoginScreen(activity, app,
+            if (!settingsReady) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            } else if (!signedIn) LoginScreen(activity, app,
                 onLogin = { signedIn = true; repo.authenticated(); action { SyncWorker.schedule(app); repo.sync(); repo.foreground(true) } },
                 onCancel = { signedIn = true }, onError = { error = it })
             else {
@@ -117,11 +126,13 @@ private fun LoginScreen(activity: MainActivity, app: KeptApplication, onLogin: (
     var connectionStatus by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var pendingLogin by remember { mutableStateOf<PendingLogin?>(null) }
-    fun activate(login: PendingLogin) {
-        app.settings.origin = login.origin
-        app.settings.headers = login.headers
-        app.settings.token = login.response.getString("token")
-        app.settings.userId = login.response.getJSONObject("user").getLong("id")
+    suspend fun activate(login: PendingLogin) {
+        app.settings.activateSession(
+            login.origin,
+            login.headers,
+            login.response.getString("token"),
+            login.response.getJSONObject("user").getLong("id")
+        )
         pendingLogin = null
         onLogin()
     }
@@ -176,7 +187,9 @@ private fun LoginScreen(activity: MainActivity, app: KeptApplication, onLogin: (
         val displayName = login.response.getJSONObject("user").text("displayName", login.response.getJSONObject("user").text("username", "this account"))
         AlertDialog(onDismissRequest = { pendingLogin = null; onCancel() }, title = { Text("Switch Kept profile?") },
             text = { Text("Sign in as $displayName on ${login.origin}? Your cached notes and pending work stay isolated in the previous profile.") },
-            confirmButton = { TextButton(onClick = { activate(login) }) { Text("Switch profile") } },
+            confirmButton = { TextButton(onClick = { scope.launch {
+                runCatching { activate(login) }.onFailure { onError(it.message ?: "Could not activate this profile") }
+            } }) { Text("Switch profile") } },
             dismissButton = { TextButton(onClick = { pendingLogin = null; onCancel() }) { Text("Stay with previous profile") } })
     }
 }
@@ -196,8 +209,10 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
     val noteBounds = remember { mutableStateMapOf<String, Rect>() }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val reorderEnabled = canReorderNotes(filter, search)
-    val visible = NoteOrder.visible(notes, filter).filter { note -> search.isBlank() ||
-        (!note.locked && (note.title + " " + NoteFormat.displayText(note.body) + " " + note.items.joinToString { it.text("data") }).contains(search, true)) }
+    var visible by remember { mutableStateOf(emptyList<Note>()) }
+    LaunchedEffect(notes, filter, search) {
+        visible = withContext(Dispatchers.Default) { searchVisibleNotes(notes, filter, search) }
+    }
     val remindersByNote = remember(reminders, notes) { ReminderFormat.indexByNote(notes, reminders) }
     val selectedNotes = notes.filter { it.syncId in selectedIds }
     val canTrashSelected = selectedNotes.isNotEmpty() && selectedNotes.all { it.owner == app.settings.userId }
@@ -458,6 +473,15 @@ private fun NoteCard(app: KeptApplication, note: Note, reminder: JSONObject?, se
 
 internal fun canReorderNotes(filter: String, search: String) = search.isBlank() && filter in setOf("home", "pinned")
 
+internal fun searchVisibleNotes(notes: List<Note>, filter: String, search: String): List<Note> {
+    val visible = NoteOrder.visible(notes, filter)
+    if (search.isBlank()) return visible
+    return visible.filter { note ->
+        !note.locked && (note.title + " " + NoteFormat.displayText(note.body) + " " + note.items.joinToString { it.text("data") })
+            .contains(search, true)
+    }
+}
+
 internal fun moveDraggedNote(visible: List<Note>, source: Note, targetId: String): List<String>? {
     val from = visible.indexOfFirst { it.syncId == source.syncId }
     val to = visible.indexOfFirst { it.syncId == targetId }
@@ -471,7 +495,7 @@ internal fun moveDraggedNote(visible: List<Note>, source: Note, targetId: String
 internal fun MediaImage(app: KeptApplication, path: String) {
     var bitmap by remember(app.settings.profile, path) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(app.settings.profile, path) {
-        bitmap = Media(app).preview(path)
+        bitmap = Media(app).preview(path, maxDimension = 768)
     }
     bitmap?.let { Image(it.asImageBitmap(), "Note image", Modifier.fillMaxWidth().heightIn(max = 240.dp)) }
 }

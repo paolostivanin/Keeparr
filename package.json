@@ -7,6 +7,7 @@
     "client": "set NG_SASS_VERBOSE_DEPRECATIONS=0&& ng serve --host 0.0.0.0 --port 6767 --proxy-config proxy.conf.json",
     "api": "nodemon --no-deprecation server/server.js",
     "build": "ng build && npm run purgecss",
+    "benchmark:web": "node test-fixtures/performance/web-ui-check.mjs",
     "test:sync": "node server/sync-smoke.test.js",
     "test:native": "node server/native-client.test.js",
     "test:reminders": "node --test server/reminder-recurrence.test.js",

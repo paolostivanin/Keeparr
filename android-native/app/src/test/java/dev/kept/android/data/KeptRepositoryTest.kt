@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.collect
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -38,6 +39,7 @@ import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
 class KeptRepositoryTest {
@@ -80,6 +82,26 @@ class KeptRepositoryTest {
         assertEquals(0L, pending.baseRevision)
     }
 
+    @Test fun reminderWritesDoNotReparseOrReemitTheNoteCollection() = runBlocking {
+        val note = Note.create(profile.userId)
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.toString()))
+        val initial = CompletableDeferred<List<Note>>()
+        val emissions = AtomicInteger()
+        val collector = launch {
+            repository.notes().collect { value ->
+                emissions.incrementAndGet()
+                initial.complete(value)
+            }
+        }
+        assertEquals(listOf(note.syncId), withTimeoutOrNull(2000) { initial.await() }?.map { it.syncId })
+
+        repository.store.put(Record(profile.profile, "reminder", "reminder-1", "{\"syncId\":\"reminder-1\"}"))
+        delay(150)
+
+        assertEquals("unrelated Room rows do not trigger note decoding/projection emissions", 1, emissions.get())
+        collector.cancel()
+    }
+
     @Test fun bulkTrashQueuesOwnedNotesAndRestoreClearsTheirTrashedState() = runBlocking {
         val notes = listOf(
             Note(Note.create(profile.userId).raw.put("noteTitle", "First").put("bgColor", "#5b2121")),
@@ -102,8 +124,10 @@ class KeptRepositoryTest {
         val original = Note(Note.create(profile.userId).raw.put("id", 55).put("revision", 4))
         repository.save(original, synchronize = false)
         val editor = NoteEditorViewModel(repository, original)
+        val initialGeneration = editor.draftGeneration.value
         editor.change { it.put("noteTitle", "First keystroke") }
         editor.change { it.put("noteTitle", "Latest draft") }
+        assertEquals(initialGeneration + 2, editor.draftGeneration.value)
         withTimeoutOrNull(5_000) {
             while (editor.localSaving.value) delay(10)
         } ?: error("local editor persistence did not finish")
@@ -119,6 +143,7 @@ class KeptRepositoryTest {
         editor.applyIncoming(acceptedSnapshot)
         assertTrue("a cached draft with a newer local revision is not an acknowledgement", editor.dirty.value)
         editor.acceptServerSnapshot(acceptedSnapshot)
+        assertTrue("accepted snapshots advance the effect generation", editor.draftGeneration.value > initialGeneration + 2)
         assertEquals(null, editor.incoming.value)
         assertFalse(editor.dirty.value)
         assertEquals(5L, editor.draft.value.getLong("revision"))

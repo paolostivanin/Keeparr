@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit
 class SyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
         val app = applicationContext as KeptApplication
+        app.settings.awaitReady()
         val profile = inputData.getString(PROFILE_KEY)
         if (profile != null && profile != profileKey(app.settings.profile)) return Result.success()
         if (app.settings.token.isEmpty()) return Result.success()

@@ -9,6 +9,12 @@ import { OfflineStoreService, OutboxEntry } from './offline-store.service';
 
 export type OfflineSyncState = 'offline' | 'syncing' | 'saved' | 'error';
 
+export interface OfflineCacheChange {
+  notesChanged: boolean;
+  remindersChanged: boolean;
+  attachmentsChanged: boolean;
+}
+
 type SyncSnapshot = {
   notes: NoteI[];
   reminders: ReminderI[];
@@ -28,7 +34,7 @@ type SyncChange = {
 @Injectable({ providedIn: 'root' })
 export class OfflineSyncService {
   readonly state$ = new BehaviorSubject<OfflineSyncState>(navigator.onLine ? 'saved' : 'offline');
-  readonly cacheChanged$ = new Subject<void>();
+  readonly cacheChanged$ = new Subject<OfflineCacheChange>();
   private readonly apiUrl = environment.apiUrl;
   private readonly syncRequestTimeoutMs = 12000;
   private degradedUntil = 0;
@@ -143,7 +149,7 @@ export class OfflineSyncService {
       snapshot.serverTime || Date.now()
     );
     await this.cacheSnapshotMedia(snapshot.notes || []);
-    this.cacheChanged$.next();
+    this.cacheChanged$.next({ notesChanged: true, remindersChanged: true, attachmentsChanged: true });
   }
 
   private async flushOutbox() {
@@ -183,7 +189,7 @@ export class OfflineSyncService {
         response.snapshot.serverTime || response.serverTime || Date.now()
       );
       await this.cacheSnapshotMedia(response.snapshot.notes || []);
-      this.cacheChanged$.next();
+      if (completed.length) this.cacheChanged$.next({ notesChanged: true, remindersChanged: true, attachmentsChanged: true });
     } else if (response.serverTime) {
       const state = await this.store.getSyncState(this.currentPartition);
       await this.store.setSyncState(this.currentPartition, state.cursor, response.serverTime);
@@ -226,7 +232,7 @@ export class OfflineSyncService {
       await this.store.putNote(this.currentPartition, updatedNote);
       await this.store.deleteBlob(this.currentPartition, payload.blobKey);
       await this.store.removeOutbox([entry.key]);
-      this.cacheChanged$.next();
+      this.cacheChanged$.next({ notesChanged: true, remindersChanged: false, attachmentsChanged: true });
     }
   }
 
@@ -234,6 +240,7 @@ export class OfflineSyncService {
     if (!this.currentPartition) return;
     let state = await this.store.getSyncState(this.currentPartition);
     let hasMore = true;
+    const changed: OfflineCacheChange = { notesChanged: false, remindersChanged: false, attachmentsChanged: false };
     while (hasMore) {
       const response = await this.withTimeout(firstValueFrom(this.http.get<{
         changes: SyncChange[];
@@ -244,28 +251,52 @@ export class OfflineSyncService {
         headers: this.auth.authHeaders(),
         params: { cursor: String(state.cursor), limit: '500' }
       })), this.syncRequestTimeoutMs);
-      for (const change of response.changes || []) await this.applyChange(change);
+      for (const change of response.changes || []) {
+        if (!(await this.applyChange(change))) continue;
+        if (change.resourceType === 'note') changed.notesChanged = true;
+        else if (change.resourceType === 'reminder') changed.remindersChanged = true;
+        else changed.attachmentsChanged = true;
+      }
       await this.store.setSyncState(this.currentPartition, response.cursor || state.cursor, response.serverTime);
       state = await this.store.getSyncState(this.currentPartition);
       hasMore = !!response.hasMore;
     }
-    this.cacheChanged$.next();
+    if (changed.notesChanged || changed.remindersChanged || changed.attachmentsChanged) this.cacheChanged$.next(changed);
   }
 
   private async applyChange(change: SyncChange) {
-    if (!this.currentPartition) return;
+    if (!this.currentPartition) return false;
     if (change.resourceType === 'note') {
-      if (change.operation === 'delete') await this.store.deleteNote(this.currentPartition, change.resourceSyncId);
-      else if (change.payload) await this.store.putNote(this.currentPartition, change.payload as NoteI);
-      return;
+      const existing = await this.store.getNoteBySyncId(this.currentPartition, change.resourceSyncId);
+      if (change.operation === 'delete') {
+        if (!existing) return false;
+        await this.store.deleteNote(this.currentPartition, change.resourceSyncId);
+        return true;
+      }
+      if (!change.payload || JSON.stringify(existing) === JSON.stringify(change.payload)) return false;
+      await this.store.putNote(this.currentPartition, change.payload as NoteI);
+      return true;
     }
     if (change.resourceType === 'reminder') {
-      if (change.operation === 'delete') await this.store.deleteReminder(this.currentPartition, change.resourceSyncId);
-      else if (change.payload) await this.store.putReminder(this.currentPartition, change.payload as ReminderI);
-      return;
+      const existing = await this.store.getReminder(this.currentPartition, change.resourceSyncId);
+      if (change.operation === 'delete') {
+        if (!existing) return false;
+        await this.store.deleteReminder(this.currentPartition, change.resourceSyncId);
+        return true;
+      }
+      if (!change.payload || JSON.stringify(existing) === JSON.stringify(change.payload)) return false;
+      await this.store.putReminder(this.currentPartition, change.payload as ReminderI);
+      return true;
     }
-    if (change.operation === 'delete') await this.store.deleteAttachment(this.currentPartition, change.resourceSyncId);
-    else if (change.payload) await this.store.putAttachment(this.currentPartition, change.payload as NoteAttachmentI);
+    const existing = await this.store.getAttachment(this.currentPartition, change.resourceSyncId);
+    if (change.operation === 'delete') {
+      if (!existing) return false;
+      await this.store.deleteAttachment(this.currentPartition, change.resourceSyncId);
+      return true;
+    }
+    if (!change.payload || JSON.stringify(existing) === JSON.stringify(change.payload)) return false;
+    await this.store.putAttachment(this.currentPartition, change.payload as NoteAttachmentI);
+    return true;
   }
 
   private isOfflineError(error: unknown) {

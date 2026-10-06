@@ -43,12 +43,37 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     private var foreground = false
     private var joinedNote: Long? = null
 
-    fun notes(): Flow<List<Note>> = store.observe(settings.profile, "note").map { rows -> rows.map { Note(JSONObject(it.payload)) }.sortedWith(NoteOrder.comparator) }
-    fun reminders(): Flow<List<JSONObject>> = store.observe(settings.profile, "reminder").map { rows -> rows.map { JSONObject(it.payload) } }
-    fun occurrences(): Flow<List<JSONObject>> = store.observe(settings.profile, "occurrence").map { rows -> rows.map { JSONObject(it.payload) } }
+    fun restoreConnectionState() {
+        val message = settings.message
+        status.value = message.takeIf { it.isNotBlank() }?.let { "Saved on device · $it" } ?: "Saved on device"
+        connectionState.value = when {
+            message.contains("session expired", true) -> ConnectionState.SessionExpired(message)
+            message.contains("access denied", true) -> ConnectionState.GatewayDenied(message)
+            message.contains("certificate", true) -> ConnectionState.CertificateAttention(message)
+            message.contains("protocol", true) -> ConnectionState.Incompatible(message)
+            settings.token.isBlank() -> ConnectionState.Configured
+            else -> ConnectionState.Authenticated
+        }
+    }
+
+    fun notes(): Flow<List<Note>> = store.observe(settings.profile, "note")
+        .distinctUntilChanged()
+        .map { rows -> rows.map { Note(JSONObject(it.payload)) }.sortedWith(NoteOrder.comparator) }
+        .flowOn(Dispatchers.Default)
+    fun reminders(): Flow<List<JSONObject>> = store.observe(settings.profile, "reminder")
+        .distinctUntilChanged()
+        .map { rows -> rows.map { JSONObject(it.payload) } }
+        .flowOn(Dispatchers.Default)
+    fun occurrences(): Flow<List<JSONObject>> = store.observe(settings.profile, "occurrence")
+        .distinctUntilChanged()
+        .map { rows -> rows.map { JSONObject(it.payload) } }
+        .flowOn(Dispatchers.Default)
     fun conflicts(): Flow<List<Outbox>> = store.conflicts(settings.profile)
     suspend fun note(id: String): Note? = store.record(settings.profile, "note", id)?.let { Note(JSONObject(it.payload)) }
-    fun observeNote(id: String): Flow<Note?> = store.observeRecord(settings.profile, "note", id).map { it?.let { row -> Note(JSONObject(row.payload)) } }
+    fun observeNote(id: String): Flow<Note?> = store.observeRecord(settings.profile, "note", id)
+        .distinctUntilChanged()
+        .map { it?.let { row -> Note(JSONObject(row.payload)) } }
+        .flowOn(Dispatchers.Default)
 
     suspend fun save(note: Note, synchronize: Boolean = true, profile: String = settings.profile) = editMutex.withLock {
         if (synchronize && profile != settings.profile) error("This draft belongs to a different Kept profile.")
@@ -870,11 +895,13 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         foreground(false)
         val profile = settings.profile
         settings.token = ""
+        settings.awaitWrites()
         app.reminders.cancelAll()
         Media(app).clearProfile(profile, pendingUploads = true)
         database.withTransaction { store.clearRecords(profile); store.clearOutbox(profile); store.clearDelivery(profile); store.clearCursor(profile) }
         SyncWorker.cancel(app)
         settings.userId = 0
+        settings.awaitWrites()
         connectionState.value = ConnectionState.Configured
         app.refreshWidgets(app)
     } }

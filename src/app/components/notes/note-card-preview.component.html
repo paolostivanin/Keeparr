@@ -1,0 +1,127 @@
+<div class="note-main" [class.note-main--link-only]="meta.linkOnly"
+  [class.note-main--untitled]="!presentation.hasVisibleTitle && !meta.linkOnly"
+  [ngStyle]="{'background-color': note.bgColor, 'border-color': note.bgColor, 'background-image': note.bgImage, 'color': meta.textColor}">
+  @if (ownerIsOtherUser()) {
+    <div class="shared-indicator H pop" [attr.data-pop]="'Shared by ' + (note.ownerDisplayName || note.ownerUsername || 'another user')">
+      @if (note.ownerAvatarDataUrl) {
+        <img [src]="note.ownerAvatarDataUrl" alt="Owner avatar">
+      } @else {
+        <div class="avatar-fallback animal-{{note.ownerAvatarPreset || 'cat'}}"><span class="head"><i></i></span></div>
+      }
+      @if (ownerOnline) { <div class="mini-glyph online"></div> }
+    </div>
+  }
+
+  <div class="note-preview-open" (click)="open.emit(note)">
+    @let view = presentation;
+    @if (lockedPreviewHidden) {
+      @if (view.hasVisibleTitle) {
+        <div class="title"><span [innerHTML]="note.noteTitle"></span></div>
+      }
+      <div class="locked-note-preview">
+        <span class="material-symbols-outlined">lock</span><span>Locked note</span>
+      </div>
+    } @else if (meta.linkOnly) {
+      <div class="link-preview-stack link-preview-stack--only">
+        @for (url of meta.visibleUrls; track url) {
+          <app-link-preview [url]="url" [cardMode]="true"></app-link-preview>
+        }
+      </div>
+      @if (meta.hiddenLinkCount) {
+        <div class="link-overflow-chip">+{{meta.hiddenLinkCount}} link{{meta.hiddenLinkCount === 1 ? '' : 's'}}</div>
+      }
+    } @else {
+      @if (view.hasVisibleTitle) {
+        <div class="title"><span [innerHTML]="note.noteTitle"></span></div>
+      }
+      <div class="note-images">
+        @for (image of note.images || []; track trackImage($index, image)) {
+          @if (image.placement === 'top') {
+            <img [src]="imageSrc(image.dataUrl)" [alt]="image.name" decoding="async"
+              (contextmenu)="downloadImageFromEvent(image, $event)">
+          }
+        }
+      </div>
+      @if (!note.isCbox || view.isHybrid) {
+        <section class="body-segments" [class.min]="(note.noteBody || '').length > 68">
+          @for (segment of meta.bodySegments; track trackBodySegment($index, segment)) {
+            @if (segment.type === 'html') {
+              <div class="body" [innerHTML]="segment.value" (contextmenu)="downloadInlineImage.emit($event)"></div>
+            } @else {
+              <div class="link-previews"><app-link-preview [url]="segment.value"></app-link-preview></div>
+            }
+          }
+          @if (meta.hiddenLinkCount) {
+            <div class="link-overflow-chip">+{{meta.hiddenLinkCount}} link{{meta.hiddenLinkCount === 1 ? '' : 's'}}</div>
+          }
+        </section>
+      }
+      @if (note.isCbox) {
+        <div class="cboxes min">
+          @for (checkbox of view.checklistPreview.items; track checkbox.id) {
+            <div class="cbox-container overview-cbox-row">
+              <div class="cbox-icon" [class.done]="checkbox.done"
+                [style.--overview-cbox-indent.px]="checkboxIndentPx(checkbox)"
+                (touchstart)="$event.stopPropagation()" (touchend)="toggleCheckboxFromEvent(checkbox, $event)"
+                (mousedown)="$event.stopPropagation()" (mouseup)="toggleCheckboxFromEvent(checkbox, $event)"
+                (click)="$event.stopPropagation()"></div>
+              <div class="cbox-note-container min overview-cbox-note-container">
+                <div class="cbox-note overview-cbox-note" [attr.data-id]="checkbox.id"
+                  [class.cbox-done]="checkbox.done" [innerHTML]="checkbox.data"></div>
+              </div>
+              <div class="cbox-cancel-icon min H" (touchstart)="$event.stopPropagation()"
+                (touchend)="removeCheckboxFromEvent(checkbox, $event)" (mousedown)="$event.stopPropagation()"
+                (mouseup)="removeCheckboxFromEvent(checkbox, $event)" (click)="$event.stopPropagation()"></div>
+            </div>
+          }
+          @if (view.checklistPreview.more) { <div class="overview-cbox-more">+{{view.checklistPreview.more}} more</div> }
+          @if (moveCompletedChecklistItemsToBottom && view.completedChecklistCount) {
+            <div class="hr min"></div>
+            <div class="cbox-done-container min">
+              <div class="cbox-arrow"></div><span>({{view.completedChecklistCount}}) Completed items</span>
+            </div>
+          }
+        </div>
+      }
+      <div class="note-images">
+        @for (image of note.images || []; track trackImage($index, image)) {
+          @if (image.placement === 'bottom') {
+            <img [src]="imageSrc(image.dataUrl)" [alt]="image.name" decoding="async"
+              (contextmenu)="downloadImageFromEvent(image, $event)">
+          }
+        }
+      </div>
+    }
+  </div>
+</div>
+
+<div class="labels-container min">
+  @for (label of note.labels || []; track trackLabel($index, label)) {
+    @if (label.added) {
+      <div class="label-container">
+        <div class="label"><span>{{label.name}}</span>
+          <div class="cancel-icon pop" data-pop="Remove Label" (click)="removeLabelFromEvent(label, $event)"></div>
+        </div>
+      </div>
+    }
+  }
+</div>
+
+@if ((note.attachments || []).length && !lockedPreviewHidden) {
+  <div class="attachments-list min">
+    @for (attachment of note.attachments || []; track trackAttachment($index, attachment)) {
+      <div class="attachment-card min" role="button" tabindex="0"
+        (mousedown)="$event.stopPropagation()" (click)="downloadAttachmentFromEvent(attachment, $event)"
+        (keydown.enter)="downloadAttachmentFromEvent(attachment, $event)"
+        (keydown.space)="downloadAttachmentFromEvent(attachment, $event)">
+        <span class="material-symbols-outlined attachment-type">{{attachmentIcon(attachment)}}</span>
+        <span class="attachment-name">{{attachment.originalName}}</span>
+        <span class="attachment-size">{{formatFileSize(attachment.fileSize)}}</span>
+        <button type="button" class="attachment-download H" aria-label="Download attachment" title="Download attachment"
+          (click)="downloadAttachmentFromEvent(attachment, $event)">
+          <span class="material-symbols-outlined">download</span>
+        </button>
+      </div>
+    }
+  </div>
+}

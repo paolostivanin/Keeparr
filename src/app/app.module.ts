@@ -7,6 +7,9 @@ import { MainComponent } from './components/main/main.component';
 import { NavComponent } from './components/sidenav/sidenav.component';
 import { NavbarComponent } from './components/navbar/navbar.component';
 import { NotesComponent } from './components/notes/notes.component';
+import { NoteCardPreviewComponent } from './components/notes/note-card-preview.component';
+import { NoteCardControlsComponent } from './components/notes/note-card-controls.component';
+import { NoteCardActionsComponent } from './components/notes/note-card-actions.component';
 import { InputComponent } from './components/input/input.component';
 import { ph } from './pipes/ph.pipe';
 import { AppRoutingModule } from './app-routing.module';
@@ -31,6 +34,9 @@ import { ConnectionHeadersInterceptor } from './services/connection-headers.inte
         NavComponent,
         NavbarComponent,
         NotesComponent,
+        NoteCardPreviewComponent,
+        NoteCardControlsComponent,
+        NoteCardActionsComponent,
         InputComponent,
         ph,
         CboxSortPipe,

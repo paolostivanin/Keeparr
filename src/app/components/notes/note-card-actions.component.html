@@ -1,0 +1,63 @@
+@if (!note.trashed) {
+  @if (displayedReminder; as reminder) {
+    <div class="reminder-chip" [class.reminder-chip--past]="reminder.status === 'fired'"
+      (mousedown)="$event.stopPropagation()" (click)="reminderClicked($event)">
+      <img src="./assets/images/svg/clock.svg" alt="" width="12" height="12">
+      @if (reminder.dueAtUtc) {
+        {{displayedReminderLabel}}
+      } @else if (reminder.locationName) {
+        📍 {{reminder.locationName}}
+      }
+    </div>
+  }
+  @if (reminderPickerOpen && displayedReminder) {
+    <div class="reminder-picker reminder-picker--inline"
+      (mousedown)="$event.stopPropagation()" (mouseup)="$event.stopPropagation()" (click)="$event.stopPropagation()">
+      @if (displayedReminder.status === 'fired') {
+        <button type="button" class="rp-clear" (click)="rescheduleClicked($event)">Set new reminder</button>
+      }
+      <button type="button" class="rp-clear" (click)="clearReminderClicked($event)">Remove reminder</button>
+    </div>
+  }
+  <div class="icons-container min">
+    <div class="icons">
+      <div class="alarm H pop" data-pop="Remind me" [class.alarm-active]="!!activeReminder"
+        (mousedown)="$event.stopPropagation()" (click)="reminderClicked($event)"></div>
+      @if (pendingDateLabel) {
+        <div class="date-confirm-pill date-confirm-pill--note"
+          (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
+          role="region" aria-label="Confirm reminder date">
+          <span class="dc-text"><strong>{{pendingDateLabel}}</strong></span>
+          <button type="button" class="dc-cancel" (click)="cancelPendingDate.emit()">Change</button>
+          <button type="button" class="dc-confirm" (click)="confirmPendingDate.emit()">Pick time →</button>
+        </div>
+      }
+      <div #collaboratorMenuButton class="colab H pop" data-pop="Collaborator"
+        (click)="openCollaboratorsClicked(collaboratorMenuButton)"></div>
+      <div #colorMenuButton data-toolTipType="colorMenu" data-pop="Background Options"
+        class="color H pop" (click)="openColorMenuClicked(colorMenuButton)"></div>
+      <div class="image H pop" data-pop="Add image" (click)="openImagePickerClicked($event)"></div>
+      <div [ngClass]="note.archived ? 'unarchive' : 'archive'" class="H pop"
+        [attr.data-pop]="note.archived ? 'Unarchive' : 'Archive'" (click)="toggleArchive.emit(note)"></div>
+      <div data-toolTipType="moreMenu" #moreMenuButton class="more H pop" data-pop="More"
+        (click)="openMoreMenuClicked(moreMenuButton)"></div>
+    </div>
+  </div>
+  @if (note.archived) {
+    <div class="icons-container min archive-actions" (mousedown)="$event.stopPropagation()" (touchstart)="$event.stopPropagation()">
+      <div class="icons">
+        <div class="unarchive H pop" data-pop="Unarchive" (click)="$event.stopPropagation(); toggleArchive.emit(note)"></div>
+      </div>
+    </div>
+  }
+} @else {
+  <div class="trash-countdown"><img src="./assets/images/svg/exclaimwarn.svg" alt="warn"> {{trashCountdownLabel}} before permanent deletion</div>
+  <div class="icons-container min trash-actions" (mousedown)="$event.stopPropagation()" (touchstart)="$event.stopPropagation()">
+    <div class="icons">
+      <div class="delete H pop" data-pop="Delete forever" (click)="removeForeverClicked($event)"></div>
+      <div class="restore material-restore H pop" data-pop="Restore" (click)="restoreClicked($event)">
+        <span class="material-symbols-outlined">undo</span>
+      </div>
+    </div>
+  </div>
+}

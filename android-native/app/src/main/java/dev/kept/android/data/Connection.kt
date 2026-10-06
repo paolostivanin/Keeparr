@@ -10,16 +10,26 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.SharedPreferencesMigration
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.kept.android.BuildConfig
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -33,6 +43,7 @@ import java.security.Principal
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -50,6 +61,16 @@ sealed interface ConnectionState {
 }
 
 interface ConnectionProfile {
+    val ready: StateFlow<Boolean> get() = MutableStateFlow(true)
+    suspend fun initialize() {}
+    suspend fun awaitReady() {}
+    suspend fun awaitWrites() {}
+    suspend fun activateSession(origin: String, headers: String, token: String, userId: Long) {
+        this.origin = origin
+        this.headers = headers
+        this.token = token
+        this.userId = userId
+    }
     var origin: String
     var alias: String
     fun aliasFor(server: String): String
@@ -96,24 +117,114 @@ private val Context.connectionDataStore by preferencesDataStore(
     produceMigrations = { context -> listOf(SharedPreferencesMigration(context, "connection")) }
 )
 
-class ConnectionSettings(context: Context, dataStoreOverride: DataStore<Preferences>? = null) : ConnectionProfile {
+class ConnectionSettings(
+    context: Context,
+    dataStoreOverride: DataStore<Preferences>? = null,
+    private val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+) : ConnectionProfile {
     private val dataStore = dataStoreOverride ?: context.connectionDataStore
-    @Volatile private var cache: Preferences = runBlocking(Dispatchers.IO) { dataStore.data.first() }
+    private val persistenceMutex = Mutex()
+    private val _ready = MutableStateFlow(false)
+    override val ready: StateFlow<Boolean> = _ready.asStateFlow()
+    @Volatile private var cache: Preferences = emptyPreferences()
+    @Volatile private var originValue = ""
+    @Volatile private var userIdValue = 0L
+    @Volatile private var tokenValue = ""
+    @Volatile private var messageValue = ""
+    @Volatile private var darkModeValue = false
+    private val aliases = ConcurrentHashMap<String, String>()
+    private val aliasRevisions = ConcurrentHashMap<String, Long>()
+    private val gatewayHeaders = ConcurrentHashMap<String, String>()
+    private val pendingWriteLock = Any()
+    private val pendingWrites = mutableSetOf<Job>()
     private val originPreference = stringPreferencesKey("origin")
     private val userIdPreference = longPreferencesKey("userId")
     private val tokenPreference = stringPreferencesKey("token")
     private val messagePreference = stringPreferencesKey("message")
     private val darkModePreference = booleanPreferencesKey("darkMode")
 
+    override suspend fun initialize() = withContext(Dispatchers.IO) {
+        if (_ready.value) return@withContext
+        persistenceMutex.withLock {
+            if (_ready.value) return@withLock
+            val stored = try {
+                dataStore.data.first()
+            } catch (error: Exception) {
+                Log.e("KeptSettings", "Could not initialize saved connection settings.", error)
+                messageValue = "Saved connection settings could not be loaded. Cached notes were retained."
+                _ready.value = true
+                return@withLock
+            }
+            cache = stored
+            originValue = stored[originPreference] ?: ""
+            userIdValue = stored[userIdPreference] ?: 0
+            tokenValue = decrypt(stored[tokenPreference] ?: "")
+            messageValue = stored[messagePreference] ?: ""
+            darkModeValue = stored[darkModePreference] ?: false
+            aliases.clear()
+            aliasRevisions.clear()
+            gatewayHeaders.clear()
+            stored.asMap().forEach { (key, value) ->
+                when {
+                    key.name.startsWith("alias_") -> (value as? String)?.let { aliases[key.name.removePrefix("alias_")] = it }
+                    key.name.startsWith("alias_revision_") -> (value as? Long)?.let { aliasRevisions[key.name.removePrefix("alias_revision_")] = it }
+                    key.name.startsWith("headers_") -> (value as? String)?.let { gatewayHeaders[key.name.removePrefix("headers_")] = decrypt(it) }
+                }
+            }
+            _ready.value = true
+        }
+    }
+
+    override suspend fun awaitReady() {
+        if (!_ready.value) ready.first { it }
+    }
+
+    override suspend fun awaitWrites() {
+        while (true) {
+            val writes = synchronized(pendingWriteLock) { pendingWrites.toList() }
+            if (writes.isEmpty()) return
+            writes.joinAll()
+        }
+    }
+
     private fun update(block: MutablePreferences.() -> Unit) {
-        cache = runBlocking(Dispatchers.IO) {
-            dataStore.edit { values -> values.block() }
+        synchronized(pendingWriteLock) {
+            val write = applicationScope.launch(Dispatchers.IO) {
+                try {
+                    persistenceMutex.withLock {
+                        cache = dataStore.edit { values -> values.block() }
+                    }
+                } catch (error: Exception) {
+                    Log.e("KeptSettings", "Could not persist connection settings.", error)
+                }
+            }
+            pendingWrites += write
+            write.invokeOnCompletion { synchronized(pendingWriteLock) { pendingWrites.remove(write) } }
+        }
+    }
+
+    override suspend fun activateSession(origin: String, headers: String, token: String, userId: Long) = withContext(Dispatchers.IO) {
+        persistenceMutex.withLock {
+            val updated = dataStore.edit { values ->
+                values[originPreference] = origin
+                values[userIdPreference] = userId
+                values[tokenPreference] = encrypt(token)
+                values[headersPreference(origin)] = encrypt(headers)
+                values[messagePreference] = ""
+            }
+            cache = updated
+            originValue = origin
+            userIdValue = userId
+            tokenValue = token
+            messageValue = ""
+            gatewayHeaders[originKey(origin)] = headers
+            _ready.value = true
         }
     }
 
     override var origin: String
-        get() = cache[originPreference] ?: ""
-        set(value) = update { this[originPreference] = value }
+        get() = originValue
+        set(value) { originValue = value; update { this[originPreference] = value } }
     private fun originKey(value: String): String {
         val normalized = runCatching { value.trim().toHttpUrl().newBuilder().encodedPath("/").query(null).build().toString().trimEnd('/') }
             .getOrDefault(value.trim().trimEnd('/'))
@@ -123,25 +234,31 @@ class ConnectionSettings(context: Context, dataStoreOverride: DataStore<Preferen
     private fun aliasRevisionPreference(server: String) = longPreferencesKey("alias_revision_${originKey(server)}")
     private fun headersPreference(server: String) = stringPreferencesKey("headers_${originKey(server)}")
 
-    override fun aliasFor(server: String) = cache[aliasPreference(server)] ?: ""
+    override fun aliasFor(server: String) = aliases[originKey(server)] ?: cache[aliasPreference(server)] ?: ""
     override fun setAliasFor(server: String, value: String) {
         val aliasKey = aliasPreference(server)
         val revisionKey = aliasRevisionPreference(server)
+        val key = originKey(server)
+        aliases[key] = value
+        aliasRevisions[key] = (aliasRevisions[key] ?: cache[revisionKey] ?: 0) + 1
         update {
             this[aliasKey] = value
             this[revisionKey] = (this[revisionKey] ?: 0) + 1
         }
     }
-    override fun aliasRevisionFor(server: String) = cache[aliasRevisionPreference(server)] ?: 0
+    override fun aliasRevisionFor(server: String) = aliasRevisions[originKey(server)] ?: cache[aliasRevisionPreference(server)] ?: 0
     override var alias: String get() = aliasFor(origin); set(value) = setAliasFor(origin, value)
-    override fun headersFor(server: String) = decrypt(cache[headersPreference(server)] ?: "")
-    override fun setHeadersFor(server: String, value: String) { update { this[headersPreference(server)] = encrypt(value) } }
-    override var userId: Long get() = cache[userIdPreference] ?: 0; set(value) = update { this[userIdPreference] = value }
+    override fun headersFor(server: String) = gatewayHeaders[originKey(server)] ?: ""
+    override fun setHeadersFor(server: String, value: String) {
+        gatewayHeaders[originKey(server)] = value
+        update { this[headersPreference(server)] = encrypt(value) }
+    }
+    override var userId: Long get() = userIdValue; set(value) { userIdValue = value; update { this[userIdPreference] = value } }
     override val profile: String get() = "$origin#$userId"
-    override var token: String get() = decrypt(cache[tokenPreference] ?: ""); set(value) = update { this[tokenPreference] = encrypt(value) }
+    override var token: String get() = tokenValue; set(value) { tokenValue = value; update { this[tokenPreference] = encrypt(value) } }
     override var headers: String get() = headersFor(origin); set(value) = setHeadersFor(origin, value)
-    override var message: String get() = cache[messagePreference] ?: ""; set(value) = update { this[messagePreference] = value }
-    override var darkMode: Boolean get() = cache[darkModePreference] ?: false; set(value) = update { this[darkModePreference] = value }
+    override var message: String get() = messageValue; set(value) { messageValue = value; update { this[messagePreference] = value } }
+    override var darkMode: Boolean get() = darkModeValue; set(value) { darkModeValue = value; update { this[darkModePreference] = value } }
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         return (store.getKey("kept_session", null) as? SecretKey) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
@@ -161,7 +278,8 @@ class ConnectionSettings(context: Context, dataStoreOverride: DataStore<Preferen
             val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12))) }
             String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)))
         } catch (_: Exception) {
-            update { this[messagePreference] = "Saved connection credentials could not be decrypted. Sign in again and re-enter gateway headers if needed; cached notes were retained." }
+            messageValue = "Saved connection credentials could not be decrypted. Sign in again and re-enter gateway headers if needed; cached notes were retained."
+            update { this[messagePreference] = messageValue }
             ""
         }
     }

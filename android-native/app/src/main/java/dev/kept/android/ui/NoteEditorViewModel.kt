@@ -28,6 +28,8 @@ class NoteEditorViewModel(
     private val profile = repository.settings.profile
     private val _draft = MutableStateFlow(initial.raw.copyJson())
     val draft = _draft.asStateFlow()
+    private val _draftGeneration = MutableStateFlow(0L)
+    val draftGeneration = _draftGeneration.asStateFlow()
     private val startedAsNew = initial.id <= 0
     private var serverBase = Note(initial.raw.copyJson())
     private val _dirty = MutableStateFlow(false)
@@ -62,14 +64,16 @@ class NoteEditorViewModel(
     @Synchronized fun change(block: (JSONObject) -> Unit) {
         val next = _draft.value.copyJson().also(block)
         _draft.value = next
-        _dirty.value = !EditorSnapshotPolicy.sameEditableContent(Note(next), serverBase)
+        _draftGeneration.value += 1
+        _dirty.value = true
         persistLocally(next)
     }
 
     @Synchronized fun replace(value: JSONObject) {
         val next = value.copyJson()
         _draft.value = next
-        _dirty.value = !EditorSnapshotPolicy.sameEditableContent(Note(next), serverBase)
+        _draftGeneration.value += 1
+        _dirty.value = true
         persistLocally(next)
     }
 
@@ -94,6 +98,7 @@ class NoteEditorViewModel(
         }
         EditorSnapshotPolicy.apply(local, incoming, dirty = false)?.let {
             _draft.value = it.raw
+            _draftGeneration.value += 1
             serverBase = incoming
             _incoming.value = null
             _dirty.value = !EditorSnapshotPolicy.sameEditableContent(Note(it.raw), serverBase)
@@ -108,6 +113,7 @@ class NoteEditorViewModel(
         val rebased = if (noLaterEditThanAcceptedOperation) accepted.raw.copyJson()
             else _draft.value.copyJson().put("id", accepted.id).put("revision", accepted.revision)
         _draft.value = rebased
+        _draftGeneration.value += 1
         _dirty.value = !noLaterEditThanAcceptedOperation && !EditorSnapshotPolicy.sameEditableContent(Note(rebased), accepted)
         if (_incoming.value?.revision?.let { it <= accepted.revision } == true) _incoming.value = null
     }

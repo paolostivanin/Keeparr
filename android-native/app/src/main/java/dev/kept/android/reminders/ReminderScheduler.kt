@@ -350,12 +350,13 @@ private fun deliveryKey(occurrence: JSONObject, profile: String): String {
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext as KeptApplication
-        if (intent.getStringExtra("profile") != app.settings.profile || app.settings.token.isEmpty()) return
         val raw = runCatching { JSONObject(intent.getStringExtra("occurrence")!!) }.getOrNull() ?: return
         val key = intent.getStringExtra("alarmKey") ?: return
         val result = goAsync()
         app.scope.launch {
             try {
+                app.settings.awaitReady()
+                if (intent.getStringExtra("profile") != app.settings.profile || app.settings.token.isEmpty()) return@launch
                 val scheduler = app.reminders
                 if (intent.action == "dev.kept.android.REMIND") scheduler.deliver(key, raw)
                 else if (intent.action in setOf("dismissed", "snoozed")) {
@@ -377,6 +378,7 @@ class ReminderLifecycleReceiver : BroadcastReceiver() {
         val result = goAsync()
         app.scope.launch {
             try {
+                app.settings.awaitReady()
                 // Reboot loses platform alarms; force regeneration from persisted data.
                 app.reminders.resetAlarmRegistry()
                 app.repository.reconcile()

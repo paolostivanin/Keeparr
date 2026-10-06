@@ -1,4 +1,4 @@
-import { Component, ElementRef, HostBinding, HostListener, OnInit, ViewChild, ChangeDetectorRef } from '@angular/core';
+import { Component, ElementRef, HostBinding, HostListener, NgZone, OnDestroy, OnInit, ViewChild, ChangeDetectorRef } from '@angular/core';
 import { Router } from '@angular/router';
 import { AuthService } from 'src/app/services/auth.service';
 import { SharedService } from 'src/app/services/shared.service';
@@ -13,7 +13,7 @@ import { NoteI } from 'src/app/interfaces/notes';
     styleUrls: ['./navbar.component.scss'],
     standalone: false
 })
-export class NavbarComponent implements OnInit {
+export class NavbarComponent implements OnInit, OnDestroy {
   logoClickCount = 0;
   logoClickTimer?: any;
   eggDismissTimer?: any;
@@ -32,7 +32,7 @@ export class NavbarComponent implements OnInit {
   konamiIndex = 0;
   wasdIndex = 0;
 
-  constructor(public Shared: SharedService, public auth: AuthService, private router: Router, private cdr: ChangeDetectorRef) { }
+  constructor(public Shared: SharedService, public auth: AuthService, private router: Router, private cdr: ChangeDetectorRef, private zone: NgZone) { }
 
   @ViewChild("form23zSaZ") form23zSaZ?: ElementRef<HTMLDivElement>
   @ViewChild("searchInput") searchInput?: ElementRef<HTMLInputElement>
@@ -561,13 +561,32 @@ export class NavbarComponent implements OnInit {
     }
   }
 
-  ngOnInit(): void {
+  private scrollFrame?: number
+  private windowScrollHandler = () => {
+    if (this.scrollFrame != null) return
+    this.scrollFrame = requestAnimationFrame(() => {
+      this.scrollFrame = undefined
+      const isScrolled = window.scrollY > 0
+      if (this.isScrolled === isScrolled && !this.isFiltersOpen) return
+      this.zone.run(() => {
+        this.isScrolled = isScrolled
+        this.isFiltersOpen = false
+      })
+    })
   }
 
-  @HostListener('window:scroll')
-  onWindowScroll() {
+  ngOnInit(): void {
     this.isScrolled = window.scrollY > 0
-    if (this.isFiltersOpen) this.isFiltersOpen = false
+    this.zone.runOutsideAngular(() => {
+      window.addEventListener('scroll', this.windowScrollHandler, { passive: true })
+    })
+  }
+
+  ngOnDestroy(): void {
+    window.removeEventListener('scroll', this.windowScrollHandler)
+    if (this.scrollFrame != null) cancelAnimationFrame(this.scrollFrame)
+    clearTimeout(this.logoClickTimer)
+    clearTimeout(this.eggDismissTimer)
   }
 
 }

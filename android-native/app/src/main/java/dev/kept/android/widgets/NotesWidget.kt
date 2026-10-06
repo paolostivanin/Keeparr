@@ -28,6 +28,7 @@ class NotesWidget : AppWidgetProvider() {
         fun render(context: Context, id: Int) {
             val app = context.applicationContext as KeptApplication
             app.scope.launch(Dispatchers.IO) {
+                app.settings.awaitReady()
                 val (rows, reminders, single) = load(app, id)
                 val items = RemoteViews.RemoteCollectionItems.Builder().setHasStableIds(true).setViewTypeCount(2)
                 rows.forEach { items.addItem(itemId(it), buildRow(app, it, reminders, single)) }

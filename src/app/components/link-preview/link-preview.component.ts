@@ -1,4 +1,4 @@
-import { AfterViewInit, Component, ElementRef, Input, OnDestroy } from '@angular/core';
+import { AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, Component, ElementRef, Input, OnDestroy } from '@angular/core';
 import { NotesService, LinkPreviewData } from 'src/app/services/notes.service';
 import { AuthService } from 'src/app/services/auth.service';
 import { environment } from 'src/environments/environment';
@@ -7,6 +7,7 @@ import { environment } from 'src/environments/environment';
   selector: 'app-link-preview',
   templateUrl: './link-preview.component.html',
   styleUrls: ['./link-preview.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   standalone: false
 })
 export class LinkPreviewComponent implements AfterViewInit, OnDestroy {
@@ -34,8 +35,9 @@ export class LinkPreviewComponent implements AfterViewInit, OnDestroy {
   private nearViewport = false;
   private fetchStarted = false;
   private destroyed = false;
+  private copyTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(private notesService: NotesService, private auth: AuthService, private host: ElementRef<HTMLElement>) {}
+  constructor(private notesService: NotesService, private auth: AuthService, private host: ElementRef<HTMLElement>, private cd: ChangeDetectorRef) {}
 
   ngAfterViewInit() {
     this.viewReady = true;
@@ -57,6 +59,7 @@ export class LinkPreviewComponent implements AfterViewInit, OnDestroy {
   ngOnDestroy() {
     this.destroyed = true;
     this.observer?.disconnect();
+    if (this.copyTimer) clearTimeout(this.copyTimer);
   }
 
   linkDomain(url: string) {
@@ -106,6 +109,7 @@ export class LinkPreviewComponent implements AfterViewInit, OnDestroy {
     } finally {
       if (!this.destroyed && this._url === url) {
         this.loading = false;
+        this.cd.markForCheck();
       }
     }
   }
@@ -136,6 +140,13 @@ export class LinkPreviewComponent implements AfterViewInit, OnDestroy {
       textarea.remove();
     }
     this.copied = true;
-    setTimeout(() => this.copied = false, 1200);
+    this.cd.markForCheck();
+    if (this.copyTimer) clearTimeout(this.copyTimer);
+    this.copyTimer = setTimeout(() => {
+      this.copyTimer = undefined;
+      if (this.destroyed) return;
+      this.copied = false;
+      this.cd.markForCheck();
+    }, 1200);
   }
 }

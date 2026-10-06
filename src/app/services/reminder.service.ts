@@ -117,8 +117,8 @@ export class ReminderService {
     private offlineSync: OfflineSyncService,
     private userPreferences: UserPreferencesService
   ) {
-    this.offlineSync.cacheChanged$.subscribe(() => {
-      this.loadCachedReminders().catch(console.error);
+    this.offlineSync.cacheChanged$.subscribe(change => {
+      if (change.remindersChanged) this.loadCachedReminders().catch(console.error);
     });
     this.auth.currentUser$.subscribe(user => {
       if (user?.id !== this.lifecycleUserId) {

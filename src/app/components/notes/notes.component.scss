@@ -73,7 +73,7 @@
     line-height: 1rem;
     text-transform: uppercase;
     margin: 8px auto;
-    transition: all 0.7s;
+    transition: color 120ms ease;
   }
 }
 
@@ -163,9 +163,10 @@
   }
 }
 
-.note-container {
+:host ::ng-deep .note-container {
   width: var(--note-width);
-  transition: all 0.3s;
+  // Width changes must be immediate so masonry measures the final card size.
+  transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), opacity 120ms ease;
   position: relative;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
@@ -233,7 +234,7 @@
     .pin-icon,
     .check-icon {
       opacity: 0;
-      transition: all 0.3s;
+      transition: opacity 120ms ease;
     }
   }
 
@@ -710,6 +711,18 @@
   }
 }
 
+app-note-card-preview {
+  display: contents;
+}
+
+app-note-card-controls {
+  display: contents;
+}
+
+app-note-card-actions {
+  display: contents;
+}
+
 //? no notes
 .no-notes {
   margin-top: 20vh;
@@ -762,7 +775,7 @@
     // must be absolutely positioned (CSS auto-margin centering would fight
     // the JS-set coordinates and the modal would land off-center).
     position: absolute;
-    transition: transform 0.3s ease, opacity 0.18s ease;
+    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), opacity 120ms ease;
     max-width: 600px;
     width: 100%;
     max-height: calc(100dvh - 40px);
@@ -1198,5 +1211,32 @@
     color: #202124;
     border-color: #dadce0;
     box-shadow: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+  }
+}
+
+.note-editor-placeholder {
+  background: var(--tp-surface);
+  border-radius: 8px;
+  color: var(--tp-text);
+  min-height: 180px;
+  padding: 24px;
+
+  h2 { font-size: 1.125rem; margin: 0 0 20px; }
+  p { color: var(--tp-text-secondary); }
+  button {
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
+    color: inherit;
+    cursor: pointer;
+    padding: 8px 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-container,
+  .modal-container .modal,
+  .pull-refresh-indicator {
+    transition: none !important;
   }
 }

@@ -532,7 +532,6 @@ export class InputComponent implements OnInit {
       this.addCheckBoxFromPlaceholder()
     }
     const checkBoxesForSave = this.currentCheckBoxesForSave(closeAfterSave)
-    const labelsForSave = await this.labelsForSave()
     let noteObj: NoteI = {
       noteTitle: this.noteTitle.nativeElement.innerHTML,
       noteBody: this.noteBody?.nativeElement.innerHTML ? this.cleanEditorBodyForSave(this.noteBody.nativeElement.innerHTML) : '',
@@ -542,7 +541,7 @@ export class InputComponent implements OnInit {
       checkBoxes: checkBoxesForSave,
       images: this.images.map(image => ({ ...image, dataUrl: this.auth.canonicalImageUrl(image.dataUrl) })),
       isCbox: this.isCbox.value,
-      labels: labelsForSave,
+      labels: this.labels.filter(label => label.added),
       binder: this.binderName,
       archived: this.isArchived,
       trashed: this.isTrashed
@@ -551,8 +550,19 @@ export class InputComponent implements OnInit {
     const pendingCollaboratorIds = [...this.selectedCollaboratorIds]
 
     if (this.isEditing) {
-      const noteChanged = this.noteChangedForSave(noteObj)
       const hasPendingReminderSave = !!(this.pendingReminderDate || this.pendingReminderLocation)
+      // When labels were untouched, compare all other editor fields before
+      // refreshing their latest server value. Closing an unchanged note should
+      // not wait on a round trip merely to preserve concurrent label changes.
+      if (!this.labelsDirty && !this.pendingAttachmentFiles.length && !hasPendingReminderSave) {
+        const comparable = { ...noteObj, labels: this.noteToEdit.labels || [] }
+        if (!this.noteChangedForSave(comparable)) {
+          if (closeAfterSave) this.Shared.closeModal.next(true)
+          return
+        }
+      }
+      noteObj.labels = await this.labelsForSave()
+      const noteChanged = this.noteChangedForSave(noteObj)
       if (!noteChanged && !hasPendingReminderSave) {
         if (closeAfterSave) this.Shared.closeModal.next(true)
         return

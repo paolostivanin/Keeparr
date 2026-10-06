@@ -77,6 +77,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
         key = "${app.settings.profile}:${original.syncId}", factory = NoteEditorViewModel.Factory(app, original)
     )
     val raw by draftViewModel.draft.collectAsStateWithLifecycle()
+    val draftGeneration by draftViewModel.draftGeneration.collectAsStateWithLifecycle()
     val changed by draftViewModel.dirty.collectAsStateWithLifecycle()
     val incoming by draftViewModel.incoming.collectAsStateWithLifecycle()
     val localSaving by draftViewModel.localSaving.collectAsStateWithLifecycle()
@@ -134,7 +135,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
     }
     fun hideCheckboxes() { change { NoteFormat.hideCheckboxes(it) } }
     // The new row is composed a frame after the draft changes, so retry on every draft update until its requester exists.
-    LaunchedEffect(pendingFocusItemId, raw.toString()) {
+    LaunchedEffect(pendingFocusItemId, draftGeneration) {
         val requester = pendingFocusItemId?.let { itemFocus[it] } ?: return@LaunchedEffect
         if (runCatching { requester.requestFocus() }.isSuccess) { keyboard?.show(); pendingFocusItemId = null }
     }
@@ -151,7 +152,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
         val incoming = cachedNote
         if (incoming != null) draftViewModel.applyIncoming(incoming)
     }
-    LaunchedEffect(raw.toString(), inaccessible) {
+    LaunchedEffect(draftGeneration, inaccessible) {
         if (changed && !inaccessible) {
             delay(600)
             if (!changed || inaccessible) return@LaunchedEffect

@@ -16,10 +16,12 @@ import dev.kept.android.widgets.widgetForegroundColor
 import dev.kept.android.widgets.widgetNoteBodyText
 import dev.kept.android.ui.canReorderNotes
 import dev.kept.android.ui.moveDraggedNote
+import dev.kept.android.ui.searchVisibleNotes
 import androidx.datastore.preferences.SharedPreferencesMigration
 import androidx.datastore.preferences.preferencesDataStore
 import android.util.Base64
 import java.security.MessageDigest
+import kotlinx.coroutines.runBlocking
 
 private val Context.legacyMigrationStore by preferencesDataStore(name = "connection-migration-test",
     produceMigrations = { context -> listOf(SharedPreferencesMigration(context, "connection-migration-test")) })
@@ -101,8 +103,24 @@ class NativeContractTest {
         assertEquals(listOf("p2", "p1", "other"), moveDraggedNote(listOf(pinnedFirst, pinnedSecond, other), pinnedSecond, "p1"))
         assertEquals(null, moveDraggedNote(listOf(pinnedFirst, pinnedSecond, other), pinnedSecond, "other"))
     }
+    @Test fun nativeSearchFiltersVisibleNotesWithoutMatchingLockedContent() {
+        val notes = listOf(
+            note(1, 3.0).copy(raw = note(1, 3.0).raw.put("noteTitle", "Milk list").put("noteBody", "Eggs")),
+            note(2, 2.0).copy(raw = note(2, 2.0).raw.put("noteTitle", "Private milk").put("locked", true)),
+            note(3, 1.0).copy(raw = note(3, 1.0).raw.put("noteTitle", "Archived milk").put("archived", true))
+        )
+        assertEquals(listOf(1L), searchVisibleNotes(notes, "home", "milk").map { it.id })
+        assertEquals(listOf(3L), searchVisibleNotes(notes, "archive", "milk").map { it.id })
+        assertEquals(listOf(1L, 2L), searchVisibleNotes(notes, "home", "").map { it.id })
+    }
     @Test fun widgetTextIsBoundedBeforeRemoteViewsSerialization() {
         assertEquals(128, boundedWidgetText("x".repeat(10_000), 128).length)
+    }
+    @Test fun previewDecoderSamplesLargeBitmapsToTheRequestedBounds() {
+        assertEquals(4, imageSampleSize(4000, 2000, 1000))
+        assertEquals(2, imageSampleSize(1800, 900, 1000))
+        assertEquals(1, imageSampleSize(600, 900, 1000))
+        assertEquals(1, imageSampleSize(0, 900, 1000))
     }
     private fun measuredWidgetRow(body: String, title: String = ""): android.view.View {
         val context = RuntimeEnvironment.getApplication()
@@ -319,12 +337,16 @@ class NativeContractTest {
         settings.origin = "https://datastore.example.test"
         settings.userId = 314
         settings.setAliasFor(settings.origin, "stored-certificate")
+        runBlocking { settings.awaitWrites() }
 
         val reopened = ConnectionSettings(context)
+        assertFalse("settings load asynchronously instead of blocking their constructor", reopened.ready.value)
+        runBlocking { reopened.initialize() }
 
         assertEquals("https://datastore.example.test#314", reopened.profile)
         assertEquals("stored-certificate", reopened.alias)
         assertEquals(settings.aliasRevisionFor(settings.origin), reopened.aliasRevisionFor(reopened.origin))
+        assertTrue(reopened.ready.value)
     }
     @Test fun legacySharedPreferencesMigrateIntoDataStoreWithoutChangingTheProfile() {
         val context = RuntimeEnvironment.getApplication()
@@ -335,6 +357,7 @@ class NativeContractTest {
             .putBoolean("darkMode", true).commit()
 
         val settings = ConnectionSettings(context, context.legacyMigrationStore)
+        runBlocking { settings.initialize() }
 
         assertEquals("$origin#57", settings.profile)
         assertEquals("legacy-client-cert", settings.aliasFor(origin))

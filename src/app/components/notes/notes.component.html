@@ -123,10 +123,18 @@
 }
 
 <div #modalContainer class="modal-container" [class.native-phone-modal]="nativePhoneLayout">
-  <div #modal class="modal">
+  <div #modal class="modal" [attr.aria-busy]="editorLoading">
     @if (modalContainer.style.display == 'block') {
-      <app-input [noteToEdit]="clickedNoteData" [isEditing]="true" [autoOpenImagePicker]="openImagePickerOnModal">
-      </app-input>
+      @if (editorLoading || editorLoadError) {
+        <div class="note-editor-placeholder" role="status">
+          <h2 [innerHTML]="clickedNoteData.noteTitle"></h2>
+          <p>{{ editorLoadError || 'Opening note…' }}</p>
+          <button type="button" (click)="closeModal()">{{ editorLoadError ? 'Close' : 'Cancel' }}</button>
+        </div>
+      } @else {
+        <app-input [noteToEdit]="clickedNoteData" [isEditing]="true" [autoOpenImagePicker]="openImagePickerOnModal">
+        </app-input>
+      }
     }
   </div>
 </div>
@@ -152,234 +160,39 @@
           <span class="note-badge"
           [innerText]="note.archived ? 'archive': (note.trashed ? 'trash' : '') "></span>
         }
-          @let noteIsLinkOnly = isLinkOnlyNote(note);
-          @let noteHasTitle = hasVisibleNoteTitle(note);
-          <div class="note-main" [class.note-main--link-only]="noteIsLinkOnly"
-          [class.note-main--untitled]="!noteHasTitle && !noteIsLinkOnly"
-          [ngStyle]="{'background-color':note.bgColor,'border-color':note.bgColor,'background-image' : note.bgImage, 'color': noteTextColor(note)}">
-          @if (note.ownerUserId && auth.currentUser?.id && note.ownerUserId !== auth.currentUser?.id) {
-            <div class="shared-indicator H pop" [attr.data-pop]="'Shared by ' + (note.ownerDisplayName || note.ownerUsername || 'another user')">
-              @if (note.ownerAvatarDataUrl) {
-                <img [src]="note.ownerAvatarDataUrl" alt="Owner avatar">
-              } @else {
-                <div class="avatar-fallback animal-{{note.ownerAvatarPreset || 'cat'}}">
-                  <span class="head"><i></i></span>
-                </div>
-              }
-               @if (note.ownerOnline) {
-                <div class="mini-glyph online"></div>
-              }
-            </div>
-          }
-          <div (click)="openModal(noteEL,note)">
-            @if (noteLock.lockPreviewHidden(note)) {
-              @if (noteHasTitle) {
-              <div class="title">
-                <span [innerHTML]="note.noteTitle"></span>
-              </div>
-              }
-              <div class="locked-note-preview">
-                <span class="material-symbols-outlined">lock</span>
-                <span>Locked note</span>
-              </div>
-            } @else if (noteIsLinkOnly) {
-                @let extraLinks = hiddenLinkCount(note);
-                <div class="link-preview-stack link-preview-stack--only">
-                  @for (url of visibleLinkUrls(note); track url) {
-                    <app-link-preview [url]="url" [cardMode]="true"></app-link-preview>
-                  }
-                </div>
-                @if (extraLinks) {
-                  <div class="link-overflow-chip">+{{extraLinks}} link{{extraLinks === 1 ? '' : 's'}}</div>
-                }
-            } @else {
-            @if (noteHasTitle) {
-            <div class="title">
-              <span [innerHTML]="note.noteTitle"></span>
-            </div>
-            }
-            <div class="note-images">
-                @for (image of note.images || []; track image.id) {
-                  @if (image.placement === 'top') {
-                    <img [src]="imageSrc(image.dataUrl)" [alt]="image.name" decoding="async"
-                      (contextmenu)="downloadImage(image.dataUrl, image.name, $event)">
-                  }
-                }
-            </div>
-            @if (!note.isCbox || isHybridCard(note)) {
-              <section class="body-segments" [class.min]="note.noteBody!.length > 68">
-                @for (segment of noteBodySegments(note); track trackBodySegment($index, segment)) {
-                  @if (segment.type === 'html') {
-                    <div class="body" [innerHTML]="segment.value" (contextmenu)="downloadInlineImage($event)"></div>
-                  } @else {
-                    <div class="link-previews">
-                      <app-link-preview [url]="segment.value"></app-link-preview>
-                    </div>
-                  }
-                }
-                @let extraLinks = hiddenLinkCount(note);
-                @if (extraLinks) {
-                  <div class="link-overflow-chip">+{{extraLinks}} link{{extraLinks === 1 ? '' : 's'}}</div>
-                }
-              </section>
-            }
-            @if (note.isCbox) {
-              <div class="cboxes min">
-                @let completedCboxesCount = overviewCompletedChecklistCount(note);
-                @let cboxPreview = overviewChecklistPreview(overviewChecklistItems(note));
-                @for (cb of cboxPreview.items; track cb.id) {
-                  <div class="cbox-container overview-cbox-row">
-                    <div (touchstart)="$event.stopPropagation()" (touchend)="toggleOverviewCheckbox(note, cb, $event)"
-                    (mousedown)="$event.stopPropagation()" (mouseup)="toggleOverviewCheckbox(note, cb, $event)" (click)="$event.stopPropagation()" [class.done]="cb.done"
-                    [style.--overview-cbox-indent.px]="checkboxIndentPx(cb)"
-                    class="cbox-icon"></div>
-                    <div class="cbox-note-container min overview-cbox-note-container">
-                      <div [attr.data-id]="cb.id" [class.cbox-done]="cb.done"
-                        class="cbox-note overview-cbox-note"
-                        [innerHTML]="cb.data">
-                      </div>
-                    </div>
-                    <div (touchstart)="$event.stopPropagation()" (touchend)="removeOverviewCheckbox(note, cb, $event)"
-                    (mousedown)="$event.stopPropagation()" (mouseup)="removeOverviewCheckbox(note, cb, $event)" (click)="$event.stopPropagation()"
-                      class="cbox-cancel-icon min H">
-                    </div>
-                  </div>
-                }
-                @if (cboxPreview.more) {
-                  <div class="overview-cbox-more">+{{cboxPreview.more}} more</div>
-                }
-                @if (preferences.value.moveCompletedChecklistItemsToBottom && completedCboxesCount) {
-                  <div class="hr min"></div>
-                  <div class="cbox-done-container min">
-                    <div class="cbox-arrow"></div>
-                    <span>({{completedCboxesCount}}) Completed items</span>
-                  </div>
-                }
-              </div>
-            }
-            <div class="note-images">
-              @for (image of note.images || []; track image.id) {
-                @if (image.placement === 'bottom') {
-                  <img [src]="imageSrc(image.dataUrl)" [alt]="image.name" decoding="async"
-                    (contextmenu)="downloadImage(image.dataUrl, image.name, $event)">
-                }
-              }
-            </div>
-            } <!-- end @else (not link-only) -->
-          </div>
-          <!-- Removed collaborator avatars from overview as requested -->
-          <div class="labels-container min">
-            @for (label of note.labels; track label) {
-              @if (label.added) {
-                <div class="label-container">
-                  <div class="label"><span>{{label.name}}</span>
-                  <div class="cancel-icon pop" data-pop="Remove Label"
-                  (click)="removeLabel(note,label)"></div>
-                </div>
-              </div>
-            }
-          }
-        </div>
-        @if ((note.attachments || []).length && !noteLock.lockPreviewHidden(note)) {
-          <div class="attachments-list min">
-            @for (attachment of note.attachments || []; track attachment.id) {
-              <div class="attachment-card min" role="button" tabindex="0"
-                (mousedown)="$event.stopPropagation()"
-                (click)="downloadAttachment(attachment, $event)"
-                (keydown.enter)="downloadAttachment(attachment, $event)"
-                (keydown.space)="downloadAttachment(attachment, $event)">
-                <span class="material-symbols-outlined attachment-type">{{attachmentIcon(attachment)}}</span>
-                <span class="attachment-name">{{attachment.originalName}}</span>
-                <span class="attachment-size">{{formatFileSize(attachment.fileSize)}}</span>
-                <button type="button" class="attachment-download H" aria-label="Download attachment" title="Download attachment"
-                  (click)="downloadAttachment(attachment, $event)">
-                  <span class="material-symbols-outlined">download</span>
-                </button>
-              </div>
-            }
-          </div>
-        }
-        @if (!note.trashed) {
-          @if (getDisplayedReminderForNote(note.id!); as r) {
-            <div class="reminder-chip" [class.reminder-chip--past]="r.status === 'fired'"
-              (mousedown)="$event.stopPropagation()" (click)="toggleReminderPicker(note, $event)">
-              <img src="./assets/images/svg/clock.svg" alt="" width="12" height="12">
-              @if (r.dueAtUtc) {
-                {{formatReminderDate(r.dueAtUtc)}}
-              } @else if (r.locationName) {
-                📍 {{ r.locationName }}
-              }
-            </div>
-          }
-          @if (activePickerNoteId === note.id && reschedulingPastReminderNoteId !== note.id && getDisplayedReminderForNote(note.id!); as displayedReminder) {
-            <div class="reminder-picker reminder-picker--inline"
-              (mousedown)="$event.stopPropagation()" (mouseup)="$event.stopPropagation()" (click)="$event.stopPropagation()">
-              @if (displayedReminder.status === 'fired') {
-                <button type="button" class="rp-clear" (click)="reschedulePastReminderForNote(note, $event)">Set new reminder</button>
-              }
-              <button type="button" class="rp-clear" (click)="clearReminder(note, $event)">Remove reminder</button>
-            </div>
-          }
-          <div class="icons-container min">
-            <div class="icons">
-              <div class="alarm H pop" data-pop="Remind me"
-                [class.alarm-active]="!!getActiveReminderForNote(note.id!)"
-                (mousedown)="$event.stopPropagation()" (click)="toggleReminderPicker(note, $event)">
-              </div>
-              @if (pendingNoteDateConfirm?.note?.id === note.id) {
-                <div class="date-confirm-pill date-confirm-pill--note"
-                  (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
-                  role="region" aria-label="Confirm reminder date">
-                  <span class="dc-text"><strong>{{formatPendingDateLabel(pendingNoteDateConfirm!.date)}}</strong></span>
-                  <button type="button" class="dc-cancel" (click)="cancelPendingNoteDate()">Change</button>
-                  <button type="button" class="dc-confirm" (click)="confirmPendingNoteDate()">Pick time →</button>
-                </div>
-              }
-              <!-- Reminder date dialog rendered at component root level (see
-                   bottom of this file) so it escapes bricks.js's transformed
-                   .note-container ancestor. -->
-
-              <div #collaboratorMenuTtBtn class="colab H pop" data-pop="Collaborator"
-                (click)="openCollaboratorMenu(collaboratorMenuTtBtn,collaboratorMenuTt,note)"></div>
-              <div #colorMenuTtBtn data-toolTipType="colorMenu" data-pop="Background Options"
-                (click)="openTooltip(colorMenuTtBtn,colorMenuTt,note)" class="color H pop">
-              </div>
-              <div class="image H pop" data-pop="Add image" (click)="openModalForImage(noteEL,note,$event)"></div>
-              <div [ngClass]="note.archived ? 'unarchive' : 'archive'" class="H pop"
-                (click)="toggleArchive(note.id!,note.archived)"
-              [attr.data-pop]="note.archived ? 'Unarchive' : 'Archive'"></div>
-              <div data-toolTipType="moreMenu" #moreMenuTtBtn
-                (click)="openTooltip(moreMenuTtBtn,moreMenuTt,note)" class="more H pop"
-                data-pop="More">
-              </div>
-            </div>
-          </div>
-          @if (note.archived) {
-            <div class="icons-container min archive-actions" (mousedown)="$event.stopPropagation()" (touchstart)="$event.stopPropagation()">
-              <div class="icons">
-                <div class="unarchive H pop" data-pop="Unarchive" (click)="$event.stopPropagation(); toggleArchive(note.id!, note.archived)">
-                </div>
-              </div>
-            </div>
-          }
-        } @else {
-          <div class="trash-countdown"><img src="./assets/images/svg/exclaimwarn.svg" alt="warn"> {{trashCountdown(note)}} before permanent deletion</div>
-          <div class="icons-container min trash-actions" (mousedown)="$event.stopPropagation()" (touchstart)="$event.stopPropagation()">
-            <div class="icons">
-              <div class="delete H pop" data-pop="Delete forever" (click)="$event.stopPropagation(); removeNote(note)">
-              </div>
-              <div class="restore material-restore H pop" data-pop="Restore" (click)="$event.stopPropagation(); restoreNote(note.id!)">
-                <span class="material-symbols-outlined">undo</span>
-              </div>
-            </div>
-          </div>
-        }
-      </div>
-      <div class="check-icon" (click)="toggleSelection(note,$event)">
-  <svg viewBox="0 0 18 18"><path d="m6.61 11.89l-3.11-3.11-1.06 1.06 4.17 4.16 8.95-8.95-1.06-1.05z"/></svg>
-</div>
-      <div (click)="togglePin(note.id!,note.pinned)" [class.pinned]="note.pinned" class="pin-icon H pop"
-      [attr.data-pop]="!note.pinned ? 'Pin note':'Unpin note' "></div>
+          <app-note-card-preview [note]="note" [meta]="noteCardMeta(note)"
+            [lockedPreviewHidden]="noteLock.lockPreviewHidden(note)"
+            [moveCompletedChecklistItemsToBottom]="preferences.value.moveCompletedChecklistItemsToBottom"
+            [ownerOnline]="note.ownerOnline === true"
+            (open)="openModal(noteEL, $event)"
+            (toggleCheckbox)="toggleOverviewCheckbox($event.note, $event.checkbox, $event.event)"
+            (removeCheckbox)="removeOverviewCheckbox($event.note, $event.checkbox, $event.event)"
+            (downloadImage)="downloadImage($event.image.dataUrl, $event.image.name, $event.event)"
+            (downloadInlineImage)="downloadInlineImage($event)"
+            (removeLabel)="removeLabel($event.note, $event.label)"
+            (downloadAttachment)="downloadAttachment($event.attachment, $event.event)"></app-note-card-preview>
+        <app-note-card-actions [note]="note"
+          [activeReminder]="getActiveReminderForNote(note.id!)"
+          [displayedReminder]="getDisplayedReminderForNote(note.id!)"
+          [displayedReminderLabel]="getDisplayedReminderForNote(note.id!)?.dueAtUtc ? formatReminderDate(getDisplayedReminderForNote(note.id!)!.dueAtUtc!) : ''"
+          [reminderPickerOpen]="activePickerNoteId === note.id && reschedulingPastReminderNoteId !== note.id && !!getDisplayedReminderForNote(note.id!)"
+          [pendingDateLabel]="pendingNoteDateConfirm?.note?.id === note.id ? formatPendingDateLabel(pendingNoteDateConfirm!.date) : ''"
+          [trashCountdownLabel]="note.trashed ? trashCountdown(note) : ''"
+          (toggleReminder)="toggleReminderPicker($event.note, $event.event)"
+          (clearReminder)="clearReminder($event.note, $event.event)"
+          (reschedulePastReminder)="reschedulePastReminderForNote($event.note, $event.event)"
+          (confirmPendingDate)="confirmPendingNoteDate()"
+          (cancelPendingDate)="cancelPendingNoteDate()"
+          (openCollaborators)="openCollaboratorMenu($event.button, collaboratorMenuTt, $event.note)"
+          (openColorMenu)="openTooltip($event.button, colorMenuTt, $event.note)"
+          (openImagePicker)="openModalForImage(noteEL, $event.note, $event.event)"
+          (toggleArchive)="toggleArchive($event.id!, $event.archived)"
+          (openMoreMenu)="openTooltip($event.button, moreMenuTt, $event.note)"
+          (removeForever)="removeNote($event.note)"
+          (restore)="restoreNote($event.id!)"></app-note-card-actions>
+      <app-note-card-controls [note]="note"
+        (selectionChanged)="toggleSelection($event.note, $event.event)"
+        (pinChanged)="togglePin($event.noteId, $event.pinned)"></app-note-card-controls>
     </div>
   }
   @if (canShowMoreLoadedNotes(filteredNotes)) {

@@ -32,15 +32,17 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         incoming.value = intent
         alarmRecovery = app.scope.launch {
+            app.settings.awaitReady()
             app.reminders.resetAlarmRegistry()
             app.repository.reconcile()
+            if (app.settings.token.isNotEmpty()) SyncWorker.schedule(app)
         }
         setContent { KeptScreen(this, app) }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); incoming.value = intent }
-    override fun onStart() { super.onStart(); app.scope.launch { alarmRecovery?.join(); runCatching { app.repository.foreground(true); app.repository.sync() } } }
+    override fun onStart() { super.onStart(); app.scope.launch { app.settings.awaitReady(); alarmRecovery?.join(); runCatching { app.repository.foreground(true); app.repository.sync() } } }
     override fun onStop() { app.scope.launch { app.repository.foreground(false) }; super.onStop() }
-    override fun onResume() { super.onResume(); app.scope.launch { alarmRecovery?.join(); app.repository.reconcile() } }
+    override fun onResume() { super.onResume(); app.scope.launch { app.settings.awaitReady(); alarmRecovery?.join() } }
     fun chooseCertificate(server: String, onSelected: (String) -> Unit) {
         val uri = runCatching { URI(server) }.getOrNull()
         KeyChain.choosePrivateKeyAlias(this, { alias -> runOnUiThread {

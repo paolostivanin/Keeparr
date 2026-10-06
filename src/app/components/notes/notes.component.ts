@@ -20,6 +20,7 @@ import { NoteLockService } from 'src/app/services/note-lock.service';
 import { UserPreferencesService } from 'src/app/services/user-preferences.service';
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
 import { descendantIndexes, normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
+import { NoteBodySegment, NotePreviewMeta } from './note-card-preview.component';
 
 declare var Snackbar: any;
 type PluginListenerHandle = { remove: () => Promise<void> | void };
@@ -35,9 +36,8 @@ type KeptWidgetIntentsPlugin = {
   getPendingCreateType: () => Promise<{ type: WidgetCreateType | null }>;
   acknowledgeCreateType: () => Promise<void>;
 };
-type NoteBodySegment = { type: 'html'; value: string } | { type: 'url'; value: string }
 type NoteBodyPreview = { segments: NoteBodySegment[]; urls: string[] }
-type NoteMeta = { rawBody: string; title: string; bgKey: string; urls: string[]; linkOnly: boolean; textColor: string; displayBody: string; bodySegments: NoteBodySegment[]; hiddenLinkCount: number; visibleUrls: string[] }
+type NoteMeta = NotePreviewMeta
 type PullRefreshState = 'idle' | 'pulling' | 'ready' | 'refreshing'
 
 const CapacitorApp = registerPlugin<CapacitorAppPlugin>('App');
@@ -69,9 +69,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   private subscriptions: Subscription[] = []
 
-  @ViewChild("mainContainer") mainContainer!: ElementRef<HTMLInputElement>
-  @ViewChild("modalContainer") modalContainer!: ElementRef<HTMLInputElement>
-  @ViewChild("modal") modal!: ElementRef<HTMLInputElement>
+  @ViewChild("mainContainer") mainContainer!: ElementRef<HTMLDivElement>
+  @ViewChild("modalContainer") modalContainer!: ElementRef<HTMLDivElement>
+  @ViewChild("modal") modal!: ElementRef<HTMLDivElement>
   @ViewChild('overviewImageInput') overviewImageInput?: ElementRef<HTMLInputElement>
   @ViewChild('globalReminderTime') globalReminderTime?: ElementRef<HTMLInputElement>
   @ViewChild('loadMoreSentinel') loadMoreSentinel?: ElementRef<HTMLDivElement>
@@ -154,7 +154,18 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private timePickerDateInput?: HTMLInputElement
   private lastMasonrySignature = ''
   private masonrySignatureToken = 0
-  private masonryQueued = false
+  private masonryFrame?: number
+  private masonryPackFrame?: number
+  private containerResizeObserver?: ResizeObserver
+  private destroyed = false
+  private scrollFrame?: number
+  private windowScrollHandler = () => {
+    if (this.scrollFrame != null) return
+    this.scrollFrame = requestAnimationFrame(() => {
+      this.scrollFrame = undefined
+      this.onWindowScroll()
+    })
+  }
   private noteMetaCache = new WeakMap<NoteI, NoteMeta>()
   private reminderLookupCache?: { reminders: any[]; activeByNoteId: Map<number, any>; firedByNoteId: Map<number, any> }
   private trashCountdownCache = new WeakMap<NoteI, { trashedAt: string; bucket: number; value: string }>()
@@ -183,6 +194,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private modalScrollRestoreTimers: ReturnType<typeof setTimeout>[] = []
   private modalOpenScrollY = 0
   private modalClosing = false
+  editorLoading = false
+  editorLoadError = ''
+  private noteOpenRequest = 0
   private suppressScrollPaginationUntil = 0
   private lastOverviewCheckboxTouchAt = 0
   private keptAppReadyQueued = false
@@ -224,6 +238,10 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   noteBodySegments(note: NoteI): NoteBodySegment[] {
     return this.noteMeta(note).bodySegments
+  }
+
+  noteCardMeta(note: NoteI): NoteMeta {
+    return this.noteMeta(note)
   }
 
   visibleLinkUrls(note: NoteI): string[] {
@@ -585,13 +603,19 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       numberOfColumns = 1
       masonryWidth = `${this.noteWidth}px`
     }
-    document.documentElement.style.setProperty('--note-width', this.noteWidth + "px")
+    const width = `${this.noteWidth}px`
+    if (document.documentElement.style.getPropertyValue('--note-width') !== width) {
+      document.documentElement.style.setProperty('--note-width', width)
+    }
     // --
     const sizes = [{ columns: numberOfColumns, gutter: gutter }]
     
     // We must wait for the CSS variable to be applied and the notes to resize
     // before we ask Bricks to pack them, otherwise it uses old widths.
-    requestAnimationFrame(() => {
+    if (this.masonryPackFrame != null) cancelAnimationFrame(this.masonryPackFrame)
+    this.masonryPackFrame = requestAnimationFrame(() => {
+      this.masonryPackFrame = undefined
+      if (this.destroyed) return
       this.noteEl.toArray().forEach(el => {
         const node = el.nativeElement
         node.style.width = centerLandscapePhoneGrid ? masonryWidth : ''
@@ -612,16 +636,17 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   scheduleBuildMasonry(force = false) {
-    if (!force) {
-      const signature = this.masonrySignature()
-      if (signature === this.lastMasonrySignature) return
-      this.lastMasonrySignature = signature
-    }
-    if (this.masonryQueued) return
-    this.masonryQueued = true
-    requestAnimationFrame(() => {
-      this.masonryQueued = false
-      this.buildMasonry()
+    if (this.destroyed) return
+    const signature = this.masonrySignature()
+    if (!force && signature === this.lastMasonrySignature) return
+    this.lastMasonrySignature = signature
+    if (this.masonryFrame != null) return
+    // Layout-only work must not start another application-wide Angular check.
+    this.zone.runOutsideAngular(() => {
+      this.masonryFrame = requestAnimationFrame(() => {
+        this.masonryFrame = undefined
+        this.buildMasonry()
+      })
     })
   }
 
@@ -634,13 +659,14 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       + '|' + this.Shared.searchQuery
       + '|' + this.Shared.searchScope.value
       + '|' + this.visibleNoteLimit
-      + '|' + (this.mainContainer?.nativeElement?.clientWidth || 0)
       + '|' + (window?.innerWidth || 0)
   }
 
   increaseVisibleNoteLimit() {
-    this.visibleNoteLimit += this.noteRenderChunk
-    if (this.Shared.note.all.length - this.visibleNoteLimit < this.noteRenderChunk) this.loadMoreNotesIfNeeded()
+    const nextLimit = Math.min(this.Shared.note.all.length, this.visibleNoteLimit + this.noteRenderChunk)
+    if (this.Shared.note.all.length - nextLimit < this.noteRenderChunk) this.loadMoreNotesIfNeeded()
+    if (nextLimit <= this.visibleNoteLimit) return
+    this.visibleNoteLimit = nextLimit
     this.scheduleBuildMasonry(true)
   }
 
@@ -667,11 +693,10 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private maybeBackfillFilteredPage() {
     const notes = this.Shared.note.all || []
     if (!notes.length || !this.notesService.hasMoreNotes || this.isBackfillingFilteredPage) return
-    if (this.pageNotes().length) return
-
-    const context = `${this.currentPageName}:${this.Shared.searchQuery}:${notes.length}`
+    const context = `${this.currentPageName}:${this.Shared.searchQuery}:${this.Shared.searchScope.value}:${this.masonrySignatureToken}`
     if (context === this.lastBackfillContext) return
     this.lastBackfillContext = context
+    if (this.pageNotes().length) return
     this.isBackfillingFilteredPage = true
     Promise.resolve().then(async () => {
       try {
@@ -702,7 +727,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.searchLayoutQueued = false
         const filteredCount = this.pageNotes().length
         if (filteredCount) {
-          this.visibleNoteLimit = Math.max(this.visibleNoteLimit, filteredCount, this.initialNoteRenderChunk)
+          this.visibleNoteLimit = Math.max(this.visibleNoteLimit, Math.min(filteredCount, this.noteRenderChunk), this.initialNoteRenderChunk)
         }
         this.masonrySignatureToken++
         this.scheduleBuildMasonry(true)
@@ -749,12 +774,13 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     }))
   }
 
-  @HostListener('window:scroll')
   onWindowScroll() {
     if (Date.now() < this.suppressScrollPaginationUntil) return
     if (this.modalContainer?.nativeElement?.style.display === 'block' || this.modalClosing) return
     const remaining = document.documentElement.scrollHeight - (window.innerHeight + window.scrollY)
-    if (remaining < 900) this.increaseVisibleNoteLimit()
+    if (remaining < 900 && (this.visibleNoteLimit < this.Shared.note.all.length || this.hasMoreServerNotes())) {
+      this.zone.run(() => this.increaseVisibleNoteLimit())
+    }
   }
 
   //? modal  -----------------------------------------------------------
@@ -768,21 +794,46 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.Shared.toggleNoteSelection(noteData.id!)
       return
     }
+    if (this.modalClosing || this.modalContainer.nativeElement.style.display === 'block') return
+    const request = ++this.noteOpenRequest
     const canOpen = await this.noteLock.ensureUnlocked(noteData)
-    if (!canOpen) return
+    if (!canOpen || this.destroyed || request !== this.noteOpenRequest) return
     this.openImagePickerOnModal = openImagePicker
     this.Shared.note.id = noteData.id!
     this.clickedNoteEl = clickedNote || undefined
     const source = clickedNote?.getBoundingClientRect()
     this.suppressScrollPagination()
     this.captureModalScrollPosition()
-    this.clickedNoteData = noteData.isCardPreview ? await this.notesService.get(noteData.id!, { merge: false }).catch(() => noteData) : noteData
-    const modalContainer = this.modalContainer.nativeElement
-    modalContainer.style.display = 'block';
+    this.clickedNoteData = noteData
+    this.editorLoading = !!noteData.isCardPreview
+    this.editorLoadError = ''
+    this.modalContainer.nativeElement.style.display = 'block'
     this.cd.detectChanges()
     this.prepareModalOpenAnimation(source)
     clickedNote?.classList.add('hide')
     document.addEventListener('mousedown', this.mouseDownEvent)
+    if (!this.editorLoading) return
+
+    // Acknowledge the click immediately, but only mount an editable input once
+    // the complete note arrives; a truncated card must never be saved as a note.
+    try {
+      const fullNote = await this.notesService.get(noteData.id!, { merge: false })
+      if (this.destroyed || request !== this.noteOpenRequest) return
+      if (fullNote.isCardPreview) throw new Error('Full note content is unavailable')
+      this.clickedNoteData = fullNote
+      this.editorLoading = false
+      this.cd.detectChanges()
+      this.positionModalAtRest()
+    } catch {
+      if (this.destroyed || request !== this.noteOpenRequest) return
+      this.editorLoading = false
+      this.editorLoadError = 'Could not open this note. Please try again.'
+    }
+  }
+
+  private dismissEditor() {
+    if (this.editorLoading || this.editorLoadError) this.closeModal()
+    else this.Shared.saveNote.next(true)
   }
 
   mouseDownEvent = (event: Event) => {
@@ -803,7 +854,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       return
     }
 
-    this.Shared.saveNote.next(true)
+    this.dismissEditor()
   }
 
   clickedNoteEl?: HTMLDivElement // needed in setModalStyling()
@@ -815,7 +866,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     const isTooltipOpen = !!document.querySelector('[data-is-tooltip-open="true"]')
     if (this.modalContainer.nativeElement.style.display === 'block') {
       if (!isTooltipOpen) {
-        this.Shared.saveNote.next(true)
+        this.dismissEditor()
       }
       return
     }
@@ -867,26 +918,29 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   closeModal() {
     if (this.modalClosing) return
     this.modalClosing = true
+    this.noteOpenRequest++
     this.suppressScrollPagination()
     document.removeEventListener('mousedown', this.mouseDownEvent)
     let modalContainer = this.modalContainer.nativeElement
-    const isMobileModal = shouldUseFullscreenNoteEditor()
+    const duration = this.modalAnimationDuration()
     this.prepareModalCloseAnimation()
     if (this.clickedNoteEl) {
       setTimeout(() => {
         this.clickedNoteEl?.classList.remove('hide')
-      }, isMobileModal ? 90 : 200)
+      }, duration / 2)
     }
     setTimeout(() => {
       modalContainer.style.display = 'none'
       this.openImagePickerOnModal = false
+      this.editorLoading = false
+      this.editorLoadError = ''
       this.modal.nativeElement.removeAttribute('style')
       this.restoreModalScrollPosition()
       this.scheduleIPadMasonrySettle()
       this.schedulePostModalPaginationCheck()
       this.suppressScrollPagination()
       this.modalClosing = false
-    }, isMobileModal ? 180 : 400)
+    }, duration)
   }
 
   private suppressScrollPagination(durationMs = 1200) {
@@ -938,9 +992,15 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     }, 1300)
   }
 
+  private modalAnimationDuration() {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0
+    return shouldUseFullscreenNoteEditor() ? 160 : 200
+  }
+
   private prepareModalOpenAnimation(source?: DOMRect) {
     const modal = this.modal.nativeElement
     this.positionModalAtRest()
+    if (!this.modalAnimationDuration()) return
     if (!source) {
       modal.style.transition = 'opacity 0.16s ease'
       modal.style.opacity = '0'
@@ -960,6 +1020,10 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   private prepareModalCloseAnimation() {
     const modal = this.modal.nativeElement
+    if (!this.modalAnimationDuration()) {
+      modal.style.transition = 'none'
+      return
+    }
     if (!this.clickedNoteEl) {
       modal.style.transition = 'opacity 0.12s ease'
       modal.style.opacity = '0'
@@ -2546,11 +2610,11 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   // ?--------------------------------------------------------------
 
   ngAfterViewChecked() {
-    const renderContext = `${this.currentPageName}:${this.Shared.searchQuery}:${this.Shared.noteViewType.value}`
+    const renderContext = `${this.currentPageName}:${this.Shared.searchQuery}:${this.Shared.searchScope.value}:${this.Shared.noteViewType.value}`
     if (renderContext !== this.lastRenderContext) {
       this.lastRenderContext = renderContext
       if (this.isSearchActive()) {
-        this.visibleNoteLimit = Math.max(this.initialNoteRenderChunk, this.pageNotes().length)
+        this.visibleNoteLimit = Math.max(this.initialNoteRenderChunk, Math.min(this.pageNotes().length, this.noteRenderChunk))
         this.didInitialExpand = true
         this.suppressScrollPaginationUntil = Date.now() + 350
         window.scrollTo({ top: 0 })
@@ -2621,19 +2685,21 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   private scheduleProgressiveExpand() {
     const target = Math.min(this.Shared.note.all.length, this.noteRenderChunk * 2)
+    const context = this.lastRenderContext
     const step = 32
     const tick = () => {
-      if (this.visibleNoteLimit >= target) return
+      if (this.destroyed || context !== this.lastRenderContext || this.visibleNoteLimit >= target) return
       // Two rAFs ensures the previous chunk's layout and paint committed
       // before we add more, so each step is visible.
       requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (this.destroyed || context !== this.lastRenderContext) return
         this.zone.run(() => {
           this.visibleNoteLimit = Math.min(this.visibleNoteLimit + step, target)
         })
         if (this.visibleNoteLimit < target) tick()
       }))
     }
-    tick()
+    this.zone.runOutsideAngular(tick)
   }
 
   @HostListener('window:resize')
@@ -2679,12 +2745,18 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   ngOnInit(): void {
     this.syncCurrentPage(this.router.url)
+    this.zone.runOutsideAngular(() => {
+      window.addEventListener('scroll', this.windowScrollHandler, { passive: true })
+    })
     window.addEventListener('kept-smart-capture-notes-added', this.smartCaptureNotesAddedHandler)
     this.registerPullToRefresh()
     this.registerWidgetOpenHandlers()
     this.subscriptions.push(
       this.Shared.closeSideBar.subscribe(() => { setTimeout(() => { this.scheduleBuildMasonry(true) }, 200) }),
       this.Shared.closeModal.subscribe(x => { if (x) this.closeModal() }),
+      this.Shared.saveNote.subscribe(x => {
+        if (x && (this.editorLoading || this.editorLoadError)) this.closeModal()
+      }),
       this.Shared.openSelectedReminder.subscribe(() => this.openReminderForSelectedNote()),
       this.Shared.noteViewType.subscribe(() => {
         setTimeout(() => this.scheduleBuildMasonry(true), 300);
@@ -2719,14 +2791,26 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   ngAfterViewInit() {
-    if ('ResizeObserver' in window) {
-      this.noteCardResizeObserver = new ResizeObserver(entries => {
-        if (!entries.some(entry => entry.contentRect.height > 0)) return
-        this.scheduleBuildMasonry(true)
-      })
-      this.observeRenderedNoteCards()
-      this.subscriptions.push(this.noteCards.changes.subscribe(() => this.observeRenderedNoteCards()))
-    }
+    this.zone.runOutsideAngular(() => {
+      if ('ResizeObserver' in window) {
+        // Observe actual container changes (including sidebar transitions),
+        // rather than reading clientWidth during every change-detection pass.
+        let previousWidth = -1
+        this.containerResizeObserver = new ResizeObserver(entries => {
+          const width = entries[0]?.contentRect.width
+          if (width == null || width === previousWidth) return
+          previousWidth = width
+          this.scheduleBuildMasonry(true)
+        })
+        this.containerResizeObserver.observe(this.mainContainer.nativeElement)
+        this.noteCardResizeObserver = new ResizeObserver(entries => {
+          if (!entries.some(entry => entry.contentRect.height > 0)) return
+          this.scheduleBuildMasonry(true)
+        })
+        this.observeRenderedNoteCards()
+        this.subscriptions.push(this.noteCards.changes.subscribe(() => this.observeRenderedNoteCards()))
+      }
+    })
 
     if ('IntersectionObserver' in window) {
       this.loadMoreObserver = new IntersectionObserver(entries => {
@@ -2860,6 +2944,14 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true
+    this.noteOpenRequest++
+    window.removeEventListener('scroll', this.windowScrollHandler)
+    document.removeEventListener('mousedown', this.mouseDownEvent)
+    if (this.scrollFrame != null) cancelAnimationFrame(this.scrollFrame)
+    if (this.masonryFrame != null) cancelAnimationFrame(this.masonryFrame)
+    if (this.masonryPackFrame != null) cancelAnimationFrame(this.masonryPackFrame)
+    this.containerResizeObserver?.disconnect()
     window.removeEventListener('kept-smart-capture-notes-added', this.smartCaptureNotesAddedHandler)
     this.unregisterPullToRefresh()
     this.widgetAppUrlOpenHandle?.remove()
