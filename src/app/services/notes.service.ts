@@ -41,6 +41,7 @@ import { OfflineStoreService } from './offline-store.service';
 import { OfflineSyncService } from './offline-sync.service';
 import { UserPreferencesService } from './user-preferences.service';
 import { NotesStoreService } from './notes-store.service';
+import { withPresence } from '../utils/note-presence';
 
 const KeptDownloads = registerPlugin<KeptDownloadsPlugin>('KeptDownloads');
 
@@ -331,42 +332,34 @@ export class NotesService {
   private updateGlobalPresence(userId: number, online: boolean) {
     const notes = this.notesList$.value;
     if (!notes) return;
-    let changed = false;
-    notes.forEach(note => {
-      let noteChanged = false;
-      if (note.ownerUserId === userId) {
-        if (note.ownerOnline !== online) {
-          note.ownerOnline = online;
-          noteChanged = true;
-        }
-      }
-      if (note.collaborators) {
-        note.collaborators.forEach(c => {
-          if (c.id === userId) {
-            if (c.online !== online) {
-              c.online = online;
-              noteChanged = true;
-            }
-          }
-        });
-      }
-      if (noteChanged) changed = true;
+    // Replace only the notes whose presence changed; everything else keeps its identity.
+    const upserts: NoteI[] = [];
+    const next = notes.map(note => {
+      const updated = withPresence(note, userId, online);
+      if (updated !== note) upserts.push(updated);
+      return updated;
     });
-    if (changed) this.publishNotes([...notes]);
+    if (upserts.length) this.publishNoteDelta(next, upserts);
+  }
+
+  /** Publish changed notes without rebuilding the identity indexes or re-deriving reminder lifecycle. */
+  private publishNoteDelta(next: NoteI[], upserts: readonly NoteI[]) {
+    if (next.length) this.lastNonEmptyNotes = next;
+    this.notesStore.publishDelta(next, upserts, []);
   }
 
   private updateUserProfile(user: ShareUserI) {
     if (!user?.id) return;
     const notes = this.notesList$.value;
-    let changed = false;
 
     if (notes) {
+      const upserts: NoteI[] = [];
       const next = notes.map(note => {
-        const { note: updated, changed: noteChanged } = this.noteWithUpdatedUserProfile(note, user);
-        if (noteChanged) changed = true;
+        const { note: updated, changed } = this.noteWithUpdatedUserProfile(note, user);
+        if (changed) upserts.push(updated);
         return updated;
       });
-      if (changed) this.publishNotes(next);
+      if (upserts.length) this.publishNoteDelta(next, upserts);
     }
 
     const activeEditors = this.activeEditors$.value;
@@ -431,9 +424,9 @@ export class NotesService {
 
   async deleteImage(note: NoteI, image: any, event?: Event) {
     if (event) event.stopPropagation();
-    if (note.isCardPreview && note.id) note = await this.get(note.id);
-    note.images = (note.images || []).filter(img => img.id !== image.id);
-    await this.update(note, note.id!);
+    // Rewrite the complete document, never a truncated preview, and never the card's own object.
+    const full = await this.fullDocument(note);
+    await this.update({ ...full, images: (full.images || []).filter(img => img.id !== image.id) }, full.id!);
   }
 
   private disconnectRealtime() {

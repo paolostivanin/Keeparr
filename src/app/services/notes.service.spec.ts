@@ -350,3 +350,70 @@ describe('NotesService full documents versus previews', () => {
     expect(persisted[0].pinned).toBeTrue();
   });
 });
+
+describe('NotesService narrow card updates', () => {
+  function collaborating(): NoteI[] {
+    return [
+      { ...note, id: 1, syncId: 'a', ownerUserId: 5, ownerOnline: false },
+      { ...note, id: 2, syncId: 'b', ownerUserId: 9 },
+      { ...note, id: 3, syncId: 'c', ownerUserId: 9, collaborators: [{ id: 5, username: 'u', displayName: 'U', avatarDataUrl: '', avatarPreset: 'cat', shareCount: 0, online: false }] }
+    ];
+  }
+
+  function serviceWith(notes: NoteI[]) {
+    const published: Array<{ next: NoteI[]; upserts: readonly NoteI[] }> = [];
+    const instance = Object.create(NotesService.prototype) as NotesService;
+    Object.assign(instance, {
+      notesList$: { value: notes },
+      lastNonEmptyNotes: [],
+      notesStore: { publishDelta: (next: NoteI[], upserts: readonly NoteI[]) => published.push({ next, upserts }) }
+    });
+    const publishNotes = spyOn(instance as any, 'publishNotes');
+    return { instance, published, publishNotes };
+  }
+
+  it('applies a presence change by replacing only the affected notes through a delta publication', () => {
+    const notes = collaborating();
+    const { instance, published, publishNotes } = serviceWith(notes);
+
+    (instance as any).updateGlobalPresence(5, true);
+
+    expect(publishNotes).not.toHaveBeenCalled();
+    expect(published.length).toBe(1);
+    const { next, upserts } = published[0];
+    expect(upserts.map(item => item.id)).toEqual([1, 3]);
+    expect(next[1]).toBe(notes[1]);
+    expect(next[0].ownerOnline).toBeTrue();
+    expect(notes[0].ownerOnline).toBeFalse();
+    expect(notes[2].collaborators![0].online).toBeFalse();
+  });
+
+  it('publishes nothing when presence did not change', () => {
+    const { instance, published } = serviceWith(collaborating());
+    (instance as any).updateGlobalPresence(5, false);
+    (instance as any).updateGlobalPresence(77, true);
+    expect(published).toEqual([]);
+  });
+
+  it('removes an image from a copy of the complete document, never from the card or a preview', async () => {
+    const images = [{ id: 'a', dataUrl: 'a', name: 'a', placement: 'top' as const }, { id: 'b', dataUrl: 'b', name: 'b', placement: 'top' as const }];
+    const card = { ...note, images: [images[0]], isCardPreview: true, hasMoreImages: true };
+    const full = { ...note, images, isCardPreview: false };
+    const instance = Object.create(NotesService.prototype) as NotesService;
+    const update = jasmine.createSpy('update').and.resolveTo(undefined);
+    Object.assign(instance, { update });
+    (instance as any).get = async () => full;
+
+    await instance.deleteImage(card, { id: 'a' });
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const saved = update.calls.mostRecent().args[0] as NoteI;
+    expect(saved.images!.map(image => image.id)).toEqual(['b']);
+    expect(full.images.length).toBe(2);
+    expect(card.images.length).toBe(1);
+
+    (instance as any).get = async () => { throw new Error('offline'); };
+    await expectAsync(instance.deleteImage(card, { id: 'a' })).toBeRejectedWithError(NoteIncompleteError);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+});

@@ -3,7 +3,7 @@ import { AfterViewChecked, ChangeDetectorRef, Component, HostListener, NgZone, O
 import { Capacitor, registerPlugin } from '@capacitor/core';
 // @ts-ignore
 import Bricks from 'bricks.js'
-import { firstValueFrom, Subscription, filter, first, timeout } from 'rxjs';
+import { firstValueFrom, Subscription, filter, first, timeout, map, distinctUntilChanged } from 'rxjs';
 import { SharedService, type WidgetCreateRequest, type WidgetCreateType } from 'src/app/services/shared.service';
 import { bgColors, bgImages } from 'src/app/interfaces/tooltip';
 import { LabelI } from 'src/app/interfaces/labels';
@@ -12,12 +12,13 @@ import { AuthService } from 'src/app/services/auth.service';
 import { ShareUserI } from 'src/app/interfaces/users';
 import { ReminderService } from 'src/app/services/reminder.service';
 import { ReminderRepeatRule, ReminderRepeatType } from 'src/app/interfaces/reminder';
-import { NotesService } from 'src/app/services/notes.service';
+import { NoteIncompleteError, NotesService } from 'src/app/services/notes.service';
+import { notesChangeLayout, reminderChipKey } from 'src/app/utils/note-presence';
 import { TimepickerUI, type ConfirmEventData } from 'timepicker-ui';
 import { NotesToolsPipe } from 'src/app/pipes/notes-tools.pipe';
 import { isExpandedNativeFoldable, isNativePhonePlatform, shouldUseFullscreenNoteEditor } from 'src/app/utils/platform';
 import { NoteLockService } from 'src/app/services/note-lock.service';
-import { UserPreferencesService } from 'src/app/services/user-preferences.service';
+import { CARD_LAYOUT_PREFERENCES, changedPreferences, UserPreferencesService, type UserPreferences } from 'src/app/services/user-preferences.service';
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
 import { descendantIndexes } from 'src/app/utils/checkbox-indent';
 import { NoteBodySegment, NotePreviewMeta } from './note-card-preview.component';
@@ -201,6 +202,8 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     })
   }
   private noteMetaCache = new WeakMap<NoteI, NoteMeta>()
+  private lastLayoutNotes: NoteI[] | null = null
+  private lastPreferences?: UserPreferences
   private reminderLookupCache?: { reminders: any[]; activeByNoteId: Map<number, any>; firedByNoteId: Map<number, any> }
   private trashCountdownCache = new WeakMap<NoteI, { trashedAt: string; bucket: number; value: string }>()
   private reminderDateCache = new Map<string, string>()
@@ -2977,17 +2980,24 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.scheduleIPadMasonrySettle()
       }),
       this.notesService.notesList$.subscribe(notes => {
+        // Presence flips and other non-layout publications must not restart layout work.
+        const layoutChanged = notesChangeLayout(this.lastLayoutNotes, notes)
+        this.lastLayoutNotes = notes
+        if (!layoutChanged) return
         this.masonrySignatureToken++
         this.lastBackfillContext = ''
         this.settleSearchResultsLayout()
         this.settleSmartCaptureResultsLayout(notes)
       }),
-      this.reminderService.reminders$.subscribe(() => { this.masonrySignatureToken++ }),
-      this.preferences.preferences$.subscribe(() => {
-        this.noteMetaCache = new WeakMap<NoteI, NoteMeta>()
-        this.reminderDateCache.clear()
-        this.destroyTimePicker()
-        this.scheduleBuildMasonry(true)
+      this.reminderService.reminders$.pipe(map(reminderChipKey), distinctUntilChanged()).subscribe(() => { this.masonrySignatureToken++ }),
+      this.preferences.preferences$.subscribe(preferences => {
+        const changed = this.lastPreferences ? changedPreferences(this.lastPreferences, preferences) : []
+        this.lastPreferences = preferences
+        // Card values already key on the preferences that shape them (link previews)
+        // or format at read time (time style); only genuinely layout-affecting
+        // preferences rebuild the layout, and only the time picker depends on the clock style.
+        if (changed.includes('useTwentyFourHourTime')) this.destroyTimePicker()
+        if (changed.some(key => CARD_LAYOUT_PREFERENCES.includes(key))) this.scheduleBuildMasonry(true)
       }),
       this.router.events.subscribe(url => {
         if (url instanceof NavigationEnd) {
@@ -3216,7 +3226,13 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   deleteImage(note: NoteI, image: any, event: Event) {
     event.stopPropagation()
-    this.notesService.deleteImage(note, image)
+    this.notesService.deleteImage(note, image).catch(error => {
+      if (error instanceof NoteIncompleteError) {
+        try { Snackbar.show({ pos: 'bottom-left', text: "Couldn't load the complete note. Nothing was changed.", duration: 3500 }) } catch {}
+        return
+      }
+      console.error(error)
+    })
   }
 
   async downloadAttachment(attachment: NoteAttachmentI, event: Event) {

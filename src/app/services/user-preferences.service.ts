@@ -18,6 +18,15 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   showPastReminders: false,
 };
 
+/** Preferences that change the size of note cards. */
+export const CARD_LAYOUT_PREFERENCES: readonly (keyof UserPreferences)[] = [
+  'moveCompletedChecklistItemsToBottom', 'richLinkPreviews', 'notePreviewTextSize', 'showPastReminders'
+];
+
+export function changedPreferences(previous: UserPreferences, next: UserPreferences) {
+  return (Object.keys(next) as (keyof UserPreferences)[]).filter(key => previous[key] !== next[key]);
+}
+
 @Injectable({ providedIn: 'root' })
 export class UserPreferencesService {
   private readonly storageKey = 'kept_user_preferences';
