@@ -182,6 +182,9 @@
         }
       </div>
 
+      @if (editorSaveStateLabel; as saveStateLabel) {
+        <div class="editor-save-state" [class.warning]="draftStorageFailed || noteSaveFailed" role="status" aria-live="polite">{{ saveStateLabel }}</div>
+      }
       <div [hidden]="noteTitle.innerHTML.length" class="note-title ph"> Title</div>
       <div #noteTitle (input)="onNoteTitleInput()" (paste)="pasteEvent($event)" (focus)="rememberTextHistoryTarget(noteTitle)"
         class="note-title" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text">

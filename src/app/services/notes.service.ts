@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { editorSessionKey, type EditorSessionRecord, type EditorSessionStorage } from '../utils/editor-session';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { BehaviorSubject, firstValueFrom, Subscription } from 'rxjs';
@@ -604,6 +605,20 @@ export class NotesService {
     }
     console.warn(`Failed to ${label} after retries`, lastError);
     throw lastError;
+  }
+
+  /** Durable editor-draft storage for the active profile, or undefined before a profile is active. */
+  editorSessions() {
+    const partition = this.offlineSync.partition;
+    if (!partition) return undefined;
+    return {
+      partition,
+      storage: {
+        put: (record: EditorSessionRecord) => this.offlineStore.putEditorSession(record),
+        delete: (key: string) => this.offlineStore.deleteEditorSession(key)
+      } satisfies EditorSessionStorage,
+      load: (sessionKey: string) => this.offlineStore.getEditorSession(editorSessionKey(partition, sessionKey))
+    };
   }
 
   private async persistOfflineNote(note: NoteI) {

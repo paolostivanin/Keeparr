@@ -25,6 +25,10 @@ import { MAX_INDENT_LEVEL, descendantIndexes, maxIndentLevelAt, normalizeIndentL
 import { canHideCheckboxes, checkBoxesToBodyHtml, linesToCheckBoxes, splitBodyIntoLines } from 'src/app/utils/checklist-conversion';
 import { noteColorToHex } from 'src/app/utils/note-color';
 import { environment } from 'src/environments/environment';
+import {
+  EditorSessionPersister, EditorSessionTracker, NEW_NOTE_SESSION_KEY, applyEditorDraft, emptyEditorDraft,
+  type EditorDraft, type EditorSessionRecord
+} from 'src/app/utils/editor-session';
 
 declare var Snackbar: any;
 type InputLengthI = { title?: number, body?: number, cb?: number }
@@ -239,6 +243,14 @@ export class InputComponent implements OnInit {
   private editorPreviewGeneration = 0
   private editorLinkDecorationFrame?: number
   private saveBaselineSnapshot?: string
+  private editorSession?: EditorSessionTracker
+  private editorSessionPersister?: EditorSessionPersister
+  private editorSessionReady: Promise<void> = Promise.resolve()
+  private editorSessionTimer?: ReturnType<typeof setTimeout>
+  /** True when the editor's content could not be written to local draft storage. */
+  draftStorageFailed = false
+  /** True after a save of the note itself failed locally; the editor stays open with its content. */
+  noteSaveFailed = false
   mobileComposeMode = false
   mobileNewNoteStarterDismissed = false
   lastEditedTime = ''
@@ -296,6 +308,7 @@ export class InputComponent implements OnInit {
     this.labelsDirty = false
     if (!this.isEditing) this.preselectRouteLabel()
     this.binderName = this.isEditing ? (this.noteToEdit.binder || '') : this.currentRouteBinder()
+    if (!this.isEditing) this.beginEditorSession()
     /*
     the correct way is to use `mousedown` because : 
     https://www.javascripttutorial.net/javascript-dom/javascript-mouse-events/
@@ -334,6 +347,7 @@ export class InputComponent implements OnInit {
   }
 
   closeNote() {
+    this.endEditorSession()
     this.teardownDrawingResize()
     this.toggleNoteVisibility(false)
     this.mobileComposeMode = false
@@ -562,6 +576,7 @@ export class InputComponent implements OnInit {
       if (!this.labelsDirty && !this.pendingAttachmentFiles.length && !hasPendingReminderSave) {
         const comparable = { ...noteObj, labels: this.noteToEdit.labels || [] }
         if (!this.noteChangedForSave(comparable)) {
+          if (closeAfterSave) this.endEditorSession()
           if (closeAfterSave) this.Shared.closeModal.next(true)
           return
         }
@@ -569,9 +584,11 @@ export class InputComponent implements OnInit {
       noteObj.labels = await this.labelsForSave()
       const noteChanged = this.noteChangedForSave(noteObj)
       if (!noteChanged && !hasPendingReminderSave && !this.pendingAttachmentFiles.length) {
+        if (closeAfterSave) this.endEditorSession()
         if (closeAfterSave) this.Shared.closeModal.next(true)
         return
       }
+      const sessionGeneration = this.beginEditorSave(noteObj)
       if (!closeAfterSave && this.coEditSaveInFlight) {
         this.coEditSaveQueued = true
         return
@@ -582,8 +599,10 @@ export class InputComponent implements OnInit {
           await this.notesService.update(noteObj, this.noteToEdit.id!)
           this.saveBaselineSnapshot = this.noteSaveSnapshot(noteObj)
           this.labelsDirty = false
+          this.editorSaveSucceeded(sessionGeneration)
           this.flushPendingReminderSaves(this.noteToEdit.id!, noteObj)
         } catch (error) {
+          this.editorSaveFailed(sessionGeneration, error)
           if (this.auth.isAuthExpiredError(error)) return false
           this.showNoteSaveError(error instanceof LocalNotePersistenceError)
           return false
@@ -598,24 +617,31 @@ export class InputComponent implements OnInit {
         try {
           await this.notesService.update(noteObj, this.noteToEdit.id!)
         } catch (error) {
+          this.editorSaveFailed(sessionGeneration, error)
           if (this.auth.isAuthExpiredError(error)) return false
           this.showNoteSaveError(error instanceof LocalNotePersistenceError)
           return false
         }
         this.saveBaselineSnapshot = this.noteSaveSnapshot(noteObj)
         this.labelsDirty = false
+        this.editorSaveSucceeded(sessionGeneration)
         this.updateLastEditedTime();
         this.flushPendingReminderSaves(this.noteToEdit.id!, noteObj)
       }
-      if (closeAfterSave) this.Shared.closeModal.next(true)
+      if (closeAfterSave) {
+        this.endEditorSession(true)
+        this.Shared.closeModal.next(true)
+      }
       return
     }
 
     if (hasContent) {
         let id: number
+        const sessionGeneration = this.beginEditorSave(noteObj)
         try {
           id = await this.Shared.note.db.add(noteObj)
         } catch (error) {
+          this.editorSaveFailed(sessionGeneration, error)
           if (this.auth.isAuthExpiredError(error)) return false
           if (error instanceof LocalNotePersistenceError) {
             this.showNoteSaveError(true)
@@ -624,9 +650,11 @@ export class InputComponent implements OnInit {
           throw error
         }
         if (!id || id === -1) {
+          this.editorSaveFailed(sessionGeneration, new Error('Note was not created'))
           if (closeAfterSave) this.showNoteSaveError()
           return false
         }
+        this.editorSaveSucceeded(sessionGeneration)
         await this.applyPendingCollaborators(id, pendingCollaboratorIds)
         if (!(await this.uploadPendingAttachments(id))) {
           this.isEditing = true
@@ -712,7 +740,11 @@ export class InputComponent implements OnInit {
   }
 
   private noteSaveSnapshot(note: NoteI) {
-    return JSON.stringify({
+    return JSON.stringify(this.editorDraftFromNote(note))
+  }
+
+  private editorDraftFromNote(note: NoteI): EditorDraft {
+    return {
       noteTitle: note.noteTitle || '',
       noteBody: this.auth.canonicalImageHtml(note.noteBody || ''),
       pinned: !!note.pinned,
@@ -725,7 +757,170 @@ export class InputComponent implements OnInit {
       binder: note.binder || '',
       archived: !!note.archived,
       trashed: !!note.trashed
+    }
+  }
+
+  //? durable editor session -------------------------------------------------
+  // The tracker/persister model lives in utils/editor-session.ts. Drafts are
+  // stored apart from the note and its outbox command: they only survive
+  // interruptions and are removed once the note is durably saved or closed.
+
+  /** What the user sees right now, without the side effects of saveNote(). */
+  private liveEditorNote(): NoteI {
+    const bodyHtml = this.noteBody?.nativeElement.innerHTML
+    return {
+      noteTitle: this.noteTitle.nativeElement.innerHTML,
+      noteBody: bodyHtml ? this.cleanEditorBodyForSave(bodyHtml) : '',
+      pinned: this.notePin.nativeElement.dataset['pinned'] === 'true',
+      bgColor: this.noteMain.nativeElement.style.backgroundColor,
+      bgImage: this.noteMain.nativeElement.style.backgroundImage || this.noteContainer.nativeElement.style.backgroundImage,
+      checkBoxes: this.currentCheckBoxesForSave(false),
+      images: this.images.map(image => ({ ...image, dataUrl: this.auth.canonicalImageUrl(image.dataUrl) })),
+      isCbox: this.isCbox.value,
+      labels: this.isEditing && !this.labelsDirty ? (this.noteToEdit.labels || []) : this.labels.filter(label => label.added),
+      binder: this.binderName,
+      archived: this.isArchived,
+      trashed: this.isTrashed
+    }
+  }
+
+  private ensureEditorSession() {
+    const sessions = this.notesService.editorSessions()
+    if (!sessions) return undefined
+    const noteKey = this.isEditing
+      ? (this.noteToEdit?.syncId ?? (this.noteToEdit?.id != null ? `id:${this.noteToEdit.id}` : undefined))
+      : NEW_NOTE_SESSION_KEY
+    if (!noteKey) return undefined
+    const current = this.editorSession?.snapshot
+    if (current && current.sessionKey === noteKey && current.partition === sessions.partition) return this.editorSession
+    this.editorSessionPersister ??= new EditorSessionPersister(sessions.storage, failed => {
+      this.draftStorageFailed = failed
+      if (!this.destroyed) this.cd.markForCheck()
     })
+    this.editorSession = new EditorSessionTracker(sessions.partition, noteKey, this.isEditing ? this.noteToEdit : null, note => this.editorDraftFromNote(note))
+    return this.editorSession
+  }
+
+  /** Start tracking this editor and restore edits left behind by an interrupted session. */
+  private beginEditorSession() {
+    const tracker = this.ensureEditorSession()
+    const sessions = this.notesService.editorSessions()
+    if (!tracker || !sessions) return
+    this.editorSessionReady = (async () => {
+      const record = await sessions.load(tracker.snapshot.sessionKey).catch(() => undefined)
+      if (!record?.dirtyFields.length || tracker.generation > 0 || this.destroyed || this.editorSession !== tracker) return
+      this.restoreEditorSession(tracker, record)
+    })()
+  }
+
+  private restoreEditorSession(tracker: EditorSessionTracker, record: EditorSessionRecord) {
+    if (this.isEditing) {
+      // Only the fields the user had changed are laid over the note as it is now.
+      this.loadNoteIntoEditor(applyEditorDraft(this.noteToEdit, record))
+      this.saveBaselineSnapshot = this.noteSaveSnapshot(this.noteToEdit)
+    } else {
+      this.loadNoteIntoEditor(applyEditorDraft({ ...emptyEditorDraft() } as NoteI, record))
+      this.mobileNewNoteStarterDismissed = true
+    }
+    if (record.dirtyFields.includes('labels')) this.labelsDirty = true
+    tracker.adopt(record)
+    this.editorSessionPersister?.put(tracker.snapshot)
+    try { Snackbar.show({ pos: 'bottom-left', text: 'Restored unsaved changes', duration: 3500 }) } catch {}
+  }
+
+  private queueEditorSessionCapture() {
+    if (this.destroyed || !this.editorSession && !this.notesService.editorSessions()) return
+    if (this.editorSessionTimer) clearTimeout(this.editorSessionTimer)
+    this.editorSessionTimer = setTimeout(() => {
+      this.editorSessionTimer = undefined
+      void this.captureEditorSession()
+    }, 400)
+  }
+
+  private captureEditorSession() {
+    if (!this.editorSession) return Promise.resolve()
+    let draft: EditorDraft
+    try {
+      draft = this.editorDraftFromNote(this.liveEditorNote())
+    } catch {
+      return Promise.resolve()
+    }
+    return this.storeEditorDraft(draft)
+  }
+
+  private async storeEditorDraft(draft: EditorDraft) {
+    await this.editorSessionReady
+    const record = this.editorSession?.capture(draft)
+    if (record) await this.writeEditorSession(record)
+  }
+
+  private writeEditorSession(record: EditorSessionRecord) {
+    const persister = this.editorSessionPersister
+    if (!persister) return Promise.resolve()
+    return record.dirtyFields.length ? persister.put(record) : persister.delete(record.key)
+  }
+
+  /** Persist the draft now: used when the page is hidden, unloaded, or the editor is destroyed. */
+  private flushEditorSession() {
+    if (this.editorSessionTimer) {
+      clearTimeout(this.editorSessionTimer)
+      this.editorSessionTimer = undefined
+    }
+    if (!this.editorSession) return Promise.resolve()
+    try {
+      if (this.isDrawingNote) this.syncDrawingImage()
+    } catch {}
+    return this.captureEditorSession().then(() => this.editorSessionPersister?.flush())
+  }
+
+  private readonly editorLifecycleFlush = () => {
+    if (document.visibilityState === 'hidden') void this.flushEditorSession()
+  }
+  private readonly editorPageHideFlush = () => { void this.flushEditorSession() }
+
+  private beginEditorSave(noteObj: NoteI) {
+    const tracker = this.ensureEditorSession()
+    if (!tracker) return -1
+    const record = tracker.capture(this.editorDraftFromNote(noteObj))
+    // The draft is written before the save so an interruption mid-save cannot lose it.
+    if (record) void this.writeEditorSession(record)
+    return tracker.beginSave()
+  }
+
+  private editorSaveSucceeded(generation: number) {
+    this.noteSaveFailed = false
+    if (generation < 0 || !this.editorSession) return
+    const record = this.editorSession.saveSucceeded(generation)
+    void this.writeEditorSession(record)
+  }
+
+  private editorSaveFailed(generation: number, error: unknown) {
+    this.noteSaveFailed = true
+    if (generation < 0 || !this.editorSession) return
+    const message = error instanceof Error ? error.message : String(error)
+    void this.writeEditorSession(this.editorSession.saveFailed(generation, message))
+  }
+
+  /** The note is saved (or deliberately closed): drop the draft unless newer unsaved edits remain. */
+  private endEditorSession(keepUnsavedEdits = false) {
+    if (this.editorSessionTimer) {
+      clearTimeout(this.editorSessionTimer)
+      this.editorSessionTimer = undefined
+    }
+    const tracker = this.editorSession
+    this.editorSession = undefined
+    this.noteSaveFailed = false
+    if (!tracker || (keepUnsavedEdits && tracker.hasUnsavedChanges)) return
+    void this.editorSessionPersister?.delete(tracker.snapshot.key)
+  }
+
+  get editorSaveStateLabel() {
+    if (this.draftStorageFailed) return "Can't keep a recovery copy on this device. Keep this editor open."
+    if (this.noteSaveFailed) return 'Not saved yet. Your changes are still here.'
+    const state = this.editorSession?.snapshot.localState
+    if (state === 'saving') return 'Saving…'
+    if (state === 'dirty') return 'Unsaved changes'
+    return ''
   }
 
   private normalizeImages(images: any[] = []) {
@@ -1941,6 +2136,7 @@ export class InputComponent implements OnInit {
   }
 
   private queueCoEditAutosave() {
+    this.queueEditorSessionCapture()
     if (!this.isEditing || !this.noteToEdit.id || !this.isSharedEditingNote()) return
     this.autoSaveSubject.next()
   }
@@ -3199,6 +3395,10 @@ export class InputComponent implements OnInit {
 
   innerData(note: NoteI) {
     this.notePhClick()
+    this.loadNoteIntoEditor(note)
+  }
+
+  private loadNoteIntoEditor(note: NoteI) {
     this.noteTitle.nativeElement.innerHTML = note.noteTitle
     this.images = (note.images || []).map(image => ({ ...image, dataUrl: this.auth.authenticatedImageUrl(image.dataUrl) }))
     this.attachments = note.attachments || []
@@ -3675,7 +3875,12 @@ export class InputComponent implements OnInit {
     })
     if (this.isEditing) {
       this.innerData(this.noteToEdit)
+      this.beginEditorSession()
     }
+    document.addEventListener('visibilitychange', this.editorLifecycleFlush)
+    window.addEventListener('pagehide', this.editorPageHideFlush)
+    // Supplementary: the events above are the reliable signals on mobile.
+    window.addEventListener('beforeunload', this.editorPageHideFlush)
     if (this.autoOpenImagePicker) {
       setTimeout(() => this.openImagePicker(), 0)
     }
@@ -3774,6 +3979,11 @@ export class InputComponent implements OnInit {
   }
 
   ngOnDestroy() {
+    // Navigation or an unmount with unsaved edits: write the draft before teardown.
+    void this.flushEditorSession();
+    document.removeEventListener('visibilitychange', this.editorLifecycleFlush);
+    window.removeEventListener('pagehide', this.editorPageHideFlush);
+    window.removeEventListener('beforeunload', this.editorPageHideFlush);
     this.destroyed = true;
     this.editorPreviewGeneration++;
     if (this.editorLinkDecorationFrame) {

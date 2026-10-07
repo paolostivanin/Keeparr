@@ -1423,3 +1423,15 @@
   border-color: #202124;
   background: #202124;
 }
+
+.editor-save-state {
+  font-size: 12px;
+  padding: 2px 16px;
+  color: #5f6368;
+  font-family: 'Roboto', Arial, sans-serif;
+
+  &.warning {
+    color: #b3261e;
+    font-weight: 500;
+  }
+}

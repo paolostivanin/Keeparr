@@ -3,6 +3,7 @@ import { environment } from 'src/environments/environment';
 import { NoteAttachmentI, NoteI } from '../interfaces/notes';
 import { ReminderI } from '../interfaces/reminder';
 import type { LocationSavedPlace } from './location-saved-places.service';
+import type { EditorSessionRecord } from '../utils/editor-session';
 
 export type SyncResourceType = 'note' | 'reminder' | 'attachment';
 export type SyncMutationType =
@@ -70,7 +71,12 @@ export interface AppliedChangeSummary {
 export class OfflineStoreService {
   private readonly databaseName = 'kept-offline-v1';
   private readonly databaseVersion = 3;
+  // Editor drafts live in their own database so that adding them neither bumps
+  // the main schema version (older builds could not open it after a rollback)
+  // nor lets a draft write contend with sync transactions.
+  private readonly sessionDatabaseName = 'kept-editor-sessions-v1';
   private database?: Promise<IDBDatabase>;
+  private sessionDatabase?: Promise<IDBDatabase>;
   private lastStampPhysicalMs = 0;
   private lastStampLogical = 0;
 
@@ -1170,12 +1176,36 @@ export class OfflineStoreService {
     await this.request(db.transaction('syncState', 'readwrite').objectStore('syncState').put(next));
   }
 
+  async putEditorSession(record: EditorSessionRecord) {
+    const db = await this.openSessions();
+    await this.request(db.transaction('sessions', 'readwrite').objectStore('sessions').put(record));
+  }
+
+  async getEditorSession(key: string) {
+    const db = await this.openSessions();
+    return this.request<EditorSessionRecord | undefined>(db.transaction('sessions').objectStore('sessions').get(key));
+  }
+
+  async listEditorSessions(partition: string) {
+    const db = await this.openSessions();
+    return this.request<EditorSessionRecord[]>(
+      db.transaction('sessions').objectStore('sessions').index('partition').getAll(IDBKeyRange.only(partition))
+    );
+  }
+
+  async deleteEditorSession(key: string) {
+    const db = await this.openSessions();
+    await this.request(db.transaction('sessions', 'readwrite').objectStore('sessions').delete(key));
+  }
+
   async purgePartition(partition: string) {
     const db = await this.open();
     await Promise.all(
       ['notes', 'reminders', 'attachments', 'savedPlaces', 'outbox', 'blobs'].map(name => this.clearPartitionStore(db, name, partition))
     );
     await this.request(db.transaction('syncState', 'readwrite').objectStore('syncState').delete(partition));
+    const sessions = await this.openSessions().catch(() => undefined);
+    if (sessions) await this.clearPartitionStore(sessions, 'sessions', partition);
   }
 
   private resourceKey(partition: string, syncId: string) {
@@ -1328,6 +1358,25 @@ export class OfflineStoreService {
       });
     }
     return this.database;
+  }
+
+  private openSessions() {
+    if (!this.sessionDatabase) {
+      this.sessionDatabase = new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open(this.sessionDatabaseName, 1);
+        request.onupgradeneeded = () => {
+          const store = request.result.createObjectStore('sessions', { keyPath: 'key' });
+          store.createIndex('partition', 'partition', { unique: false });
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      }).catch(error => {
+        // Allow a later attempt to succeed (e.g. storage freed up).
+        this.sessionDatabase = undefined;
+        throw error;
+      });
+    }
+    return this.sessionDatabase;
   }
 
   private request<T = unknown>(request: IDBRequest<T>) {

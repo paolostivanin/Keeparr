@@ -489,3 +489,31 @@ describe('OfflineStoreService indexed note access', () => {
     expect((await store.getNoteBySyncId(partition, 'duplicate-b'))?.noteTitle).toBe('Preferred duplicate');
   });
 });
+
+describe('OfflineStoreService editor sessions', () => {
+  it('stores, lists, and removes drafts apart from notes and the outbox, and purges them with the partition', async () => {
+    const store = new OfflineStoreService();
+    const partition = `editor-session-test-${crypto.randomUUID()}`;
+    const other = `${partition}-other`;
+    const record = (owner: string, sessionKey: string) => ({
+      key: `${owner}|${sessionKey}`, partition: owner, sessionKey, base: null, draft: { noteTitle: 'Draft' } as any,
+      dirtyFields: ['noteTitle'] as any, generation: 1, savedGeneration: 0, localState: 'dirty' as const,
+      remoteState: 'none' as const, updatedAt: 1
+    });
+    await store.putEditorSession(record(partition, 'a'));
+    await store.putEditorSession(record(partition, 'new'));
+    await store.putEditorSession(record(other, 'a'));
+
+    expect((await store.getEditorSession(`${partition}|a`))?.draft.noteTitle).toBe('Draft');
+    expect((await store.listEditorSessions(partition)).map(item => item.sessionKey).sort()).toEqual(['a', 'new']);
+    expect(await store.listOutbox(partition)).toEqual([]);
+
+    await store.deleteEditorSession(`${partition}|a`);
+    expect(await store.getEditorSession(`${partition}|a`)).toBeUndefined();
+
+    await store.purgePartition(partition);
+    expect(await store.listEditorSessions(partition)).toEqual([]);
+    expect((await store.listEditorSessions(other)).length).toBe(1);
+    await store.purgePartition(other);
+  });
+});
