@@ -42,6 +42,7 @@ import { OfflineSyncService } from './offline-sync.service';
 import { UserPreferencesService } from './user-preferences.service';
 import { NotesStoreService } from './notes-store.service';
 import { withPresence } from '../utils/note-presence';
+import { sameDisplayedNote } from '../utils/note-identity';
 import { RequestGate, StaleRequestError, type RequestTicket } from '../utils/request-gate';
 
 const KeptDownloads = registerPlugin<KeptDownloadsPlugin>('KeptDownloads');
@@ -992,8 +993,25 @@ export class NotesService {
     this.queueLinkPreviewPreload(notes);
   }
 
+  private displayWindowTimer?: ReturnType<typeof setTimeout>;
+  private static readonly displayWindowSize = 120;
+
+  /** Remember what the top of the list looks like so the next start can paint it quickly. */
+  private scheduleDisplayWindowSave() {
+    if (this.displayWindowTimer) clearTimeout(this.displayWindowTimer);
+    this.displayWindowTimer = setTimeout(() => {
+      this.displayWindowTimer = undefined;
+      const partition = this.offlineSync.partition;
+      const notes = this.notesStore.value;
+      if (!partition || !notes?.length) return;
+      const syncIds = notes.slice(0, NotesService.displayWindowSize).flatMap(note => note.syncId ? [note.syncId] : []);
+      this.offlineStore.setDisplayWindow(partition, syncIds).catch(() => undefined);
+    }, 1500);
+  }
+
   private publishNotes(notes: NoteI[]) {
     this.publicationSerial++;
+    this.scheduleDisplayWindowSave();
     if (notes.length) this.lastNonEmptyNotes = notes;
     this.reminders.updateNoteLifecycle(notes);
     this.notesStore.publish(notes);
@@ -1448,10 +1466,32 @@ export class NotesService {
     const partition = this.offlineSync.partition;
     if (!partition) return;
     const serial = ++this.cacheProjectionSerial;
+    const stillWanted = () => serial === this.cacheProjectionSerial && partition === this.offlineSync.partition && ticket?.current !== false;
+    // Cold start of a large collection: paint the top of the list from a few point reads while the
+    // full read (which grows with the collection) is still running.
+    const provisional = new Map<string, NoteI>();
+    if (!this.notesList$.value?.length) {
+      const windowIds = await this.offlineStore.getDisplayWindow(partition).catch(() => [] as string[]);
+      const early = windowIds.length ? await this.offlineStore.getNotesBySyncIds(partition, windowIds).catch(() => [] as NoteI[]) : [];
+      if (early.length) {
+        const hydratedEarly = await Promise.all(early.map(note => this.hydrateOfflineNoteMedia(note)));
+        if (!stillWanted()) return;
+        if (!this.notesList$.value?.length) {
+          hydratedEarly.forEach(note => note.syncId && provisional.set(note.syncId, note));
+          this.hasLoaded = true;
+          this.publishNotes(this.withOptimisticNotes(hydratedEarly));
+        }
+      }
+    }
     const cached = await this.offlineStore.listNotes(partition);
-    const hydrated = await Promise.all(cached.map(note => this.hydrateOfflineNoteMedia(note)));
+    const hydrated = (await Promise.all(cached.map(note => this.hydrateOfflineNoteMedia(note))))
+      // Keep the identity of notes already on screen when nothing about them changed.
+      .map(note => {
+        const shown = note.syncId ? (provisional.get(note.syncId) ?? this.notesStore.getBySyncId(note.syncId)) : undefined;
+        return shown && sameDisplayedNote(shown, note) ? shown : note;
+      });
     // Only the newest projection of the active profile may publish.
-    if (serial !== this.cacheProjectionSerial || partition !== this.offlineSync.partition || ticket?.current === false) return;
+    if (!stillWanted()) return;
     hydrated.sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(b.sortOrder || 0) - Number(a.sortOrder || 0));
     this.hasLoaded = true;
     this.publishNotes(this.withOptimisticNotes(hydrated));

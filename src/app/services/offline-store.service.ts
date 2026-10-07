@@ -662,16 +662,31 @@ export class OfflineStoreService {
     return [...byIdentity.values()];
   }
 
+  /** IDs stored under more than one sync identity, found from index keys alone (no record is deserialized). */
+  private async duplicateNoteIds(partition: string) {
+    const db = await this.open();
+    return new Promise<number[]>((resolve, reject) => {
+      const index = db.transaction('notes').objectStore('notes').index('partitionAndId');
+      const request = index.openKeyCursor(IDBKeyRange.bound([partition, -Infinity], [partition, Infinity]));
+      const duplicates = new Set<number>();
+      let previous: number | undefined;
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return resolve([...duplicates]);
+        const id = (cursor.key as [string, number])[1];
+        if (id === previous) duplicates.add(id);
+        previous = id;
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+
   async repairDuplicateNoteIdentities(partition: string) {
-    const records = await this.listRecords<NoteI>('notes', partition);
-    const recordsById = new Map<number, StoredResource<NoteI>[]>();
-    for (const record of records) {
-      if (record.value.id == null) continue;
-      const matches = recordsById.get(record.value.id) || [];
-      matches.push(record);
-      recordsById.set(record.value.id, matches);
-    }
-    const duplicateGroups = [...recordsById.values()].filter(matches => matches.length > 1);
+    const duplicateIds = await this.duplicateNoteIds(partition);
+    if (!duplicateIds.length) return 0;
+    const duplicateGroups = (await Promise.all(duplicateIds.map(id => this.noteRecordsWithId(partition, id))))
+      .filter(matches => matches.length > 1);
     if (!duplicateGroups.length) return 0;
 
     const repairs = duplicateGroups.map(matches => {
@@ -1437,6 +1452,36 @@ export class OfflineStoreService {
     };
   }
 
+  /**
+   * The syncIds of the first notes the user saw, in display order. It lets the next start paint the top of
+   * the collection from a few point reads instead of waiting for every stored note to be read. It lives
+   * in the existing sync-state store under its own key, so the schema and rollback readability are unchanged.
+   */
+  async setDisplayWindow(partition: string, syncIds: readonly string[]) {
+    const db = await this.open();
+    await this.request(db.transaction('syncState', 'readwrite').objectStore('syncState').put({
+      key: `${partition}|display-window`, partition, syncIds: [...syncIds], updatedAt: Date.now()
+    }));
+  }
+
+  async getDisplayWindow(partition: string): Promise<string[]> {
+    const db = await this.open();
+    const record = await this.request<{ syncIds?: string[] } | undefined>(
+      db.transaction('syncState').objectStore('syncState').get(`${partition}|display-window`)
+    );
+    return Array.isArray(record?.syncIds) ? record!.syncIds : [];
+  }
+
+  /** Point reads in one transaction, in the requested order, skipping notes that no longer exist. */
+  async getNotesBySyncIds(partition: string, syncIds: readonly string[]) {
+    if (!syncIds.length) return [];
+    const db = await this.open();
+    const store = db.transaction('notes').objectStore('notes');
+    const records = await Promise.all(syncIds.map(syncId =>
+      this.request<StoredResource<NoteI> | undefined>(store.get(this.resourceKey(partition, syncId)))));
+    return records.flatMap(record => record ? [record.value] : []);
+  }
+
   async setSyncState(partition: string, cursor: number, serverTime?: number) {
     const current = await this.getSyncState(partition);
     const next: SyncState = {
@@ -1487,6 +1532,7 @@ export class OfflineStoreService {
       ['notes', 'reminders', 'attachments', 'savedPlaces', 'outbox', 'blobs'].map(name => this.clearPartitionStore(db, name, partition))
     );
     await this.request(db.transaction('syncState', 'readwrite').objectStore('syncState').delete(partition));
+    await this.request(db.transaction('syncState', 'readwrite').objectStore('syncState').delete(`${partition}|display-window`));
     const sessions = await this.openSessions().catch(() => undefined);
     if (sessions) await this.clearPartitionStore(sessions, 'sessions', partition);
   }

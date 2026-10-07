@@ -8,7 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const buildRoot = path.join(repositoryRoot, 'dist/keep/browser');
+const buildRootArgument = process.argv.find(argument => argument.startsWith('--build-root='))?.split('=')[1];
+const buildRoot = buildRootArgument ? path.resolve(buildRootArgument) : path.join(repositoryRoot, 'dist/keep/browser');
 const legacyBuildRoot = path.join(repositoryRoot, 'dist/keep');
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const countArgument = process.argv.find(argument => argument.startsWith('--notes='));
@@ -21,6 +22,8 @@ const virtualGridMode = ['on', 'off', 'auto'].includes(virtualizationArgument?.s
   ? virtualizationArgument.split('=')[1]
   : 'auto';
 const virtualGridEnabled = virtualGridMode === 'on';
+const profileMode = process.argv.includes('--profile');
+const cpuProfileMode = process.argv.includes('--cpu-profile');
 const imageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jAAAAAElFTkSuQmCC';
 
 function createNote(index) {
@@ -243,6 +246,118 @@ async function run() {
     await cdp('Page.addScriptToEvaluateOnNewDocument', {
       source: `localStorage.setItem('gk_session', JSON.stringify({id:1,username:'fixture',displayName:'Fixture',role:'admin',theme:'light',token:'fixture-token',demoNotesCreatedAt:'2026-01-01'}));localStorage.setItem('kept_user_preferences', JSON.stringify({richLinkPreviews:true}));`
     });
+    if (profileMode) {
+      // Diagnostic journey: cold and warm browsing, search, and scroll paging, each split into the
+      // part the user waits for (to the first card / to the results) and background settling.
+      const read = async () => Object.fromEntries((await cdp('Performance.getMetrics')).metrics.map(metric => [metric.name, metric.value]));
+      const delta = (before, after) => ({
+        scriptMs: +(((after.ScriptDuration || 0) - (before.ScriptDuration || 0)) * 1000).toFixed(1),
+        taskMs: +(((after.TaskDuration || 0) - (before.TaskDuration || 0)) * 1000).toFixed(1),
+        layoutMs: +(((after.LayoutDuration || 0) - (before.LayoutDuration || 0)) * 1000).toFixed(1),
+        styleMs: +(((after.RecalcStyleDuration || 0) - (before.RecalcStyleDuration || 0)) * 1000).toFixed(1),
+        layouts: Math.round((after.LayoutCount || 0) - (before.LayoutCount || 0)),
+        heapMb: +((after.JSHeapUsedSize || 0) / 1048576).toFixed(1),
+        domNodes: Math.round(after.Nodes || 0)
+      });
+      const waitFor = async (expression, limitMs = 20000) => {
+        const started = Date.now();
+        while (Date.now() - started < limitMs) {
+          if (await evaluate(expression)) return Date.now() - started;
+          await sleep(10);
+        }
+        throw new Error(`Timed out waiting for ${expression}`);
+      };
+      const cards = `document.querySelectorAll('app-notes .note-container').length`;
+      const journey = {};
+      for (const phase of ['cold', 'warm']) {
+        // Chromium's counters restart with each document, so a navigation phase is measured from zero.
+        const before = {};
+        const requestsBefore = apiRequests.length;
+        const sampling = cpuProfileMode;
+        if (sampling) {
+          await cdp('Profiler.enable');
+          await cdp('Profiler.setSamplingInterval', { interval: 200 });
+          await cdp('Profiler.start');
+        }
+        await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${appPath}` });
+        const toFirstCardMs = await waitFor(`${cards} > 0`);
+        const atFirstCard = await read();
+        const mountedAtFirstCard = await evaluate(cards);
+        await sleep(3000);
+        const settled = await read();
+        if (sampling) {
+          // Top self-time functions from navigation until the collection has settled (first card plus background work).
+          const { profile } = await cdp('Profiler.stop');
+          const interval = profile.timeDeltas;
+          const selfMs = new Map();
+          const nodes = new Map(profile.nodes.map(node => [node.id, node]));
+          profile.samples.forEach((id, index) => selfMs.set(id, (selfMs.get(id) || 0) + (interval[index] || 0) / 1000));
+          const byFunction = new Map();
+          for (const [id, ms] of selfMs) {
+            const frame = nodes.get(id).callFrame;
+            const key = `${frame.functionName || '(anonymous)'} ${frame.url.split('/').pop()}:${frame.lineNumber}`;
+            byFunction.set(key, (byFunction.get(key) || 0) + ms);
+          }
+          // Inclusive time shows which callers own the self-time above.
+          const inclusive = new Map();
+          const total = id => {
+            const node = nodes.get(id);
+            const own = selfMs.get(id) || 0;
+            const value = own + (node.children || []).reduce((sum, child) => sum + total(child), 0);
+            const frame = node.callFrame;
+            const key = `${frame.functionName || '(anonymous)'} ${frame.url.split('/').pop()}:${frame.lineNumber}:${frame.columnNumber}`;
+            if (!['(root)', '(program)', '(idle)'].includes(frame.functionName)) inclusive.set(key, Math.max(inclusive.get(key) || 0, value));
+            return value;
+          };
+          total(profile.nodes[0].id);
+          journey[`${phase}TopInclusiveTime`] = [...inclusive].filter(([name]) => !/polyfills|chunk-KPH/.test(name)).sort((x, y) => y[1] - x[1]).slice(0, 16).map(([name, ms]) => `${ms.toFixed(0)}ms ${name}`);
+          journey[`${phase}TopSelfTime`] = [...byFunction].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([name, ms]) => `${ms.toFixed(0)}ms ${name}`);
+        }
+
+        journey[phase] = {
+          toFirstCardMs,
+          mountedAtFirstCard,
+          interactive: delta(before, atFirstCard),
+          backgroundAfterFirstCard: delta(atFirstCard, settled),
+          apiRequests: apiRequests.length - requestsBefore
+        };
+      }
+      // Search: time from typing to the filtered result, then clearing.
+      let before = await read();
+      let requestsBefore = apiRequests.length;
+      const searchStarted = Date.now();
+      await evaluate(`(() => { const input = document.querySelector('app-navbar input[placeholder="Search your notes"]'); input.value = 'Performance note 23'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await waitFor(`(() => { const titles = [...document.querySelectorAll('app-notes .note-container .title')].map(title => title.textContent); return titles.length > 0 && titles.every(title => title.includes('23')); })()`);
+      const searchMs = Date.now() - searchStarted;
+      journey.search = { toResultsMs: searchMs, ...delta(before, await read()), apiRequests: apiRequests.length - requestsBefore, mounted: await evaluate(cards) };
+      before = await read();
+      const clearStarted = Date.now();
+      await evaluate(`document.querySelector('app-navbar button[aria-label="Clear search"]').click()`);
+      await waitFor(`${cards} > ${virtualGridEnabled ? 5 : 30}`);
+      journey.clearSearch = { toResultsMs: Date.now() - clearStarted, ...delta(before, await read()), mounted: await evaluate(cards) };
+      // Paging: scroll to the bottom in steps until nothing new is reachable.
+      before = await read();
+      requestsBefore = apiRequests.length;
+      const steps = [];
+      let quiet = 0;
+      for (let step = 0; step < 80 && quiet < 6; step++) {
+        const requestsAtStep = apiRequests.length;
+        await evaluate(`window.scrollTo(0, document.documentElement.scrollHeight)`);
+        await sleep(250);
+        const height = await evaluate(`document.documentElement.scrollHeight`);
+        quiet = height === steps[steps.length - 1] && apiRequests.length === requestsAtStep ? quiet + 1 : 0;
+        steps.push(height);
+      }
+      journey.scrollThroughCollection = {
+        steps: steps.length,
+        pageRequests: apiRequests.slice(requestsBefore).filter(request => request.startsWith('GET /api/notes')).length,
+        ...delta(before, await read()),
+        mountedAtEnd: await evaluate(cards)
+      };
+      assert.equal(errors.length, 0, `Browser runtime errors: ${errors.map(error => error.text).join('; ')}`);
+      console.log('PROFILE ' + JSON.stringify({ noteCount: fixtureCount, virtualGrid: virtualGridEnabled ? 'on' : 'off', journey }));
+      return;
+    }
     await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${appPath}` });
     await sleep(2500);
 

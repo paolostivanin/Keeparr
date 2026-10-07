@@ -49,6 +49,8 @@ describe('NotesService local persistence errors', () => {
     });
     spyOn(service as any, 'withOptimisticNotes').and.returnValue([]);
     spyOn(service as any, 'publishNotes');
+    (service as any).notesList$ = { value: [{ id: 1 }] };
+    (service as any).cacheProjectionSerial = 0;
 
     await (service as any).publishCachedNotes('');
 
@@ -539,12 +541,15 @@ describe('NotesService stale request handling', () => {
     delete (instance as any).publishCachedNotes;
     const releases: Array<() => void> = [];
     (instance as any).offlineStore = {
+      getDisplayWindow: async () => [],
       listNotes: () => new Promise<NoteI[]>(resolve => { releases.push(() => resolve([card(releases.length)])); })
     };
     (instance as any).hydrateOfflineNoteMedia = async (value: NoteI) => value;
 
     const older = (instance as any).publishCachedNotes('');
     const newer = (instance as any).publishCachedNotes('');
+    await tick();
+    expect(releases.length).toBe(2);
     releases[1]();
     await newer;
     releases[0]();
@@ -577,5 +582,63 @@ describe('NotesService stale request handling', () => {
     expect(finalIds).toContain(3);
     expect(finalIds).toContain(2);
     expect(published.length).toBe(1); // only the page load went through publishNotes; the change is a delta
+  });
+});
+
+describe('NotesService cold-start projection', () => {
+  const mk = (id: number, title = `Note ${id}`): NoteI => ({ ...note, id, syncId: `n${id}`, noteTitle: title });
+
+  function harness(options: { windowIds: string[]; all: NoteI[]; current?: NoteI[] }) {
+    const store = new NotesStoreService();
+    if (options.current) store.publish(options.current);
+    const published: NoteI[][] = [];
+    const instance = Object.create(NotesService.prototype) as NotesService;
+    Object.assign(instance, {
+      listGate: new RequestGate(), cacheProjectionSerial: 0, publicationSerial: 0, hasLoaded: false,
+      notesStore: store, notesList$: store.notes$,
+      offlineSync: { partition: 'p' },
+      offlineStore: {
+        getDisplayWindow: async () => options.windowIds,
+        getNotesBySyncIds: async (_p: string, ids: string[]) => ids.flatMap(id => options.all.filter(item => item.syncId === id)),
+        listNotes: async () => options.all
+      }
+    });
+    (instance as any).hydrateOfflineNoteMedia = async (value: NoteI) => ({ ...value });
+    (instance as any).withOptimisticNotes = (notes: NoteI[]) => notes;
+    (instance as any).publishNotes = (notes: NoteI[]) => { published.push(notes); store.publish(notes); };
+    return { instance, published, store };
+  }
+
+  it('paints the remembered top of the list first, then the complete collection, reusing unchanged note objects', async () => {
+    const all = [mk(1), mk(2), mk(3)];
+    const { instance, published } = harness({ windowIds: ['n1', 'n2'], all });
+
+    await (instance as any).publishCachedNotes('');
+
+    expect(published.length).toBe(2);
+    expect(published[0].map(item => item.id)).toEqual([1, 2]);
+    expect(published[1].map(item => item.id)).toEqual([1, 2, 3]);
+    expect(published[1][0]).toBe(published[0][0]);
+    expect(published[1][1]).toBe(published[0][1]);
+  });
+
+  it('publishes the full collection only when nothing is remembered or the list is already populated', async () => {
+    const all = [mk(1), mk(2)];
+    const none = harness({ windowIds: [], all });
+    await (none.instance as any).publishCachedNotes('');
+    expect(none.published.length).toBe(1);
+
+    const populated = harness({ windowIds: ['n1'], all, current: [mk(9)] });
+    await (populated.instance as any).publishCachedNotes('');
+    expect(populated.published.length).toBe(1);
+    expect(populated.published[0].map(item => item.id)).toEqual([1, 2]);
+  });
+
+  it('does not publish an early window for a profile that is no longer active', async () => {
+    const { instance, published } = harness({ windowIds: ['n1'], all: [mk(1)] });
+    const pending = (instance as any).publishCachedNotes('');
+    (instance as any).offlineSync = { partition: 'someone-else' };
+    await pending;
+    expect(published).toEqual([]);
   });
 });

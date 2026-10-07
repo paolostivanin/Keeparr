@@ -5,6 +5,7 @@ import { SharedService } from 'src/app/services/shared.service';
 import { bgColors, bgImages } from 'src/app/interfaces/tooltip';
 import { LabelI } from 'src/app/interfaces/labels';
 import { NoteI } from 'src/app/interfaces/notes';
+import { selectedNotesOf } from 'src/app/utils/note-selection';
 
 
 @Component({
@@ -258,8 +259,26 @@ export class NavbarComponent implements OnInit, OnDestroy {
     }
   }
 
+  private selectedNotesCache?: { ids: readonly number[]; all: readonly NoteI[]; notes: NoteI[] }
+
+  /**
+   * The selected notes. The menus below evaluate this in the template on every change
+   * detection pass, so it must not scan the whole collection: nothing selected is O(1),
+   * and otherwise the result is reused until the selection or the collection changes.
+   */
+  private selectedNotes() {
+    const ids = this.Shared.selectedNoteIds.value
+    if (!ids.length) return []
+    const all = this.Shared.note.all
+    const cached = this.selectedNotesCache
+    if (cached && cached.ids === ids && cached.all === all) return cached.notes
+    const notes = selectedNotesOf(all, ids)
+    this.selectedNotesCache = { ids, all, notes }
+    return notes
+  }
+
   isSelectedBinder(name: string) {
-    const selected = this.Shared.note.all.filter(note => note.id && this.Shared.selectedNoteIds.value.includes(note.id))
+    const selected = this.selectedNotes()
     return !!selected.length && selected.every(note => (note.binder || '') === (name || ''))
   }
 
@@ -338,7 +357,7 @@ export class NavbarComponent implements OnInit, OnDestroy {
   }
 
   isSelectedLabel(label: LabelI) {
-    const selected = this.Shared.note.all.filter(note => note.id && this.Shared.selectedNoteIds.value.includes(note.id))
+    const selected = this.selectedNotes()
     return !!selected.length && selected.every(note => note.labels.some(noteLabel => noteLabel.id === label.id && noteLabel.added))
   }
 

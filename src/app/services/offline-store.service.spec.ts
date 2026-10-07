@@ -776,3 +776,23 @@ describe('OfflineStoreService interrupted transactions and upgrades', () => {
     await store.purgePartition(partition);
   });
 });
+
+describe('OfflineStoreService display window', () => {
+  it('returns the remembered top of the list in order by point reads, skips vanished notes, and is purged with the partition', async () => {
+    const store = new OfflineStoreService();
+    const partition = `window-test-${crypto.randomUUID()}`;
+    await store.replaceSnapshot(partition, [note(1, 'a', 'A'), note(2, 'b', 'B'), note(3, 'c', 'C')], [], [], 1, Date.now());
+    expect(await store.getDisplayWindow(partition)).toEqual([]);
+
+    await store.setDisplayWindow(partition, ['c', 'gone', 'a']);
+
+    expect(await store.getDisplayWindow(partition)).toEqual(['c', 'gone', 'a']);
+    expect((await store.getNotesBySyncIds(partition, ['c', 'gone', 'a'])).map(item => item.syncId)).toEqual(['c', 'a']);
+    expect(await store.getNotesBySyncIds(partition, [])).toEqual([]);
+    // It never collides with the partition's sync cursor.
+    expect((await store.getSyncState(partition)).cursor).toBe(1);
+
+    await store.purgePartition(partition);
+    expect(await store.getDisplayWindow(partition)).toEqual([]);
+  });
+});

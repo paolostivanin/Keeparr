@@ -214,16 +214,17 @@ export class NavComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!el) return;
     this.updateLabelsOverflowState();
     if (typeof ResizeObserver !== 'undefined') {
-      this.labelsResizeObserver = new ResizeObserver(() => this.updateLabelsOverflowState());
+      this.labelsResizeObserver = new ResizeObserver(() => this.scheduleLabelsOverflowUpdate());
       this.labelsResizeObserver.observe(el);
     }
     if (typeof MutationObserver !== 'undefined') {
-      this.labelsMutationObserver = new MutationObserver(() => this.updateLabelsOverflowState());
+      this.labelsMutationObserver = new MutationObserver(() => this.scheduleLabelsOverflowUpdate());
       this.labelsMutationObserver.observe(el, { childList: true });
     }
   }
 
   ngOnDestroy() {
+    if (this.labelsOverflowFrame != null) cancelAnimationFrame(this.labelsOverflowFrame);
     this.labelsResizeObserver?.disconnect();
     this.labelsMutationObserver?.disconnect();
     this.subscriptions.forEach(sub => sub.unsubscribe());
@@ -231,12 +232,23 @@ export class NavComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   onLabelsScroll() {
-    this.updateLabelsOverflowState();
+    this.scheduleLabelsOverflowUpdate();
   }
 
   @HostListener('window:resize')
   onWindowResizeForOverflow() {
-    this.updateLabelsOverflowState();
+    this.scheduleLabelsOverflowUpdate();
+  }
+
+  private labelsOverflowFrame?: number;
+
+  /** Reading scroll geometry forces layout; coalesce bursts (observers, scroll, resize) into one read per frame. */
+  private scheduleLabelsOverflowUpdate() {
+    if (this.labelsOverflowFrame != null) return;
+    this.labelsOverflowFrame = requestAnimationFrame(() => {
+      this.labelsOverflowFrame = undefined;
+      this.updateLabelsOverflowState();
+    });
   }
 
   private updateLabelsOverflowState() {
