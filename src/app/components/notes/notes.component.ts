@@ -1308,11 +1308,23 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     return actions
   }
 
+  /** The complete note for a card command, or null (with a visible message) if only a preview is available. */
+  private async completeNote(note: NoteI) {
+    try {
+      return await this.notesService.fullDocument(note)
+    } catch {
+      try { Snackbar.show({ pos: 'bottom-left', text: "Couldn't load the complete note. Nothing was changed.", duration: 3500 }) } catch {}
+      return null
+    }
+  }
+
   async toggleOverviewCheckbox(note: NoteI, cb: CheckboxI, event: Event) {
     event.stopPropagation()
     event.preventDefault()
     if (this.ignoreSyntheticOverviewCheckboxMouse(event)) return
-    if (note.isCardPreview && note.id) note = await this.notesService.get(note.id).catch(() => note)
+    const full = await this.completeNote(note)
+    if (!full) return
+    note = full
     const checkBoxes = (note.checkBoxes || []).map(item => ({ ...item }))
     this.toggleChecklistItemWithChildren(checkBoxes, cb.id)
     await this.notesService.updateKey({ checkBoxes }, note.id!)
@@ -1323,7 +1335,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     event.stopPropagation()
     event.preventDefault()
     if (this.ignoreSyntheticOverviewCheckboxMouse(event)) return
-    if (note.isCardPreview && note.id) note = await this.notesService.get(note.id).catch(() => note)
+    const full = await this.completeNote(note)
+    if (!full) return
+    note = full
     const checkBoxes = (note.checkBoxes || []).filter(item => item.id !== cb.id).map(item => ({ ...item }))
     await this.notesService.updateKey({ checkBoxes }, note.id!)
     this.scheduleBuildMasonry(true)
@@ -1834,16 +1848,12 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     input.value = ''
     if (!files.length) return
     const imageData = await Promise.all(files.map(file => this.fileToNoteImage(file, 'bottom')))
-    if (note.isCardPreview) {
-      const fullNote = await this.notesService.get(note.id).catch(() => note)
-      if (!fullNote) return
-      note = fullNote
-    }
-    note.images = [...(note.images || []), ...imageData]
+    const fullNote = await this.completeNote(note)
+    if (!fullNote) return
     this.masonrySignatureToken++
-    this.Shared.note.id = note.id!
+    this.Shared.note.id = fullNote.id!
     await this.Shared.note.db.updateKey({
-      images: note.images,
+      images: [...(fullNote.images || []), ...imageData],
       isCbox: false
     })
     this.cd.detectChanges()
@@ -1976,12 +1986,12 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     const files = Array.from(event.dataTransfer.files).filter(file => file.type.startsWith('image/'))
     if (!files.length) return
     const imageData = await Promise.all(files.map(file => this.fileToNoteImage(file, 'bottom')))
-    if (note.isCardPreview && note.id) note = await this.notesService.get(note.id).catch(() => note)
-    note.images = [...(note.images || []), ...imageData]
+    const fullNote = await this.completeNote(note)
+    if (!fullNote) return
     this.masonrySignatureToken++
-    this.Shared.note.id = note.id!
+    this.Shared.note.id = fullNote.id!
     await this.Shared.note.db.updateKey({
-      images: note.images,
+      images: [...(fullNote.images || []), ...imageData],
       isCbox: false
     })
     this.cd.detectChanges()

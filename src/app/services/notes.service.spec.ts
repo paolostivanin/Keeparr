@@ -1,5 +1,5 @@
 import { NoteI } from '../interfaces/notes';
-import { LocalNotePersistenceError, NotesService } from './notes.service';
+import { LocalNotePersistenceError, NoteIncompleteError, NotesService } from './notes.service';
 import { of, throwError } from 'rxjs';
 
 const note: NoteI = {
@@ -297,5 +297,56 @@ describe('NotesService local persistence errors', () => {
 
     expect(thrown instanceof LocalNotePersistenceError).toBeTrue();
     expect((thrown as LocalNotePersistenceError).originalError).toBe(failure);
+  });
+});
+
+describe('NotesService full documents versus previews', () => {
+  const preview: NoteI = { ...note, noteBody: 'Truncated…', checkBoxes: [{ id: 1, done: false, data: 'first only' }], isCardPreview: true };
+
+  function service(get: jasmine.Spy) {
+    const instance = Object.create(NotesService.prototype) as NotesService;
+    (instance as any).get = get;
+    return instance;
+  }
+
+  it('returns a complete note unchanged without a request', async () => {
+    const get = jasmine.createSpy('get');
+    const complete = { ...preview, isCardPreview: false };
+    expect(await service(get).fullDocument(complete)).toBe(complete);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('loads the complete document behind a preview', async () => {
+    const full = { ...preview, noteBody: 'Everything', checkBoxes: [{ id: 1, done: false, data: 'a' }, { id: 2, done: false, data: 'b' }], isCardPreview: false };
+    const get = jasmine.createSpy('get').and.resolveTo(full);
+    expect(await service(get).fullDocument(preview)).toBe(full);
+    expect(get).toHaveBeenCalledWith(1, { merge: false });
+  });
+
+  it('refuses to hand back a preview when the complete note cannot be loaded or is itself truncated', async () => {
+    await expectAsync(service(jasmine.createSpy('get').and.rejectWith(new Error('offline'))).fullDocument(preview)).toBeRejectedWithError(NoteIncompleteError);
+    await expectAsync(service(jasmine.createSpy('get').and.resolveTo(preview)).fullDocument(preview)).toBeRejectedWithError(NoteIncompleteError);
+    await expectAsync(service(jasmine.createSpy('get')).fullDocument({ ...preview, id: -3 })).toBeRejectedWithError(NoteIncompleteError);
+  });
+
+  it('keeps a patched preview marked as a preview so truncated content is never treated as complete', async () => {
+    const persisted: NoteI[] = [];
+    const instance = Object.create(NotesService.prototype) as NotesService;
+    Object.assign(instance, {
+      auth: { currentUser: { id: 1 } },
+      offlineStore: { ensureNoteIdentity: () => undefined },
+      offlineSync: { partition: 'p' }
+    });
+    (instance as any).cachedOrLoadedNote = async () => preview;
+    (instance as any).persistOfflineNotePatch = async (value: NoteI) => { persisted.push(value); return { note: value }; };
+    (instance as any).cacheNoteMedia = async () => undefined;
+    (instance as any).mergeNoteIntoList = () => undefined;
+    (instance as any).refreshLocalReminderContent = async () => undefined;
+    (instance as any).scheduleIosReminderRefresh = () => undefined;
+
+    await instance.updateKey({ pinned: true }, 1);
+
+    expect(persisted[0].isCardPreview).toBeTrue();
+    expect(persisted[0].pinned).toBeTrue();
   });
 });

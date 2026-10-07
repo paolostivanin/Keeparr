@@ -51,6 +51,14 @@ export class LocalNotePersistenceError extends Error {
   }
 }
 
+/** A command needs the complete note but only a truncated card preview is available. */
+export class NoteIncompleteError extends Error {
+  constructor() {
+    super('The complete note is not available.');
+    this.name = 'NoteIncompleteError';
+  }
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -538,7 +546,8 @@ export class NotesService {
   async updateKey(object: UpdateKeyI, id: number) {
     if (id === -1) return;
     const existing = await this.cachedOrLoadedNote(id);
-    const local = { ...existing, ...object, id, isCardPreview: false, updatedAt: new Date().toISOString(), lastEditorUserId: this.auth.currentUser?.id } as NoteI;
+    // A field patch does not make a truncated preview complete.
+    const local = { ...existing, ...object, id, isCardPreview: !!existing?.isCardPreview, updatedAt: new Date().toISOString(), lastEditorUserId: this.auth.currentUser?.id } as NoteI;
     this.offlineStore.ensureNoteIdentity(local);
     if (id < 0) {
       const { note: persisted } = await this.persistOfflineNote(local);
@@ -908,6 +917,24 @@ export class NotesService {
         throw error;
       }
     } else return {} as NoteI
+  }
+
+  /**
+   * The complete document behind a card. Commands that derive a full field
+   * (checklist, images, body) from the note must use this: a preview carries
+   * truncated content, and writing it back would silently drop the rest.
+   */
+  async fullDocument(note: NoteI): Promise<NoteI> {
+    if (!note.isCardPreview) return note;
+    if (!note.id || note.id < 0) throw new NoteIncompleteError();
+    let full: NoteI;
+    try {
+      full = await this.get(note.id, { merge: false });
+    } catch {
+      throw new NoteIncompleteError();
+    }
+    if (!full || full.isCardPreview) throw new NoteIncompleteError();
+    return full;
   }
 
   async ensureNotesVisible(ids: number[]) {

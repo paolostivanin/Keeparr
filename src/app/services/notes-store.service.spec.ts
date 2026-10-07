@@ -83,4 +83,12 @@ describe('NotesStoreService', () => {
     expect(store.getByServerId(42)?.noteTitle).toBe('Accepted by server');
     expect(store.getBySyncId('stable-sync-id')?.id).toBe(42);
   });
+
+  it('places a note whose pinned flag is missing in the unpinned section instead of dropping it', () => {
+    const legacy = { ...note(3, 'legacy', 'Legacy'), pinned: undefined } as unknown as NoteI;
+    store.publish([{ ...note(1, 'p', 'Pinned'), pinned: true }, legacy]);
+    expect(store.pinnedNotes().map(item => item.id)).toEqual([1]);
+    expect(store.unpinnedNotes().map(item => item.id)).toEqual([3]);
+    expect(store.pinnedNotes().length + store.unpinnedNotes().length).toBe(store.allNotes().length);
+  });
 });

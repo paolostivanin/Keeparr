@@ -15,7 +15,7 @@ export class NotesStoreService {
   private readonly records = signal<NoteI[] | null>(null);
   readonly allNotes = computed(() => this.records() || EMPTY_NOTES);
   readonly pinnedNotes = computed(() => this.allNotes().filter(note => note.pinned === true));
-  readonly unpinnedNotes = computed(() => this.allNotes().filter(note => note.pinned === false));
+  readonly unpinnedNotes = computed(() => this.allNotes().filter(note => note.pinned !== true));
   readonly notes$ = new BehaviorSubject<NoteI[] | null>(null);
   private readonly bySyncId = new Map<string, NoteI>();
   private readonly byServerId = new Map<number, NoteI>();

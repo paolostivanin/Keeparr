@@ -81,7 +81,7 @@ Primary owners: `InputComponent`, `NotesService`, `OfflineStoreService`, `Offlin
 
 Primary owners: `NotesStoreService`, `SharedService` facades, `NotesToolsPipe`, `NotesComponent`, list/grid adapters.
 
-- [ ] **M2.1 — Canonical document/query ownership.** Finish the necessary store/consumer migration, distinguish full documents from previews at boundaries, and centralize ordering/filter/search semantics, including pinned, binders, labels, archive/trash, sharing, reminders, attachments, and all/current search scope. Preserve identity and cache/server cursor separation.
+- [x] **M2.1 — Canonical document/query ownership.** View membership, search scope, operator/date/fuzzy search and reminder ordering now live in one framework-free `NoteQuery` (`utils/note-query.ts`); `NotesToolsPipe` is a thin adapter supplying user/reminder context. Normalized semantics: active/archived/trashed read flags by truthiness (a cached note with missing flags used to vanish from home *and* trash), notes without a `pinned` flag land in the unpinned section instead of in neither, label pages tolerate missing label arrays, and the reminders view orders by a note's earliest pending reminder with untimed ones last. Preview/document boundary: `NotesService.fullDocument()` returns a complete note or throws `NoteIncompleteError`; card checklist/image commands use it and abort with a visible message instead of falling back to a truncated preview (which would have overwritten the full checklist/images), and `updateKey` no longer marks a patched preview as complete. Cache/server cursor handling and identity indexes are unchanged.
 - [ ] **M2.2 — Narrow card updates.** Remove remaining card-facing in-place mutations and broad presence/status invalidations; reuse unchanged presentation values and update async preview/preferences correctly. Extend existing cached models only where needed; verify media/link resize handling with the existing observer.
 - [ ] **M2.3 — Version/cancel stale requests.** Prevent obsolete search, hydration, and page results from replacing newer state; preserve search operators/date/fuzzy behavior and avoid unnecessary full-collection work. A cancelled open must never mount an incomplete note or reopen an editor.
 - [ ] **M2.4 — Diagnose and resolve scaling costs.** Trace 100/1,000/10,000-note cold/warm browsing, search, paging, script/layout work, and mounted counts. Identify interaction-critical versus background/bootstrap cost before selecting the remedy. Evaluate the grid prototype against Bricks; retain the faster working fallback until correctness and performance justify promotion.
@@ -403,4 +403,18 @@ Reference build/device/fixture: Node 24/Angular production build; Chrome Headles
 Before / after performance evidence: none; remap scans reminders/attachments only when a local ID is replaced.
 Remaining acceptance or blocker: rollback to a pre-M1 build with queued guarded entries was reasoned about (extra fields are ignored) but not executed; real multi-account/offline sign-out journeys belong to M6.
 Next dependency: M2.1 canonical document/query ownership.
+```
+
+### 2026-10-07 canonical note query and preview boundary
+
+```text
+Package / date: M2.1 canonical document/query ownership / 2026-10-07
+Status: implemented and verified by unit/build checks; no browser interaction run
+Files / responsibilities changed: new `utils/note-query.ts` (+ spec) moved out of `pipes/notes-tools.pipe.ts`; `NotesStoreService` unpinned selector; `NotesService.fullDocument`/`NoteIncompleteError` and `updateKey` preview flag; `NotesComponent` overview checkbox and image commands.
+Contract / storage / lifecycle decisions: no storage or protocol change. Search scope still widens only home/binder views; archived, trashed, shared, reminders, attachments and label views search within themselves (characterized, not changed).
+Checks executed and outcomes: Chrome Headless 129/129 on two runs (17 new tests: view membership incl. missing flags, scopes, labels, sharing, attachments, reminder ordering; text/typo/operator/date search; preview search text; identity preservation for empty queries; unpinned fallback; full-document/preview rules and patched-preview flag); `npm run build`, utils `node --test` and `git diff --check` passed.
+Reference build/device/fixture: Node 24/Angular production build; Chrome Headless 154.
+Before / after performance evidence: none; the engine is the pipe's logic moved unchanged apart from the semantic fixes above.
+Remaining acceptance or blocker: `Shared.note.*` section setters and `notes$` remain compatibility facades; consumers that read `notesList$` directly were not migrated.
+Next dependency: M2.2 narrow card updates.
 ```
