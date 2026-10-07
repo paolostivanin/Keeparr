@@ -298,6 +298,33 @@ export class OfflineStoreService {
             }
           }
         }
+        // Dependents kept alive by pending work still point at a local note ID that the
+        // server snapshot has since replaced with a positive one.
+        const remappedNoteIds = new Map<number, number>();
+        snapshotNotes.forEach((note, syncId) => {
+          const localId = localNotes.get(syncId)?.id;
+          if (localId != null && localId < 0 && note.id != null && note.id > 0) remappedNoteIds.set(localId, note.id);
+        });
+        if (remappedNoteIds.size) {
+          snapshotReminders.forEach((reminder, syncId) => {
+            const to = reminder.noteId != null ? remappedNoteIds.get(reminder.noteId) : undefined;
+            if (to != null) snapshotReminders.set(syncId, { ...reminder, noteId: to });
+          });
+          snapshotAttachments.forEach((attachment, syncId) => {
+            const to = attachment.noteId != null ? remappedNoteIds.get(attachment.noteId) : undefined;
+            if (to != null) snapshotAttachments.set(syncId, { ...attachment, noteId: to });
+          });
+          snapshotNotes.forEach((note, syncId) => {
+            if (!note.attachments?.some(attachment => attachment.noteId != null && remappedNoteIds.has(attachment.noteId))) return;
+            snapshotNotes.set(syncId, {
+              ...note,
+              attachments: note.attachments.map(attachment => {
+                const to = attachment.noteId != null ? remappedNoteIds.get(attachment.noteId) : undefined;
+                return to != null ? { ...attachment, noteId: to } : attachment;
+              })
+            });
+          });
+        }
         snapshotNotes.forEach((note, syncId) => {
           stores.notes.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: note });
         });
@@ -525,6 +552,13 @@ export class OfflineStoreService {
           }
           const write = () => {
             store.put({ key, partition, syncId: change.resourceSyncId, value: desired });
+            // A locally created note just received its server ID: its reminders and
+            // attachments must follow it, in the same transaction.
+            if (change.resourceType === 'note') {
+              const from = (previous as NoteI | undefined)?.id;
+              const to = (desired as NoteI).id;
+              if (from != null && from < 0 && to != null && to > 0) this.remapNoteDependents(reminders, attachments, partition, from, to);
+            }
             recordChange(change, true, false);
           };
           if (change.resourceType !== 'note' || (desired as NoteI).id == null) {
@@ -602,6 +636,19 @@ export class OfflineStoreService {
       transaction.onerror = () => reject(transaction.error || new Error('Could not apply the offline change page.'));
       transaction.onabort = () => reject(transaction.error || new Error('Offline change page was aborted.'));
     });
+  }
+
+  private remapNoteDependents(reminders: IDBObjectStore, attachments: IDBObjectStore, partition: string, from: number, to: number) {
+    for (const store of [reminders, attachments]) {
+      const cursor = store.index('partition').openCursor(IDBKeyRange.only(partition));
+      cursor.onsuccess = () => {
+        const record = cursor.result;
+        if (!record) return;
+        const stored = record.value as StoredResource<ReminderI | NoteAttachmentI>;
+        if (stored.value.noteId === from) record.update({ ...stored, value: { ...stored.value, noteId: to } });
+        record.continue();
+      };
+    }
   }
 
   async listNotes(partition: string) {
@@ -786,6 +833,7 @@ export class OfflineStoreService {
       const notes = transaction.objectStore('notes');
       const outbox = transaction.objectStore('outbox');
       let cachedNote: NoteI | undefined;
+      let failure: unknown;
       const cachedRequest = notes.get(this.resourceKey(partition, syncId));
       cachedRequest.onerror = () => transaction.abort();
       cachedRequest.onsuccess = () => {
@@ -798,7 +846,7 @@ export class OfflineStoreService {
         let coalesced = false;
         const cursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
         cursor.onerror = () => transaction.abort();
-        cursor.onsuccess = () => {
+        cursor.onsuccess = this.abortOnThrow(transaction, () => {
           const queued = cursor.result;
           if (queued) {
             const previous = queued.value as OutboxEntry;
@@ -821,11 +869,11 @@ export class OfflineStoreService {
             value: persisted
           });
           outbox.put(entry);
-        };
+        }, error => { failure = error; });
       };
       transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error || new Error('Could not persist the note and outbox entry.'));
-      transaction.onabort = () => reject(transaction.error || new Error('Note persistence was aborted.'));
+      transaction.onerror = () => reject(failure ?? transaction.error ?? new Error('Could not persist the note and outbox entry.'));
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('Note persistence was aborted.'));
     });
     return { note: persisted, entry };
   }
@@ -872,9 +920,10 @@ export class OfflineStoreService {
       const outbox = transaction.objectStore('outbox');
       let replacedUnsentUpsert = false;
       let replacedGuard: NoteGuard | undefined;
+      let failure: unknown;
       const cursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
       cursor.onerror = () => transaction.abort();
-      cursor.onsuccess = () => {
+      cursor.onsuccess = this.abortOnThrow(transaction, () => {
         const queued = cursor.result;
         if (queued) {
           const previous = queued.value as OutboxEntry;
@@ -898,10 +947,10 @@ export class OfflineStoreService {
         }
         notes.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: persisted });
         outbox.put(entry);
-      };
+      }, error => { failure = error; });
       transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error || new Error('Could not persist the note patch and outbox entry.'));
-      transaction.onabort = () => reject(transaction.error || new Error('Note patch persistence was aborted.'));
+      transaction.onerror = () => reject(failure ?? transaction.error ?? new Error('Could not persist the note patch and outbox entry.'));
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('Note patch persistence was aborted.'));
     });
     return { note: persisted, entry };
   }
@@ -1421,6 +1470,17 @@ export class OfflineStoreService {
     await this.request(db.transaction('sessions', 'readwrite').objectStore('sessions').delete(key));
   }
 
+  /** True when the profile holds edits that were never delivered: queued operations or unsaved drafts. */
+  async hasUnsyncedWork(partition: string) {
+    const db = await this.open();
+    const queued = await this.request<number>(
+      db.transaction('outbox').objectStore('outbox').index('partition').count(IDBKeyRange.only(partition))
+    );
+    if (queued > 0) return true;
+    const sessions = await this.listEditorSessions(partition).catch(() => [] as EditorSessionRecord[]);
+    return sessions.some(session => session.dirtyFields.length > 0);
+  }
+
   async purgePartition(partition: string) {
     const db = await this.open();
     await Promise.all(
@@ -1618,10 +1678,30 @@ export class OfflineStoreService {
     return new Promise<void>((resolve, reject) => {
       const transaction = db.transaction(storeNames, mode);
       const stores = Object.fromEntries(storeNames.map(name => [name, transaction.objectStore(name)]));
-      work(stores);
+      let failure: unknown;
+      // A write that throws (e.g. a value that cannot be cloned) must abort the whole
+      // transaction; otherwise the writes before it would still commit.
+      try {
+        work(stores);
+      } catch (error) {
+        failure = error;
+        try { transaction.abort(); } catch { /* already finished */ }
+      }
       transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
+      transaction.onerror = () => reject(failure ?? transaction.error);
+      transaction.onabort = () => reject(failure ?? transaction.error);
     });
+  }
+
+  /** Wrap an IndexedDB request handler so a thrown error aborts its transaction instead of surfacing as an uncaught error. */
+  private abortOnThrow(transaction: IDBTransaction, handler: () => void, fail: (error: unknown) => void) {
+    return () => {
+      try {
+        handler();
+      } catch (error) {
+        fail(error);
+        try { transaction.abort(); } catch { /* already finished */ }
+      }
+    };
   }
 }

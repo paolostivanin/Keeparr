@@ -631,3 +631,148 @@ describe('OfflineStoreService guarded note saves', () => {
     expect((await store.getNoteBySyncId(partition, 'n5'))?.noteTitle).toBe('Merged');
   });
 });
+
+describe('OfflineStoreService reconciliation and upgrades', () => {
+  let store: OfflineStoreService;
+  let partition: string;
+
+  beforeEach(() => {
+    store = new OfflineStoreService();
+    partition = `reconcile-test-${crypto.randomUUID()}`;
+  });
+  afterEach(async () => store.purgePartition(partition));
+
+  const reminderFor = (id: number, syncId: string, noteId: number): ReminderI => ({
+    id, syncId, noteId, userId: 1, dueAtUtc: '2030-01-01T00:00:00.000Z', timezone: 'UTC', repeatRule: null, status: 'pending' as any,
+    title: null, body: null, imageUrl: null, locationName: null, latitude: null, longitude: null, radiusMeters: null,
+    createdAt: '', updatedAt: ''
+  });
+  const attachmentFor = (syncId: string, noteId: number): NoteAttachmentI => ({
+    id: -1, syncId, noteId, originalName: 'a.txt', fileSize: 1, mimeType: 'text/plain', uploadedAt: ''
+  });
+
+  it('moves cached reminders and attachments to the server note ID when a local note is acknowledged', async () => {
+    const local = note(-22, 'remap-parent', 'Local note');
+    await store.persistNoteMutation(partition, local, store.nextStamp());
+    await store.putReminder(partition, reminderFor(-7, 'remap-reminder', -22));
+    await store.putAttachment(partition, attachmentFor('remap-attachment', -22));
+    await store.putReminder(partition, reminderFor(9, 'unrelated-reminder', -99));
+
+    await store.applyChangePage(partition, [
+      { resourceType: 'note', resourceSyncId: 'remap-parent', operation: 'upsert', payload: { ...local, id: 73, revision: 1 } }
+    ], 5, Date.now());
+
+    expect((await store.getReminder(partition, 'remap-reminder'))?.noteId).toBe(73);
+    expect((await store.getAttachment(partition, 'remap-attachment'))?.noteId).toBe(73);
+    expect((await store.getNoteBySyncId(partition, 'remap-parent'))?.attachments ?? []).toEqual([]);
+    expect((await store.getReminder(partition, 'unrelated-reminder'))?.noteId).toBe(-99);
+  });
+
+  it('applies the same remap when a snapshot replaces the cache', async () => {
+    const local = note(-22, 'snap-parent', 'Local note');
+    await store.persistNoteMutation(partition, local, store.nextStamp());
+    const reminder = reminderFor(-7, 'snap-reminder', -22);
+    await store.putReminder(partition, reminder);
+    await store.enqueue(partition, 'reminder.upsert', 'snap-reminder', reminder, store.nextStamp());
+    const attachment = attachmentFor('snap-attachment', -22);
+    await store.persistAttachmentUpload(partition, 'blob-1', new Blob(['x']), attachment, local,
+      { noteSyncId: 'snap-parent', filename: 'a.txt', syncId: 'snap-attachment' }, store.nextStamp());
+
+    await store.replaceSnapshot(partition, [{ ...local, id: 73, revision: 1 }], [], [], 5, Date.now());
+
+    expect((await store.getReminder(partition, 'snap-reminder'))?.noteId).toBe(73);
+    expect((await store.getAttachment(partition, 'snap-attachment'))?.noteId).toBe(73);
+  });
+});
+
+describe('OfflineStoreService interrupted transactions and upgrades', () => {
+  let partition: string;
+
+  beforeEach(() => { partition = `interrupt-test-${crypto.randomUUID()}`; });
+
+  it('leaves neither a note nor an outbox entry when the commit is interrupted', async () => {
+    const store = new OfflineStoreService();
+    const poisoned = { ...note(-8, 'poisoned', 'Cannot be cloned'), checkBoxes: (() => 1) as unknown as any };
+
+    await expectAsync(store.persistNoteMutation(partition, poisoned, store.nextStamp())).toBeRejected();
+
+    expect(await store.getNoteBySyncId(partition, 'poisoned')).toBeUndefined();
+    expect(await store.listOutbox(partition)).toEqual([]);
+  });
+
+  it('leaves no blob, projection or upload intent when a pending attachment commit is interrupted', async () => {
+    const store = new OfflineStoreService();
+    const parent = note(-8, 'parent', 'Parent');
+    const attachment = { id: -1, syncId: 'att', noteId: -8, originalName: 'a', fileSize: 1, mimeType: 'text/plain', uploadedAt: '', poison: () => 1 } as unknown as NoteAttachmentI;
+
+    await expectAsync(store.persistAttachmentUpload(partition, 'blob-x', new Blob(['x']), attachment, parent,
+      { noteSyncId: 'parent', filename: 'a', syncId: 'att' }, store.nextStamp())).toBeRejected();
+
+    expect(await store.getBlob(partition, 'blob-x')).toBeUndefined();
+    expect(await store.getAttachment(partition, 'att')).toBeUndefined();
+    expect(await store.listOutbox(partition)).toEqual([]);
+  });
+
+  it('opens a database from the first schema generation without losing queued work or drafts', async () => {
+    const name = `kept-upgrade-${crypto.randomUUID()}`;
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(name, 1);
+      request.onupgradeneeded = () => {
+        for (const store of ['notes', 'reminders', 'attachments', 'outbox']) {
+          request.result.createObjectStore(store, { keyPath: 'key' }).createIndex('partition', 'partition', { unique: false });
+        }
+      };
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction(['notes', 'outbox'], 'readwrite');
+        tx.objectStore('notes').put({ key: `${partition}|legacy`, partition, syncId: 'legacy', value: { ...note(12, 'legacy', 'Legacy note'), revision: 3 } });
+        // Written before delivery state, guards and chains existed.
+        tx.objectStore('outbox').put({
+          key: `${partition}|legacy-op`, partition, operationId: 'legacy-op', type: 'note.upsert', syncId: 'legacy',
+          payload: note(12, 'legacy', 'Legacy unsent edit'), lww: { physicalMs: 1, logical: 0, deviceId: 'd', operationId: 'legacy-op' },
+          createdAt: 1, attempts: 2
+        });
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      request.onerror = () => reject(request.error);
+    });
+
+    const store = new OfflineStoreService();
+    (store as any).databaseName = name;
+
+    expect((await store.getNote(partition, 12))?.noteTitle).toBe('Legacy note');
+    const [legacy] = await store.listOutbox(partition);
+    expect(legacy.operationId).toBe('legacy-op');
+    expect(legacy.deliveryState).toBeUndefined();
+    expect(legacy.attempts).toBe(2);
+    expect(await store.hasUnsyncedWork(partition)).toBeTrue();
+    // Newer code treats it as possibly sent and queues behind it rather than rewriting it.
+    const { entry } = await store.persistNoteMutation(partition, note(12, 'legacy', 'New edit'), store.nextStamp());
+    const queued = await store.listOutbox(partition);
+    expect(queued.map(item => item.operationId)).toEqual(['legacy-op', entry.operationId]);
+    expect((queued[0].payload as NoteI).noteTitle).toBe('Legacy unsent edit');
+    expect(entry.guard?.after).toBe('legacy-op');
+    expect((await store.getSyncState(partition)).cursor).toBe(0);
+    await store.purgePartition(partition);
+  });
+
+  it('writes outbox records that an older build can still read', async () => {
+    const store = new OfflineStoreService();
+    await store.replaceSnapshot(partition, [note(5, 'n5', 'Server')], [], [], 1, Date.now());
+    const { entry } = await store.persistNoteMutation(partition, note(5, 'n5', 'Edit'), store.nextStamp());
+    const raw = await (async () => {
+      const db: IDBDatabase = await (store as any).open();
+      return new Promise<any>(resolve => {
+        const request = db.transaction('outbox').objectStore('outbox').get(entry.key);
+        request.onsuccess = () => resolve(request.result);
+      });
+    })();
+    for (const field of ['key', 'partition', 'operationId', 'type', 'syncId', 'payload', 'lww', 'createdAt', 'attempts']) {
+      expect(raw[field]).withContext(field).toBeDefined();
+    }
+    expect(raw.type).toBe('note.upsert');
+    expect(raw.payload.noteTitle).toBe('Edit');
+    await store.purgePartition(partition);
+  });
+});

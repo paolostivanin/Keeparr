@@ -78,7 +78,14 @@ export class OfflineSyncService {
       this.currentPartition = user?.id ? this.store.partition(user.id) : '';
       this.attention$.next([]);
       this.guardedNotes = undefined;
-      if (!user && previous) this.store.purgePartition(previous).catch(console.error);
+      // Signing out must not destroy edits that were never delivered: a profile with
+      // pending operations or unsaved drafts stays on this device (scoped to that user's
+      // partition) until they sign in again and it syncs. Anything else is purged.
+      if (!user && previous) {
+        this.store.hasUnsyncedWork(previous)
+          .then(pending => pending ? undefined : this.store.purgePartition(previous))
+          .catch(console.error);
+      }
       if (user) {
         const partition = this.currentPartition;
         if (this.repairedPartitions.has(partition)) {
@@ -263,15 +270,18 @@ export class OfflineSyncService {
   }
 
   async bootstrap() {
-    if (!this.currentPartition) return;
+    const partition = this.currentPartition;
+    if (!partition) return;
     const snapshot = await this.withTimeout(
       firstValueFrom(this.http.get<SyncSnapshot>(`${this.apiUrl}/sync/bootstrap`, {
         headers: this.auth.authHeaders()
       })),
       this.syncRequestTimeoutMs
     );
+    // The response belongs to the profile that requested it; never write it into another one.
+    if (this.currentPartition !== partition) return;
     await this.store.replaceSnapshot(
-      this.currentPartition,
+      partition,
       snapshot.notes || [],
       snapshot.reminders || [],
       snapshot.attachments || [],
@@ -399,10 +409,17 @@ export class OfflineSyncService {
       const entry = sendEntries[index];
       const result = response.results?.[index];
       if (!result || result.ok) continue;
+      if (this.currentPartition !== partition) break;
       const outcome = await this.handleRejectedNoteSave(entry, result);
       if (!outcome) continue;
       handled.add(index);
       if (outcome !== 'blocked') rebased.push(outcome);
+    }
+    if (this.currentPartition !== partition) {
+      // The profile changed mid-flight. Acknowledgements still retire this profile's own
+      // entries; nothing else is written for a profile that is no longer active.
+      await this.store.removeOutbox(sendEntries.filter((_, index) => response.results?.[index]?.ok).map(entry => entry.key));
+      return;
     }
     const completed = sendEntries.filter((entry, index) => response.results?.[index]?.ok);
     const acknowledged = guardedServer
@@ -538,8 +555,10 @@ export class OfflineSyncService {
   }
 
   private async flushAttachmentUploads(entries: OutboxEntry[]) {
-    if (!this.currentPartition) return;
+    const partition = this.currentPartition;
+    if (!partition) return;
     for (const queued of entries) {
+      if (this.currentPartition !== partition) return;
       const [entry] = await this.store.claimOutboxForSend([queued.key]);
       if (!entry) continue;
       const payload = entry.payload as {
@@ -548,9 +567,9 @@ export class OfflineSyncService {
         filename: string;
         syncId: string;
       };
-      const note = await this.store.getNoteBySyncId(this.currentPartition, payload.noteSyncId);
+      const note = await this.store.getNoteBySyncId(partition, payload.noteSyncId);
       if (!note?.id || note.id < 0) continue;
-      const blob = await this.store.getBlob(this.currentPartition, payload.blobKey);
+      const blob = await this.store.getBlob(partition, payload.blobKey);
       if (!blob) {
         await this.store.removeOutbox([entry.key]);
         continue;
@@ -566,13 +585,14 @@ export class OfflineSyncService {
         )),
         this.syncRequestTimeoutMs
       );
-      await this.store.putAttachment(this.currentPartition, attachment);
+      if (this.currentPartition !== partition) return;
+      await this.store.putAttachment(partition, attachment);
       const updatedNote = {
         ...note,
         attachments: [attachment, ...(note.attachments || []).filter(item => item.syncId !== payload.syncId)]
       };
-      await this.store.putNote(this.currentPartition, updatedNote);
-      await this.store.deleteBlob(this.currentPartition, payload.blobKey);
+      await this.store.putNote(partition, updatedNote);
+      await this.store.deleteBlob(partition, payload.blobKey);
       await this.store.removeOutbox([entry.key]);
       this.cacheChanged$.next({
         notesChanged: true,
@@ -585,8 +605,9 @@ export class OfflineSyncService {
   }
 
   private async pullChanges() {
-    if (!this.currentPartition) return;
-    let state = await this.store.getSyncState(this.currentPartition);
+    const partition = this.currentPartition;
+    if (!partition) return;
+    let state = await this.store.getSyncState(partition);
     let hasMore = true;
     const changed: OfflineCacheChange = { notesChanged: false, remindersChanged: false, attachmentsChanged: false };
     const noteSyncIds = new Set<string>();
@@ -604,8 +625,9 @@ export class OfflineSyncService {
         headers: this.auth.authHeaders(),
         params: { cursor: String(state.cursor), limit: '500' }
       })), this.syncRequestTimeoutMs);
+      if (this.currentPartition !== partition) return;
       const summary = await this.store.applyChangePage(
-        this.currentPartition,
+        partition,
         response.changes || [],
         response.cursor || state.cursor,
         response.serverTime
@@ -618,7 +640,7 @@ export class OfflineSyncService {
       changed.notesChanged ||= summary.noteSyncIds.length > 0 || summary.removedNoteSyncIds.length > 0;
       changed.remindersChanged ||= summary.reminderSyncIds.length > 0 || summary.removedReminderSyncIds.length > 0;
       changed.attachmentsChanged ||= summary.attachmentSyncIds.length > 0;
-      state = await this.store.getSyncState(this.currentPartition);
+      state = await this.store.getSyncState(partition);
       hasMore = !!response.hasMore;
     }
     if (changed.notesChanged || changed.remindersChanged || changed.attachmentsChanged) {
