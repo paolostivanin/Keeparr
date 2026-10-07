@@ -16,6 +16,11 @@ const fixtureCount = Math.max(80, Math.min(10000, Number(countArgument?.split('=
 const detailDelayArgument = process.argv.find(argument => argument.startsWith('--detail-delay='));
 const requestedDetailDelay = Number(detailDelayArgument?.split('=')[1]);
 const detailDelay = Number.isFinite(requestedDetailDelay) && requestedDetailDelay >= 0 ? requestedDetailDelay : 500;
+const virtualizationArgument = process.argv.find(argument => argument.startsWith('--virtual-grid='));
+const virtualGridMode = ['on', 'off', 'auto'].includes(virtualizationArgument?.split('=')[1])
+  ? virtualizationArgument.split('=')[1]
+  : 'auto';
+const virtualGridEnabled = virtualGridMode === 'on';
 const imageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jAAAAAElFTkSuQmCC';
 
 function createNote(index) {
@@ -73,6 +78,7 @@ const reminders = notes.filter((note, index) => index % 19 === 0).map((note, ind
   title: note.noteTitle
 }));
 const apiRequests = [];
+const appPath = `/?virtualGrid=${virtualGridEnabled ? 'on' : 'off'}`;
 const server = http.createServer((request, response) => {
   const url = new URL(request.url || '/', 'http://127.0.0.1');
   if (url.pathname.startsWith('/api/')) {
@@ -102,6 +108,18 @@ const server = http.createServer((request, response) => {
         url: link, domain: new URL(link).hostname };
     } else if (url.pathname === '/api/auth/preferences') {
       value = { showPastReminders: false };
+    } else if (url.pathname === '/api/users/me/mcp-access') {
+      value = { enabled: false, allowLockedNotes: false, allowPermanentDelete: false, token: null };
+    } else if (url.pathname === '/api/users/me/oauth-access') {
+      value = { enabled: false, allowLockedNotes: false, allowPermanentDelete: false, connections: [] };
+    } else if (url.pathname === '/api/auth/oidc/link/status') {
+      value = { enabled: false, connected: false, identityEmail: '', connectedAt: null };
+    } else if (url.pathname === '/api/reminders/ics-token') {
+      value = { token: 'fixture-ics-token' };
+    } else if (url.pathname === '/api/google-calendar/status') {
+      value = { enabled: false, hasCredentials: false, clientId: '' };
+    } else if (url.pathname === '/api/caldav/settings') {
+      value = null;
     } else if (url.pathname === '/api/setup/status') {
       value = { hasUsers: true };
     }
@@ -225,11 +243,11 @@ async function run() {
     await cdp('Page.addScriptToEvaluateOnNewDocument', {
       source: `localStorage.setItem('gk_session', JSON.stringify({id:1,username:'fixture',displayName:'Fixture',role:'admin',theme:'light',token:'fixture-token',demoNotesCreatedAt:'2026-01-01'}));localStorage.setItem('kept_user_preferences', JSON.stringify({richLinkPreviews:true}));`
     });
-    await cdp('Page.navigate', { url: `http://127.0.0.1:${port}/` });
+    await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${appPath}` });
     await sleep(2500);
 
     const cardCount = await evaluate(`document.querySelectorAll('app-notes .note-container').length`);
-    assert(cardCount >= 40, `Expected a progressive first paint; found ${cardCount} rendered note cards.`);
+    assert(cardCount > 0 && cardCount < 120, `Expected a bounded first paint; found ${cardCount} rendered note cards.`);
     const metrics = async () => Object.fromEntries((await cdp('Performance.getMetrics')).metrics.map(metric => [metric.name, metric.value]));
     await evaluate('window.scrollTo(0, 400)');
     await sleep(150);
@@ -243,6 +261,7 @@ async function run() {
       layoutCount: Math.round((afterScroll.LayoutCount || 0) - (beforeScroll.LayoutCount || 0)),
       recalcStyleCount: Math.round((afterScroll.RecalcStyleCount || 0) - (beforeScroll.RecalcStyleCount || 0))
     };
+    const renderedCardsAfterScroll = await evaluate(`document.querySelectorAll('app-notes .note-container').length`);
 
     await evaluate('window.scrollTo(0, 0)');
     await sleep(150);
@@ -252,7 +271,10 @@ async function run() {
     const afterResize = await metrics();
     const mobileGrid = await evaluate(`(() => { const cards = [...document.querySelectorAll('app-notes .note-container')].filter(card => card.clientWidth); return {width: cards[0]?.clientWidth, columns: new Set(cards.slice(0, 6).map(card => Math.round(card.getBoundingClientRect().left))).size, overlap: cards.some((card, index) => cards.slice(index + 1).some(other => { const a = card.getBoundingClientRect(), b = other.getBoundingClientRect(); return Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1; }))}; })()`);
     assert.equal(mobileGrid.columns, 2, 'Mobile grid should render two columns.');
-    assert.equal(mobileGrid.overlap, false, 'Mobile cards overlap.');
+    if (mobileGrid.overlap) {
+      const positions = await evaluate(`JSON.stringify([...document.querySelectorAll('app-notes .note-container')].filter(card => card.clientWidth).slice(0, 20).map(card => ({id:card.dataset.noteId,rect:card.getBoundingClientRect().toJSON(),transform:card.style.transform})))`);
+      assert.equal(mobileGrid.overlap, false, `Mobile cards overlap: ${positions}`);
+    }
     const resizeMetrics = {
       taskDurationMs: durationDelta(beforeResize, afterResize, 'TaskDuration'),
       layoutCount: Math.round((afterResize.LayoutCount || 0) - (beforeResize.LayoutCount || 0)),
@@ -268,7 +290,20 @@ async function run() {
     for (let attempt = 0; attempt < 15 && (await layoutGroups()).some(group => group.overlap); attempt++) await sleep(100);
     const listGroups = await layoutGroups();
     assert(listGroups.filter(group => group.count).every(group => group.columns === 1 && !group.overlap && group.width === 600), `List view layout failed: ${JSON.stringify(listGroups)} ${await evaluate(`JSON.stringify([...document.querySelectorAll('app-notes .note-container')].slice(0, 8).map(card => ({id:card.dataset.noteId,transform:card.style.transform,rect:card.getBoundingClientRect().toJSON(),height:card.clientHeight})))`)}`);
+    const renderedCardsInList = listGroups.reduce((total, group) => total + group.count, 0);
+    if (fixtureCount >= 1000) assert(renderedCardsInList < 80, `List virtualizer mounted too many cards: ${renderedCardsInList}`);
+    let renderedCardsAfterListScroll = renderedCardsInList;
+    if (fixtureCount >= 1000) {
+      await evaluate(`window.scrollTo(0, Math.floor(document.documentElement.scrollHeight / 2))`);
+      await sleep(350);
+      renderedCardsAfterListScroll = await evaluate(`document.querySelectorAll('app-notes .note-container').length`);
+      assert(renderedCardsAfterListScroll > 0 && renderedCardsAfterListScroll < 80,
+        `List virtualizer did not keep the mid-scroll window bounded: ${renderedCardsAfterListScroll}`);
+      await evaluate('window.scrollTo(0, 0)');
+      await sleep(200);
+    }
     smoke.push('list layout');
+    smoke.push('variable-height list window and mid-scroll bound');
     await evaluate(`document.querySelector('app-navbar .view').click()`);
     await sleep(550);
     for (let attempt = 0; attempt < 15 && (await layoutGroups()).some(group => group.overlap); attempt++) await sleep(100);
@@ -286,8 +321,22 @@ async function run() {
     smoke.push('search');
     await evaluate(`document.querySelector('app-navbar button[aria-label="Clear search"]').click()`);
     await sleep(700);
-    assert(await evaluate(`document.querySelectorAll('app-notes .note-container').length > 30`), 'Clearing search did not restore notes.');
+    const cardsAfterSearchClear = await evaluate(`document.querySelectorAll('app-notes .note-container').length`);
+    assert(cardsAfterSearchClear > 0 && (virtualGridEnabled ? cardsAfterSearchClear < 80 : cardsAfterSearchClear > 30),
+      `Clearing search did not restore an appropriate note window: ${cardsAfterSearchClear}`);
     smoke.push('clear search');
+
+    const scriptsBeforeSettingsNavigation = await evaluate(`performance.getEntriesByType('resource').filter(entry => /\\.js(?:$|\\?)/.test(entry.name)).map(entry => entry.name)`);
+    await evaluate(`document.querySelector('app-navbar .user-pic-container').click()`);
+    await sleep(50);
+    await evaluate(`document.querySelector('.profile-menu .secondary').click()`);
+    await sleep(1200);
+    assert(await evaluate(`location.pathname === '/settings' && document.querySelector('h1')?.textContent.includes('Settings')`), 'Lazy settings route did not open.');
+    const scriptsAfterSettingsNavigation = await evaluate(`performance.getEntriesByType('resource').filter(entry => /\\.js(?:$|\\?)/.test(entry.name)).map(entry => entry.name)`);
+    assert(scriptsAfterSettingsNavigation.some(script => !scriptsBeforeSettingsNavigation.includes(script)), 'Settings lazy chunk was not loaded on navigation.');
+    smoke.push('lazy settings route');
+    await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${appPath}` });
+    await sleep(700);
 
     await evaluate(`document.querySelector('app-notes .note-container .title').click()`);
     await sleep(detailDelay + 150);
@@ -315,8 +364,11 @@ async function run() {
 
     assert.equal(errors.length, 0, `Browser runtime errors: ${errors.map(error => error.text).join('; ')}`);
     console.log(JSON.stringify({
-      fixture: { noteCount: fixtureCount, detailDelayMs: detailDelay },
+      fixture: { noteCount: fixtureCount, detailDelayMs: detailDelay, virtualGrid: virtualGridEnabled ? 'on' : 'off' },
       renderedCardsAtFirstPaint: cardCount,
+      renderedCardsAfterScroll,
+      renderedCardsInList,
+      renderedCardsAfterListScroll,
       scrollMetrics,
       resizeMetrics,
       mobileGrid,

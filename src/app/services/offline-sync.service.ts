@@ -5,7 +5,7 @@ import { environment } from 'src/environments/environment';
 import { NoteAttachmentI, NoteI } from '../interfaces/notes';
 import { ReminderI } from '../interfaces/reminder';
 import { AuthService } from './auth.service';
-import { OfflineStoreService, OutboxEntry } from './offline-store.service';
+import { OfflineResourceChange, OfflineStoreService, OutboxEntry } from './offline-store.service';
 
 export type OfflineSyncState = 'offline' | 'syncing' | 'saved' | 'error';
 
@@ -13,6 +13,12 @@ export interface OfflineCacheChange {
   notesChanged: boolean;
   remindersChanged: boolean;
   attachmentsChanged: boolean;
+  noteSyncIds?: readonly string[];
+  removedNoteSyncIds?: readonly string[];
+  reminderSyncIds?: readonly string[];
+  removedReminderSyncIds?: readonly string[];
+  attachmentSyncIds?: readonly string[];
+  fullSnapshot?: boolean;
 }
 
 type SyncSnapshot = {
@@ -23,12 +29,8 @@ type SyncSnapshot = {
   serverTime: number;
 };
 
-type SyncChange = {
+type SyncChange = OfflineResourceChange & {
   sequence: number;
-  resourceType: 'note' | 'reminder' | 'attachment';
-  resourceSyncId: string;
-  operation: 'upsert' | 'delete';
-  payload: NoteI | ReminderI | NoteAttachmentI | null;
 };
 
 @Injectable({ providedIn: 'root' })
@@ -42,6 +44,7 @@ export class OfflineSyncService {
   private running = false;
   private rerun = false;
   private currentPartition = '';
+  private readonly repairedPartitions = new Set<string>();
 
   constructor(
     private http: HttpClient,
@@ -53,7 +56,19 @@ export class OfflineSyncService {
       const previous = this.currentPartition;
       this.currentPartition = user?.id ? this.store.partition(user.id) : '';
       if (!user && previous) this.store.purgePartition(previous).catch(console.error);
-      if (user) this.syncNow({ bootstrapIfEmpty: true }).catch(console.error);
+      if (user) {
+        const partition = this.currentPartition;
+        if (this.repairedPartitions.has(partition)) {
+          this.syncNow({ bootstrapIfEmpty: true }).catch(console.error);
+        } else {
+          this.store.repairDuplicateNoteIdentities(partition).then(repaired => {
+            this.repairedPartitions.add(partition);
+            if (repaired) this.cacheChanged$.next({ notesChanged: true, remindersChanged: false, attachmentsChanged: false, fullSnapshot: true });
+          }).catch(console.error).finally(() => {
+            if (this.currentPartition === partition) this.syncNow({ bootstrapIfEmpty: true }).catch(console.error);
+          });
+        }
+      }
     });
     window.addEventListener('online', () => this.zone.run(() => this.syncNow().catch(console.error)));
     window.addEventListener('offline', () => this.zone.run(() => this.state$.next('offline')));
@@ -91,7 +106,90 @@ export class OfflineSyncService {
     return stamp;
   }
 
+  async persistNote(note: NoteI) {
+    if (!this.currentPartition) throw new Error('No active offline partition.');
+    const syncState = await this.store.getSyncState(this.currentPartition);
+    const { note: persisted, entry } = await this.store.persistNoteMutation(
+      this.currentPartition,
+      note,
+      this.store.nextStamp(syncState.serverOffsetMs)
+    );
+    this.state$.next(navigator.onLine ? 'syncing' : 'offline');
+    if (navigator.onLine) this.syncNow().catch(console.error);
+    return { note: persisted, entry };
+  }
+
+  async persistNotePatch(note: NoteI, patch: Partial<NoteI>) {
+    if (!this.currentPartition) throw new Error('No active offline partition.');
+    const syncState = await this.store.getSyncState(this.currentPartition);
+    const result = await this.store.persistNotePatchMutation(
+      this.currentPartition,
+      note,
+      patch,
+      this.store.nextStamp(syncState.serverOffsetMs)
+    );
+    this.state$.next(navigator.onLine ? 'syncing' : 'offline');
+    if (navigator.onLine) this.syncNow().catch(console.error);
+    return result;
+  }
+
+  async persistNoteMerge(note: NoteI, sourceNotes: NoteI[]) {
+    const partition = this.currentPartition;
+    if (!partition) throw new Error('No active offline partition.');
+    const persist = async () => {
+      if (this.currentPartition !== partition) throw new Error('The active profile changed before the merge could be saved.');
+      const syncState = await this.store.getSyncState(partition);
+      return this.store.persistNoteMergeMutation(partition, note, sourceNotes, this.store.nextStamp(syncState.serverOffsetMs));
+    };
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+    const result = locks
+      ? await locks.request(`kept-offline-sync:${partition}`, { mode: 'exclusive' }, persist)
+      : await persist();
+    this.state$.next(navigator.onLine ? 'syncing' : 'offline');
+    this.cacheChanged$.next({ notesChanged: true, remindersChanged: true, attachmentsChanged: true, fullSnapshot: true });
+    if (navigator.onLine) this.syncNow().catch(console.error);
+    return result;
+  }
+
+  async persistAttachmentUpload(
+    blobKey: string,
+    blob: Blob,
+    attachment: NoteAttachmentI,
+    note: NoteI,
+    payload: { noteSyncId: string; filename: string; syncId: string }
+  ) {
+    if (!this.currentPartition) throw new Error('No active offline partition.');
+    const syncState = await this.store.getSyncState(this.currentPartition);
+    const persisted = await this.store.persistAttachmentUpload(
+      this.currentPartition,
+      blobKey,
+      blob,
+      attachment,
+      note,
+      payload,
+      this.store.nextStamp(syncState.serverOffsetMs)
+    );
+    this.state$.next(navigator.onLine ? 'syncing' : 'offline');
+    if (navigator.onLine) this.syncNow().catch(console.error);
+    return persisted;
+  }
+
   async syncNow(options: { bootstrapIfEmpty?: boolean } = {}) {
+    const partition = this.currentPartition;
+    if (!this.auth.currentUser || !partition) return;
+    const run = () => {
+      if (this.currentPartition !== partition) return Promise.resolve();
+      return this.syncCycle(options);
+    };
+    // Web Locks coordinates tabs sharing the same IndexedDB partition. On
+    // browsers without it, immutable server operation receipts make replay
+    // safe if two tabs race to flush the same outbox entry.
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+    if (!locks) return run();
+    return locks.request(`kept-offline-sync:${partition}`, { mode: 'exclusive' }, run);
+  }
+
+  private async syncCycle(options: { bootstrapIfEmpty?: boolean } = {}) {
     if (!this.auth.currentUser || !this.currentPartition) return;
     if (!navigator.onLine) {
       this.state$.next('offline');
@@ -112,6 +210,12 @@ export class OfflineSyncService {
       }
       await this.flushOutbox();
       await this.pullChanges();
+      // A newly created local note receives its positive server ID while
+      // pulling the acknowledgement. Retry dependent uploads once after that
+      // remapping so they can proceed in the same sync cycle.
+      const pendingUploads = (await this.store.listOutbox(this.currentPartition))
+        .filter(entry => entry.type === 'attachment.upload');
+      if (pendingUploads.length) await this.flushAttachmentUploads(pendingUploads);
       this.clearConnectionDegraded();
       this.state$.next('saved');
     } catch (error) {
@@ -149,7 +253,7 @@ export class OfflineSyncService {
       snapshot.serverTime || Date.now()
     );
     await this.cacheSnapshotMedia(snapshot.notes || []);
-    this.cacheChanged$.next({ notesChanged: true, remindersChanged: true, attachmentsChanged: true });
+    this.cacheChanged$.next({ notesChanged: true, remindersChanged: true, attachmentsChanged: true, fullSnapshot: true });
   }
 
   private async flushOutbox() {
@@ -158,25 +262,71 @@ export class OfflineSyncService {
     if (!entries.length) return;
     const uploads = entries.filter(entry => entry.type === 'attachment.upload');
     const mutations = entries.filter(entry => entry.type !== 'attachment.upload');
-    if (mutations.length) await this.flushMutations(mutations);
-    if (uploads.length) await this.flushAttachmentUploads(uploads);
+    const merges = mutations.filter(entry => entry.type === 'note.merge');
+    if (!merges.length) {
+      if (mutations.length) await this.flushMutations(mutations);
+      if (uploads.length) await this.flushAttachmentUploads(uploads);
+      return;
+    }
+
+    const mergeSourceSyncIds = new Set<string>();
+    const mergeSyncIds = new Set<string>();
+    const mergeLocalIds = new Set<number>();
+    for (const merge of merges) {
+      const payload = merge.payload as { orderedSourceSyncIds?: string[]; mergeSyncId?: string; localMergeId?: number };
+      (payload.orderedSourceSyncIds || []).forEach(syncId => mergeSourceSyncIds.add(syncId));
+      mergeSyncIds.add(payload.mergeSyncId || merge.syncId);
+      if (payload.localMergeId != null) mergeLocalIds.add(payload.localMergeId);
+    }
+    const isDeferredAfterMerge = (entry: OutboxEntry) => {
+      if (entry.type === 'note.delete') return mergeSourceSyncIds.has(entry.syncId) || mergeSyncIds.has(entry.syncId);
+      if (entry.type === 'attachment.delete') {
+        const payload = entry.payload as { noteId?: number };
+        return payload.noteId != null && mergeLocalIds.has(payload.noteId);
+      }
+      if (!entry.type.startsWith('reminder.')) return false;
+      const payload = entry.payload as { noteSyncId?: string; noteId?: number };
+      return mergeSyncIds.has(payload.noteSyncId || '') || (payload.noteId != null && mergeLocalIds.has(payload.noteId));
+    };
+    const deferredMutations = mutations.filter(entry => entry.type !== 'note.merge' && isDeferredAfterMerge(entry));
+    const beforeMergeMutations = mutations.filter(entry => entry.type !== 'note.merge' && !isDeferredAfterMerge(entry));
+    const sourceUploads = uploads.filter(entry => mergeSourceSyncIds.has(
+      String((entry.payload as { noteSyncId?: string }).noteSyncId || '')
+    ));
+    const afterMergeUploads = uploads.filter(entry => !sourceUploads.includes(entry));
+
+    if (beforeMergeMutations.length) await this.flushMutations(beforeMergeMutations);
+    // New local source notes need their accepted positive IDs before dependent
+    // attachment uploads can run. The merge remains queued during this pull.
+    if (beforeMergeMutations.length || sourceUploads.length) await this.pullChanges();
+    if (sourceUploads.length) await this.flushAttachmentUploads(sourceUploads);
+    await this.flushMutations(merges);
+    // Apply the server's merged ID/resource projections before commands that
+    // target the merged note and its newly re-parented attachments.
+    await this.pullChanges();
+    if (deferredMutations.length) await this.flushMutations(deferredMutations);
+    if (afterMergeUploads.length) await this.flushAttachmentUploads(afterMergeUploads);
   }
 
   private async flushMutations(entries: OutboxEntry[]) {
     if (!this.currentPartition || !entries.length) return;
+    const sendEntries = await this.store.claimOutboxForSend(entries.map(entry => entry.key));
+    if (!sendEntries.length) return;
     const response = await this.withTimeout(firstValueFrom(this.http.post<{
-      results: Array<{ ok: boolean; syncId?: string; id?: number; skipped?: boolean; error?: string }>;
+      results: Array<{ ok: boolean; syncId?: string; id?: number; skipped?: boolean; error?: string; payload?: NoteI | ReminderI | NoteAttachmentI }>;
       serverTime: number;
       snapshot?: SyncSnapshot;
     }>(`${this.apiUrl}/sync/mutations`, {
-      mutations: entries.map(entry => ({
+      includeSnapshot: false,
+      mutations: sendEntries.map(entry => ({
         type: entry.type,
         syncId: entry.syncId,
+        operationId: entry.operationId,
         payload: entry.payload,
         lww: entry.lww
       }))
     }, { headers: this.auth.authHeaders() })), this.syncRequestTimeoutMs);
-    const completed = entries.filter((entry, index) => response.results?.[index]?.ok);
+    const completed = sendEntries.filter((entry, index) => response.results?.[index]?.ok);
     await this.store.removeOutbox(completed.map(entry => entry.key));
     const failed = response.results?.find(result => !result.ok);
     if (!failed && response.snapshot) {
@@ -189,7 +339,7 @@ export class OfflineSyncService {
         response.snapshot.serverTime || response.serverTime || Date.now()
       );
       await this.cacheSnapshotMedia(response.snapshot.notes || []);
-      if (completed.length) this.cacheChanged$.next({ notesChanged: true, remindersChanged: true, attachmentsChanged: true });
+      if (completed.length) this.cacheChanged$.next({ notesChanged: true, remindersChanged: true, attachmentsChanged: true, fullSnapshot: true });
     } else if (response.serverTime) {
       const state = await this.store.getSyncState(this.currentPartition);
       await this.store.setSyncState(this.currentPartition, state.cursor, response.serverTime);
@@ -199,7 +349,9 @@ export class OfflineSyncService {
 
   private async flushAttachmentUploads(entries: OutboxEntry[]) {
     if (!this.currentPartition) return;
-    for (const entry of entries) {
+    for (const queued of entries) {
+      const [entry] = await this.store.claimOutboxForSend([queued.key]);
+      if (!entry) continue;
       const payload = entry.payload as {
         noteSyncId: string;
         blobKey: string;
@@ -232,7 +384,13 @@ export class OfflineSyncService {
       await this.store.putNote(this.currentPartition, updatedNote);
       await this.store.deleteBlob(this.currentPartition, payload.blobKey);
       await this.store.removeOutbox([entry.key]);
-      this.cacheChanged$.next({ notesChanged: true, remindersChanged: false, attachmentsChanged: true });
+      this.cacheChanged$.next({
+        notesChanged: true,
+        remindersChanged: false,
+        attachmentsChanged: true,
+        noteSyncIds: [payload.noteSyncId],
+        attachmentSyncIds: [attachment.syncId || payload.syncId]
+      });
     }
   }
 
@@ -241,6 +399,11 @@ export class OfflineSyncService {
     let state = await this.store.getSyncState(this.currentPartition);
     let hasMore = true;
     const changed: OfflineCacheChange = { notesChanged: false, remindersChanged: false, attachmentsChanged: false };
+    const noteSyncIds = new Set<string>();
+    const removedNoteSyncIds = new Set<string>();
+    const reminderSyncIds = new Set<string>();
+    const removedReminderSyncIds = new Set<string>();
+    const attachmentSyncIds = new Set<string>();
     while (hasMore) {
       const response = await this.withTimeout(firstValueFrom(this.http.get<{
         changes: SyncChange[];
@@ -251,52 +414,33 @@ export class OfflineSyncService {
         headers: this.auth.authHeaders(),
         params: { cursor: String(state.cursor), limit: '500' }
       })), this.syncRequestTimeoutMs);
-      for (const change of response.changes || []) {
-        if (!(await this.applyChange(change))) continue;
-        if (change.resourceType === 'note') changed.notesChanged = true;
-        else if (change.resourceType === 'reminder') changed.remindersChanged = true;
-        else changed.attachmentsChanged = true;
-      }
-      await this.store.setSyncState(this.currentPartition, response.cursor || state.cursor, response.serverTime);
+      const summary = await this.store.applyChangePage(
+        this.currentPartition,
+        response.changes || [],
+        response.cursor || state.cursor,
+        response.serverTime
+      );
+      summary.noteSyncIds.forEach(syncId => noteSyncIds.add(syncId));
+      summary.removedNoteSyncIds.forEach(syncId => removedNoteSyncIds.add(syncId));
+      summary.reminderSyncIds.forEach(syncId => reminderSyncIds.add(syncId));
+      summary.removedReminderSyncIds.forEach(syncId => removedReminderSyncIds.add(syncId));
+      summary.attachmentSyncIds.forEach(syncId => attachmentSyncIds.add(syncId));
+      changed.notesChanged ||= summary.noteSyncIds.length > 0 || summary.removedNoteSyncIds.length > 0;
+      changed.remindersChanged ||= summary.reminderSyncIds.length > 0 || summary.removedReminderSyncIds.length > 0;
+      changed.attachmentsChanged ||= summary.attachmentSyncIds.length > 0;
       state = await this.store.getSyncState(this.currentPartition);
       hasMore = !!response.hasMore;
     }
-    if (changed.notesChanged || changed.remindersChanged || changed.attachmentsChanged) this.cacheChanged$.next(changed);
-  }
-
-  private async applyChange(change: SyncChange) {
-    if (!this.currentPartition) return false;
-    if (change.resourceType === 'note') {
-      const existing = await this.store.getNoteBySyncId(this.currentPartition, change.resourceSyncId);
-      if (change.operation === 'delete') {
-        if (!existing) return false;
-        await this.store.deleteNote(this.currentPartition, change.resourceSyncId);
-        return true;
-      }
-      if (!change.payload || JSON.stringify(existing) === JSON.stringify(change.payload)) return false;
-      await this.store.putNote(this.currentPartition, change.payload as NoteI);
-      return true;
+    if (changed.notesChanged || changed.remindersChanged || changed.attachmentsChanged) {
+      this.cacheChanged$.next({
+        ...changed,
+        noteSyncIds: [...noteSyncIds],
+        removedNoteSyncIds: [...removedNoteSyncIds],
+        reminderSyncIds: [...reminderSyncIds],
+        removedReminderSyncIds: [...removedReminderSyncIds],
+        attachmentSyncIds: [...attachmentSyncIds]
+      });
     }
-    if (change.resourceType === 'reminder') {
-      const existing = await this.store.getReminder(this.currentPartition, change.resourceSyncId);
-      if (change.operation === 'delete') {
-        if (!existing) return false;
-        await this.store.deleteReminder(this.currentPartition, change.resourceSyncId);
-        return true;
-      }
-      if (!change.payload || JSON.stringify(existing) === JSON.stringify(change.payload)) return false;
-      await this.store.putReminder(this.currentPartition, change.payload as ReminderI);
-      return true;
-    }
-    const existing = await this.store.getAttachment(this.currentPartition, change.resourceSyncId);
-    if (change.operation === 'delete') {
-      if (!existing) return false;
-      await this.store.deleteAttachment(this.currentPartition, change.resourceSyncId);
-      return true;
-    }
-    if (!change.payload || JSON.stringify(existing) === JSON.stringify(change.payload)) return false;
-    await this.store.putAttachment(this.currentPartition, change.payload as NoteAttachmentI);
-    return true;
   }
 
   private isOfflineError(error: unknown) {

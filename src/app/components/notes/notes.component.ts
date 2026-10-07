@@ -19,8 +19,10 @@ import { isExpandedNativeFoldable, isNativePhonePlatform, shouldUseFullscreenNot
 import { NoteLockService } from 'src/app/services/note-lock.service';
 import { UserPreferencesService } from 'src/app/services/user-preferences.service';
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
-import { descendantIndexes, normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
+import { descendantIndexes } from 'src/app/utils/checkbox-indent';
 import { NoteBodySegment, NotePreviewMeta } from './note-card-preview.component';
+import { NoteListWindow, NoteListWindowModel } from './note-list-window';
+import { MasonryWindowResult, NoteMasonryWindowModel } from './note-masonry-window';
 
 declare var Snackbar: any;
 type PluginListenerHandle = { remove: () => Promise<void> | void };
@@ -39,6 +41,23 @@ type KeptWidgetIntentsPlugin = {
 type NoteBodyPreview = { segments: NoteBodySegment[]; urls: string[] }
 type NoteMeta = NotePreviewMeta
 type PullRefreshState = 'idle' | 'pulling' | 'ready' | 'refreshing'
+type CachedNoteListWindow = {
+  source: NoteI[];
+  model: NoteListWindowModel<NoteI>;
+  layout: HTMLElement;
+  start: number;
+  end: number;
+}
+type CachedGridWindow = {
+  source: NoteI[];
+  model: NoteMasonryWindowModel<NoteI>;
+  layout: HTMLElement;
+  columnCount: number;
+  columnWidth: number;
+  gutter: number;
+  signature: string;
+  result: MasonryWindowResult<NoteI> & { notes: NoteI[] };
+}
 
 const CapacitorApp = registerPlugin<CapacitorAppPlugin>('App');
 const KeptWidgetIntents = registerPlugin<KeptWidgetIntentsPlugin>('KeptWidgetIntents');
@@ -159,6 +178,21 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private containerResizeObserver?: ResizeObserver
   private destroyed = false
   private scrollFrame?: number
+  private scrollExpansionPending = false
+  private scrollExpansionFallback?: ReturnType<typeof setTimeout>
+  private listWindowVersion = 0
+  private readonly listWindows = new Map<string, CachedNoteListWindow>()
+  private readonly gridWindows = new Map<string, CachedGridWindow>()
+  private gridResizeFrame?: number
+  private pendingGridResizeEntries: ResizeObserverEntry[] = []
+  private masonryColumnCount = 2
+  private masonryColumnWidth = 240
+  private masonryGutter = 10
+  private gridVirtualizationOverrideRead = false
+  private gridVirtualizationOverride?: boolean
+  private readonly emptyGridWindow: MasonryWindowResult<NoteI> & { notes: NoteI[] } = {
+    placements: [], notes: [], totalHeight: 0, columnWidth: 240, gutter: 10
+  }
   private windowScrollHandler = () => {
     if (this.scrollFrame != null) return
     this.scrollFrame = requestAnimationFrame(() => {
@@ -260,60 +294,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     return `${index}:${segment.type}:${segment.value}`
   }
 
-  // True for hybrid (merged) notes — both a real body and a checklist. The
-  // grid card renders the body section in addition to the checkboxes.
-  isHybridCard(note: NoteI): boolean {
-    if (!note.isCbox) return false
-    const text = (note.noteBody || '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()
-    return text.length > 0
-  }
-
-  overviewChecklistPreview(items: CheckboxI[] = []) {
-    const visible: CheckboxI[] = []
-    const maxRows = 7
-    const lineBudget = 11
-    let usedLines = 0
-
-    for (const item of items) {
-      const lines = this.overviewChecklistLineCost(item)
-      if (visible.length && (visible.length >= maxRows || usedLines + lines > lineBudget)) break
-      visible.push(item)
-      usedLines += lines
-    }
-
-    return {
-      items: visible,
-      more: Math.max(0, items.length - visible.length)
-    }
-  }
-
-  private overviewChecklistLineCost(item: CheckboxI) {
-    const length = this.htmlPlainText(item.data).length
-    if (length <= 34) return 1
-    if (length <= 72) return 2
-    return 3
-  }
-
-  overviewChecklistItems(note: NoteI) {
-    const checkBoxes = note.checkBoxes || []
-    const rows = this.preferences.value.moveCompletedChecklistItemsToBottom
-      ? checkBoxes.filter(item => !item.done)
-      : checkBoxes
-    return normalizeIndentLevels(rows)
-  }
-
-  overviewCompletedChecklistCount(note: NoteI) {
-    return (note.checkBoxes || []).filter(item => item.done).length
-  }
-
-  checkboxIndentLevel(cb?: CheckboxI) {
-    return normalizeIndentLevel(cb?.indentLevel)
-  }
-
-  checkboxIndentPx(cb?: CheckboxI) {
-    return this.checkboxIndentLevel(cb) * 28
-  }
-
   private toggleChecklistItemWithChildren(checkBoxes: CheckboxI[] = [], id: number) {
     const index = checkBoxes.findIndex(item => item.id === id)
     if (index < 0) return
@@ -322,12 +302,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     for (const childIndex of descendantIndexes(checkBoxes, index)) {
       checkBoxes[childIndex].done = done
     }
-  }
-
-  private htmlPlainText(value?: string | null) {
-    const div = document.createElement('div')
-    div.innerHTML = String(value || '')
-    return (div.textContent || div.innerText || '').replace(/\s+/g, ' ').trim()
   }
 
   private noteMeta(note: NoteI) {
@@ -339,7 +313,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     const cached = this.noteMetaCache.get(note)
     if (cached && cached.rawBody === rawBody && cached.title === title && cached.bgKey === bgKey) return cached
 
-    const body = this.auth.authenticatedImageHtml(rawBody)
+    const body = this.auth.authenticatedImageHtml(rawBody, { lazyPreviewImages: true })
     const bodyPreview = richLinkPreviews ? this.buildBodySegments(body) : { segments: [{ type: 'html' as const, value: body }], urls: [] }
     const bodySegments = bodyPreview.segments
     const urls = bodyPreview.urls
@@ -568,6 +542,29 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     const containerStyle = getComputedStyle(container)
     const containerPadding = parseFloat(containerStyle.paddingLeft) + parseFloat(containerStyle.paddingRight)
     let containerWidth = container.clientWidth - containerPadding
+    if (this.Shared.noteViewType.value === 'list') {
+      this.noteWidth = this.mainContainer.nativeElement.clientWidth >= 600
+        ? 600
+        : this.mainContainer.nativeElement.clientWidth - 10;
+      const width = `${this.noteWidth}px`;
+      if (document.documentElement.style.getPropertyValue('--note-width') !== width) {
+        document.documentElement.style.setProperty('--note-width', width);
+      }
+      this.noteEl.toArray().forEach(layout => {
+        layout.nativeElement.style.height = '';
+        layout.nativeElement.style.width = '';
+      });
+      this.noteCards.toArray().forEach(card => {
+        card.nativeElement.style.transform = '';
+        card.nativeElement.style.position = '';
+        card.nativeElement.style.left = '';
+        card.nativeElement.style.top = '';
+        card.nativeElement.style.width = '';
+        card.nativeElement.removeAttribute('data-packed');
+      });
+      this.title.forEach(title => title.nativeElement.style.maxWidth = width);
+      return;
+    }
     let numberOfColumns = 0
     let masonryWidth = '0px'
     const expandedFoldableGrid = isExpandedNativeFoldable()
@@ -606,6 +603,26 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     const width = `${this.noteWidth}px`
     if (document.documentElement.style.getPropertyValue('--note-width') !== width) {
       document.documentElement.style.setProperty('--note-width', width)
+    }
+    const gridMetricsChanged = this.masonryColumnCount !== numberOfColumns
+      || this.masonryColumnWidth !== this.noteWidth || this.masonryGutter !== gutter;
+    this.masonryColumnCount = numberOfColumns;
+    this.masonryColumnWidth = this.noteWidth;
+    this.masonryGutter = gutter;
+    if (this.isVirtualGridEnabled()) {
+      this.noteEl.toArray().forEach(layout => {
+        layout.nativeElement.style.width = centerLandscapePhoneGrid ? masonryWidth : '';
+        layout.nativeElement.style.marginInline = centerLandscapePhoneGrid ? 'auto' : '';
+        layout.nativeElement.removeAttribute('data-packed');
+      });
+      this.noteCards.toArray().forEach(card => {
+        card.nativeElement.style.position = '';
+        card.nativeElement.style.left = '';
+        card.nativeElement.style.top = '';
+      });
+      this.title.forEach(title => title.nativeElement.style.maxWidth = '');
+      if (gridMetricsChanged) this.zone.run(() => this.listWindowVersion++);
+      return;
     }
     // --
     const sizes = [{ columns: numberOfColumns, gutter: gutter }]
@@ -672,6 +689,187 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   visibleNotes(notes: NoteI[]) {
     return notes.slice(0, this.visibleNoteLimit)
+  }
+
+  noteListWindow(notes: NoteI[], group: string): NoteListWindow & { notes: NoteI[] } {
+    // The masonry grid keeps its progressive renderer. Only list view opts into
+    // variable-height virtualization, so Bricks never competes with a virtual
+    // list for ownership of the same elements.
+    if (this.Shared.noteViewType.value !== 'list' || !this.mainContainer?.nativeElement) {
+      return { start: 0, end: 0, topSpacer: 0, bottomSpacer: 0, totalHeight: 0, notes: [] };
+    }
+    const layout = this.mainContainer.nativeElement.querySelector<HTMLElement>(
+      `.notes-layout[data-list-group="${group}"]`
+    );
+    if (!layout) return { start: 0, end: 0, topSpacer: 0, bottomSpacer: 0, totalHeight: 0, notes: [] };
+    let cached = this.listWindows.get(group);
+    if (!cached || cached.source !== notes || cached.layout !== layout) {
+      const model = cached?.model || new NoteListWindowModel<NoteI>();
+      model.setItems(notes, note => note.syncId || String(note.id ?? ''), note => this.estimateListNoteHeight(note));
+      cached = { source: notes, model, layout, start: -1, end: -1 };
+      this.listWindows.set(group, cached);
+    }
+    // Reading the version makes template evaluation explicitly follow scroll
+    // range and ResizeObserver updates, while the measured range stays cached.
+    void this.listWindowVersion;
+    const sectionTop = layout.getBoundingClientRect().top + window.scrollY;
+    const range = cached.model.window(window.scrollY - sectionTop, window.innerHeight, Math.max(400, Math.floor(window.innerHeight * 0.66)));
+    cached.start = range.start;
+    cached.end = range.end;
+    return { ...range, notes: notes.slice(range.start, range.end) };
+  }
+
+  isVirtualGridEnabled() {
+    if (!this.gridVirtualizationOverrideRead) {
+      this.gridVirtualizationOverrideRead = true;
+      const mode = new URLSearchParams(window.location.search).get('virtualGrid');
+      if (mode === 'on' || mode === '1') this.gridVirtualizationOverride = true;
+      else this.gridVirtualizationOverride = false;
+    }
+    return this.Shared.noteViewType.value === 'grid' && this.gridVirtualizationOverride === true;
+  }
+
+  gridNoteWindow(notes: NoteI[], group: string): MasonryWindowResult<NoteI> & { notes: NoteI[] } {
+    if (!this.isVirtualGridEnabled() || !this.mainContainer?.nativeElement) return this.emptyGridWindow;
+    const layout = this.mainContainer.nativeElement.querySelector<HTMLElement>(
+      `.notes-layout[data-list-group="${group}"]`
+    );
+    if (!layout) return this.emptyGridWindow;
+    let cached = this.gridWindows.get(group);
+    if (!cached || cached.source !== notes || cached.layout !== layout
+      || cached.columnCount !== this.masonryColumnCount || cached.columnWidth !== this.masonryColumnWidth
+      || cached.gutter !== this.masonryGutter) {
+      const model = cached?.model || new NoteMasonryWindowModel<NoteI>();
+      model.setItems(notes, note => note.syncId || String(note.id ?? ''), note => this.estimateListNoteHeight(note),
+        this.masonryColumnCount, this.masonryColumnWidth, this.masonryGutter);
+      cached = {
+        source: notes,
+        model,
+        layout,
+        columnCount: this.masonryColumnCount,
+        columnWidth: this.masonryColumnWidth,
+        gutter: this.masonryGutter,
+        signature: '',
+        result: this.emptyGridWindow
+      };
+      this.gridWindows.set(group, cached);
+    }
+    void this.listWindowVersion;
+    const sectionTop = layout.getBoundingClientRect().top + window.scrollY;
+    const range = cached.model.window(window.scrollY - sectionTop, window.innerHeight, Math.max(400, Math.floor(window.innerHeight * 0.66)));
+    const signature = `${range.totalHeight}|${range.placements.map(item => item.key).join('\u0000')}`;
+    if (signature !== cached.signature) {
+      cached.signature = signature;
+      cached.result = { ...range, notes: range.placements.map(item => item.item) };
+    }
+    return cached.result;
+  }
+
+  gridCardTransform(note: NoteI, group: string) {
+    const cached = this.gridWindows.get(group);
+    const placement = cached?.model.placement(note.syncId || String(note.id ?? ''));
+    if (!placement) return '';
+    const left = placement.column * (this.masonryColumnWidth + this.masonryGutter);
+    return `translate3d(${left}px, ${placement.top}px, 0)`;
+  }
+
+  private measureGridCards(entries: ResizeObserverEntry[]) {
+    let changed = false;
+    const grouped = new Map<string, Array<{ key: string; height: number }>>();
+    for (const entry of entries) {
+      const card = entry.target as HTMLElement;
+      const key = card.dataset['noteKey'];
+      const group = card.closest<HTMLElement>('.notes-layout')?.dataset['listGroup'];
+      if (!key || !group || entry.contentRect.height <= 0) continue;
+      const rows = grouped.get(group) || [];
+      rows.push({ key, height: entry.contentRect.height });
+      grouped.set(group, rows);
+    }
+    for (const [group, measurements] of grouped) {
+      const cached = this.gridWindows.get(group);
+      if (!cached) continue;
+      const sectionTop = cached.layout.getBoundingClientRect().top + window.scrollY;
+      const offset = window.scrollY - sectionTop;
+      const anchor = cached.result.placements.find(item => item.top + item.height >= offset && item.top <= offset + window.innerHeight);
+      const previousTop = anchor ? cached.model.placement(anchor.key)?.top : undefined;
+      if (!cached.model.measureMany(measurements)) continue;
+      cached.signature = '';
+      if (anchor && previousTop != null) {
+        const currentTop = cached.model.placement(anchor.key)?.top;
+        if (currentTop != null && anchor.top + sectionTop < window.scrollY) window.scrollBy(0, currentTop - previousTop);
+      }
+      this.gridNoteWindow(cached.source, group);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private estimateListNoteHeight(note: NoteI) {
+    const textLength = String(note.noteTitle || '').length + String(note.noteBody || '').length;
+    const textHeight = Math.min(420, Math.ceil(textLength / 95) * 22);
+    const checklistHeight = Math.min(480, (note.checkBoxes?.length || 0) * 34);
+    const mediaHeight = Math.min(480, (note.images?.length || 0) * 112);
+    const attachmentHeight = Math.min(240, (note.attachments?.length || 0) * 36);
+    return Math.max(140, 104 + textHeight + checklistHeight + mediaHeight + attachmentHeight);
+  }
+
+  private refreshListWindowRanges() {
+    if (this.Shared.noteViewType.value !== 'list') return false;
+    let changed = false;
+    for (const cached of this.listWindows.values()) {
+      const sectionTop = cached.layout.getBoundingClientRect().top + window.scrollY;
+      const range = cached.model.window(window.scrollY - sectionTop, window.innerHeight, Math.max(400, Math.floor(window.innerHeight * 0.66)));
+      if (range.start !== cached.start || range.end !== cached.end) {
+        cached.start = range.start;
+        cached.end = range.end;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private refreshGridWindowRanges() {
+    if (!this.isVirtualGridEnabled()) return false;
+    let changed = false;
+    for (const [group, cached] of this.gridWindows) {
+      const previous = cached.signature;
+      this.gridNoteWindow(cached.source, group);
+      if (cached.signature !== previous) changed = true;
+    }
+    return changed;
+  }
+
+  private measureListNoteCard(card: HTMLElement, height: number) {
+    const key = card.dataset['noteKey'];
+    const group = card.closest<HTMLElement>('.notes-layout')?.dataset['listGroup'];
+    if (!key || !group) return false;
+    const cached = this.listWindows.get(group);
+    const measurement = cached?.model.measure(key, height);
+    if (!cached || !measurement) return false;
+    if (measurement.index < cached.start && card.getBoundingClientRect().bottom <= 0) window.scrollBy(0, measurement.delta);
+    return true;
+  }
+
+  private measureGridNoteCards(entries: ResizeObserverEntry[]) {
+    let changed = false;
+    const measurementsByGroup = new Map<string, Array<{ key: string; height: number }>>();
+    for (const entry of entries) {
+      const card = entry.target as HTMLElement;
+      const key = card.dataset['noteKey'];
+      const group = card.closest<HTMLElement>('.notes-layout')?.dataset['listGroup'];
+      if (!key || !group || entry.contentRect.height <= 0) continue;
+      const measurements = measurementsByGroup.get(group) || [];
+      measurements.push({ key, height: entry.contentRect.height });
+      measurementsByGroup.set(group, measurements);
+    }
+    for (const [group, measurements] of measurementsByGroup) {
+      const cached = this.gridWindows.get(group);
+      if (!cached || !cached.model.measureMany(measurements)) continue;
+      cached.signature = '';
+      this.gridNoteWindow(cached.source, group);
+      changed = true;
+    }
+    return changed;
   }
 
   canShowMoreLoadedNotes(notes: NoteI[]) {
@@ -777,9 +975,27 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   onWindowScroll() {
     if (Date.now() < this.suppressScrollPaginationUntil) return
     if (this.modalContainer?.nativeElement?.style.display === 'block' || this.modalClosing) return
+    if (this.Shared.noteViewType.value === 'list' && this.refreshListWindowRanges()) {
+      this.zone.run(() => this.listWindowVersion++)
+    } else if (this.isVirtualGridEnabled() && this.refreshGridWindowRanges()) {
+      this.zone.run(() => this.listWindowVersion++)
+    }
     const remaining = document.documentElement.scrollHeight - (window.innerHeight + window.scrollY)
-    if (remaining < 900 && (this.visibleNoteLimit < this.Shared.note.all.length || this.hasMoreServerNotes())) {
-      this.zone.run(() => this.increaseVisibleNoteLimit())
+    const needsMoreListData = this.Shared.noteViewType.value === 'list' && this.hasMoreServerNotes()
+    const needsMoreGridCards = this.Shared.noteViewType.value === 'grid'
+      && !this.isVirtualGridEnabled()
+      && this.visibleNoteLimit < this.Shared.note.all.length
+    const needsMoreVirtualGridData = this.isVirtualGridEnabled() && this.hasMoreServerNotes()
+    if (!this.scrollExpansionPending && remaining < 900 && (needsMoreListData || needsMoreGridCards || needsMoreVirtualGridData)) {
+      this.scrollExpansionPending = true
+      this.zone.run(() => {
+        if (needsMoreListData || needsMoreVirtualGridData) this.loadMoreNotesIfNeeded()
+        else this.increaseVisibleNoteLimit()
+      })
+      this.scrollExpansionFallback = setTimeout(() => {
+        this.scrollExpansionFallback = undefined
+        this.scrollExpansionPending = false
+      }, 1000)
     }
   }
 
@@ -1097,8 +1313,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     event.preventDefault()
     if (this.ignoreSyntheticOverviewCheckboxMouse(event)) return
     if (note.isCardPreview && note.id) note = await this.notesService.get(note.id).catch(() => note)
-    this.toggleChecklistItemWithChildren(note.checkBoxes || [], cb.id)
-    await this.notesService.updateKey({ checkBoxes: note.checkBoxes }, note.id!)
+    const checkBoxes = (note.checkBoxes || []).map(item => ({ ...item }))
+    this.toggleChecklistItemWithChildren(checkBoxes, cb.id)
+    await this.notesService.updateKey({ checkBoxes }, note.id!)
     this.scheduleBuildMasonry(true)
   }
 
@@ -1107,9 +1324,8 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     event.preventDefault()
     if (this.ignoreSyntheticOverviewCheckboxMouse(event)) return
     if (note.isCardPreview && note.id) note = await this.notesService.get(note.id).catch(() => note)
-    const index = note.checkBoxes?.findIndex(x => x.id === cb.id)
-    if (index !== undefined && index >= 0) note.checkBoxes?.splice(index, 1)
-    await this.notesService.updateKey({ checkBoxes: note.checkBoxes }, note.id!)
+    const checkBoxes = (note.checkBoxes || []).filter(item => item.id !== cb.id).map(item => ({ ...item }))
+    await this.notesService.updateKey({ checkBoxes }, note.id!)
     this.scheduleBuildMasonry(true)
   }
 
@@ -1536,13 +1752,12 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     notes.splice(from, 1)
     notes.splice(to, 0, dragged)
     if (notes === this.Shared.note.pinned) {
-      this.Shared.note.pinned = [...notes]
+      this.Shared.note.all = [...notes, ...this.Shared.note.unpinned]
       this.touchDragNotes = this.Shared.note.pinned
     } else {
-      this.Shared.note.unpinned = [...notes]
+      this.Shared.note.all = [...this.Shared.note.pinned, ...notes]
       this.touchDragNotes = this.Shared.note.unpinned
     }
-    this.Shared.note.all = [...this.Shared.note.pinned, ...this.Shared.note.unpinned]
     this.noteOrderChanged = true
     // Skip the FLIP animation during touch drag — Bricks repacks via the
     // signature-gated scheduleBuildMasonry on the next CD cycle, which is
@@ -1675,12 +1890,8 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     const previousRects = this.getNoteRects()
     notes.splice(from, 1)
     notes.splice(to, 0, draggedNote)
-    if (notes === this.Shared.note.pinned) {
-      this.Shared.note.pinned = [...notes]
-    } else {
-      this.Shared.note.unpinned = [...notes]
-    }
-    this.Shared.note.all = [...this.Shared.note.pinned, ...this.Shared.note.unpinned]
+    if (notes === this.Shared.note.pinned) this.Shared.note.all = [...notes, ...this.Shared.note.unpinned]
+    else this.Shared.note.all = [...this.Shared.note.pinned, ...notes]
     this.noteOrderChanged = true
     this.scheduleBuildMasonry(true)
     this.animateNoteRects(previousRects, this.draggedNoteId)
@@ -2084,8 +2295,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   private removePendingDeletedNoteFromView(noteId: number) {
     this.Shared.note.all = this.Shared.note.all.filter(n => n.id !== noteId)
-    this.Shared.note.pinned = this.Shared.note.pinned.filter(n => n.id !== noteId)
-    this.Shared.note.unpinned = this.Shared.note.unpinned.filter(n => n.id !== noteId)
     this.masonrySignatureToken++
     this.cd.detectChanges()
     this.scheduleBuildMasonry(true)
@@ -2093,11 +2302,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   private restorePendingDeletedNoteToView(pending: { note: NoteI; allIndex: number; pinnedIndex: number; unpinnedIndex: number }) {
     this.Shared.note.all = this.insertNoteAt(this.Shared.note.all, pending.note, pending.allIndex)
-    if (pending.note.pinned) {
-      this.Shared.note.pinned = this.insertNoteAt(this.Shared.note.pinned, pending.note, pending.pinnedIndex)
-    } else {
-      this.Shared.note.unpinned = this.insertNoteAt(this.Shared.note.unpinned, pending.note, pending.unpinnedIndex)
-    }
     this.masonrySignatureToken++
     this.cd.detectChanges()
     this.scheduleBuildMasonry(true)
@@ -2630,7 +2834,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     // another 56 notes to the same render cycle), grow the visible window in
     // staircases. Each step is one CD pass and one paint, so the user sees
     // notes streaming in instead of waiting for a giant single render.
-    if (!this.didInitialExpand && this.Shared.note.all.length > this.visibleNoteLimit) {
+    if (!this.didInitialExpand && !this.isVirtualGridEnabled() && this.Shared.note.all.length > this.visibleNoteLimit) {
       this.didInitialExpand = true
       this.scheduleProgressiveExpand()
     }
@@ -2805,10 +3009,37 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.containerResizeObserver.observe(this.mainContainer.nativeElement)
         this.noteCardResizeObserver = new ResizeObserver(entries => {
           if (!entries.some(entry => entry.contentRect.height > 0)) return
+          if (this.Shared.noteViewType.value === 'list') {
+            let measured = false
+            for (const entry of entries) {
+              if (entry.contentRect.height > 0) measured = this.measureListNoteCard(entry.target as HTMLElement, entry.contentRect.height) || measured
+            }
+            if (measured) this.zone.run(() => this.listWindowVersion++)
+            return
+          }
+          if (this.isVirtualGridEnabled()) {
+            this.pendingGridResizeEntries.push(...entries.filter(entry => entry.contentRect.height > 0))
+            if (this.gridResizeFrame == null) {
+              this.gridResizeFrame = requestAnimationFrame(() => {
+                this.gridResizeFrame = undefined
+                const pending = this.pendingGridResizeEntries.splice(0)
+                if (this.measureGridNoteCards(pending)) this.zone.run(() => this.listWindowVersion++)
+              })
+            }
+            return
+          }
           this.scheduleBuildMasonry(true)
         })
         this.observeRenderedNoteCards()
-        this.subscriptions.push(this.noteCards.changes.subscribe(() => this.observeRenderedNoteCards()))
+        this.subscriptions.push(this.noteCards.changes.subscribe(() => {
+          this.observeRenderedNoteCards()
+          if (!this.scrollExpansionPending) return
+          if (this.scrollExpansionFallback) clearTimeout(this.scrollExpansionFallback)
+          this.scrollExpansionFallback = undefined
+          this.zone.runOutsideAngular(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+            this.scrollExpansionPending = false
+          })))
+        }))
       }
     })
 
@@ -2949,6 +3180,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     window.removeEventListener('scroll', this.windowScrollHandler)
     document.removeEventListener('mousedown', this.mouseDownEvent)
     if (this.scrollFrame != null) cancelAnimationFrame(this.scrollFrame)
+    if (this.scrollExpansionFallback) clearTimeout(this.scrollExpansionFallback)
+    if (this.gridResizeFrame != null) cancelAnimationFrame(this.gridResizeFrame)
+    this.pendingGridResizeEntries = []
     if (this.masonryFrame != null) cancelAnimationFrame(this.masonryFrame)
     if (this.masonryPackFrame != null) cancelAnimationFrame(this.masonryPackFrame)
     this.containerResizeObserver?.disconnect()

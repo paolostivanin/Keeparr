@@ -94,6 +94,27 @@ describe('NotesComponent responsiveness', () => {
     expect(layout).not.toHaveBeenCalled();
   });
 
+  it('returns a bounded variable-height list window for a large loaded collection', () => {
+    const root = document.createElement('div');
+    const group = document.createElement('div');
+    group.className = 'notes-layout';
+    group.dataset['listGroup'] = 'unpinned';
+    root.appendChild(group);
+    component.mainContainer = new ElementRef(root);
+    shared.noteViewType.next('list');
+    const notes = Array.from({ length: 10_000 }, (_, index) => ({
+      ...preview,
+      id: index + 1,
+      syncId: `note-${index + 1}`
+    }));
+
+    const window = component.noteListWindow(notes, 'unpinned');
+
+    expect(window.notes.length).toBeLessThan(40);
+    expect(window.start).toBeLessThan(10_000);
+    expect(window.topSpacer + window.bottomSpacer).toBeGreaterThan(0);
+  });
+
   it('does not read layout dimensions when checking an unchanged masonry signature', () => {
     const container = document.createElement('div');
     Object.defineProperty(container, 'clientWidth', { get: () => { throw new Error('Forced layout read'); } });
@@ -101,4 +122,29 @@ describe('NotesComponent responsiveness', () => {
     (component as any).lastMasonrySignature = (component as any).masonrySignature();
     expect(() => component.scheduleBuildMasonry()).not.toThrow();
   });
+
+  it('coalesces repeated bottom-scroll callbacks while an expansion is pending', fakeAsync(() => {
+    shared.note.all = Array.from({ length: 1000 }, (_, index) => ({
+      ...preview,
+      id: index + 1,
+      syncId: `note-${index + 1}`
+    }));
+    component.visibleNoteLimit = 24;
+    const root = document.documentElement;
+    const descriptor = Object.getOwnPropertyDescriptor(root, 'scrollHeight');
+    Object.defineProperty(root, 'scrollHeight', { configurable: true, value: 500 });
+    spyOn(component, 'scheduleBuildMasonry');
+
+    try {
+      component.onWindowScroll();
+      component.onWindowScroll();
+      expect(component.visibleNoteLimit).toBe(24 + 80);
+      tick(1000);
+      expect((component as any).scrollExpansionPending).toBeFalse();
+    } finally {
+      if (descriptor) Object.defineProperty(root, 'scrollHeight', descriptor);
+      else delete (root as any).scrollHeight;
+    }
+  }));
+
 });

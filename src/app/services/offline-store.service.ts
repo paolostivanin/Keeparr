@@ -7,6 +7,8 @@ import type { LocationSavedPlace } from './location-saved-places.service';
 export type SyncResourceType = 'note' | 'reminder' | 'attachment';
 export type SyncMutationType =
   | 'note.upsert'
+  | 'note.patch'
+  | 'note.merge'
   | 'note.delete'
   | 'note.reorder'
   | 'reminder.upsert'
@@ -30,6 +32,8 @@ export interface OutboxEntry {
   payload: unknown;
   lww: LwwStamp;
   createdAt: number;
+  deliveryState?: 'unsent' | 'sent';
+  sentAt?: number;
   attempts: number;
 }
 
@@ -46,6 +50,21 @@ type SyncState = {
   cursor: number;
   serverOffsetMs: number;
 };
+
+export interface OfflineResourceChange {
+  resourceType: SyncResourceType;
+  resourceSyncId: string;
+  operation: 'upsert' | 'delete';
+  payload: NoteI | ReminderI | NoteAttachmentI | null;
+}
+
+export interface AppliedChangeSummary {
+  noteSyncIds: string[];
+  removedNoteSyncIds: string[];
+  reminderSyncIds: string[];
+  removedReminderSyncIds: string[];
+  attachmentSyncIds: string[];
+}
 
 @Injectable({ providedIn: 'root' })
 export class OfflineStoreService {
@@ -103,32 +122,169 @@ export class OfflineStoreService {
   async replaceSnapshot(partition: string, notes: NoteI[], reminders: ReminderI[], attachments: NoteAttachmentI[], cursor: number, serverTime: number) {
     const db = await this.open();
     await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction(['notes', 'reminders', 'attachments', 'syncState'], 'readwrite');
+      const transaction = db.transaction(['notes', 'reminders', 'attachments', 'outbox', 'syncState'], 'readwrite');
       const stores = {
         notes: transaction.objectStore('notes'),
         reminders: transaction.objectStore('reminders'),
         attachments: transaction.objectStore('attachments'),
+        outbox: transaction.objectStore('outbox'),
         syncState: transaction.objectStore('syncState')
       };
-      let cursorsRemaining = 3;
+      const localNotes = new Map<string, NoteI>();
+      const localReminders = new Map<string, ReminderI>();
+      const localAttachments = new Map<string, NoteAttachmentI>();
+      const latestPending = new Map<string, OutboxEntry>();
+      const pendingNotePatches = new Map<string, OutboxEntry[]>();
+      const pendingNoteMerges: OutboxEntry[] = [];
+      let cursorsRemaining = 4;
       const writeSnapshot = () => {
+        const snapshotNotes = new Map<string, NoteI>();
         notes.forEach(note => {
           const syncId = this.ensureNoteIdentity(note);
-          stores.notes.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: note });
+          snapshotNotes.set(syncId, note);
         });
+        const snapshotReminders = new Map<string, ReminderI>();
         reminders.forEach(reminder => {
           const syncId = this.ensureReminderIdentity(reminder);
+          snapshotReminders.set(syncId, reminder);
+        });
+        const snapshotAttachments = new Map<string, NoteAttachmentI>();
+        attachments.forEach(attachment => {
+          if (attachment.syncId) snapshotAttachments.set(attachment.syncId, attachment);
+        });
+        for (const entry of latestPending.values()) {
+          if (entry.type === 'note.delete') {
+            snapshotNotes.delete(entry.syncId);
+          } else if (entry.type === 'note.upsert' || entry.type === 'note.merge') {
+            const serverNote = snapshotNotes.get(entry.syncId);
+            const pendingNote = localNotes.get(entry.syncId)
+              || (entry.type === 'note.upsert' ? entry.payload as NoteI : undefined);
+            if (!pendingNote) continue;
+            snapshotNotes.set(entry.syncId, serverNote ? {
+              ...serverNote,
+              ...pendingNote,
+              id: serverNote.id ?? pendingNote.id,
+              revision: serverNote.revision ?? pendingNote.revision,
+              syncId: entry.syncId
+            } : { ...pendingNote, syncId: entry.syncId });
+          } else if (entry.type === 'reminder.delete') {
+            snapshotReminders.delete(entry.syncId);
+          } else if (entry.type === 'reminder.upsert') {
+            const serverReminder = snapshotReminders.get(entry.syncId);
+            const pendingReminder = localReminders.get(entry.syncId) || entry.payload as ReminderI;
+            snapshotReminders.set(entry.syncId, serverReminder ? {
+              ...serverReminder,
+              ...pendingReminder,
+              id: serverReminder.id ?? pendingReminder.id,
+              noteId: pendingReminder.noteId != null && pendingReminder.noteId < 0
+                ? serverReminder.noteId ?? pendingReminder.noteId
+                : pendingReminder.noteId,
+              syncId: entry.syncId
+            } : { ...pendingReminder, syncId: entry.syncId });
+          } else if (entry.type === 'attachment.delete') {
+            snapshotAttachments.delete(entry.syncId);
+          } else if (entry.type === 'attachment.upload') {
+            const localAttachment = localAttachments.get(entry.syncId);
+            if (!localAttachment) continue;
+            const payload = entry.payload as { noteSyncId?: string };
+            const noteSyncId = payload.noteSyncId || '';
+            const note = snapshotNotes.get(noteSyncId)
+              || [...snapshotNotes.values()].find(item => item.id === localAttachment.noteId);
+            const attachment = note?.id != null ? { ...localAttachment, noteId: note.id } : localAttachment;
+            snapshotAttachments.set(entry.syncId, attachment);
+            if (note?.syncId) {
+              const currentAttachments = note.attachments || [];
+              snapshotNotes.set(note.syncId, {
+                ...note,
+                attachments: [attachment, ...currentAttachments.filter(item => item.syncId !== entry.syncId)]
+              });
+            }
+          }
+        }
+        for (const [syncId, entries] of pendingNotePatches) {
+          const latestFullMutation = latestPending.get(`note|${syncId}`);
+          if (latestFullMutation?.type === 'note.delete') continue;
+          const serverNote = snapshotNotes.get(syncId);
+          const localNote = localNotes.get(syncId);
+          const base = serverNote || localNote;
+          if (!base) continue;
+          const patches = entries
+            .filter(entry => latestFullMutation?.type !== 'note.upsert'
+              || this.compareLwwStamp(entry.lww, latestFullMutation.lww) > 0)
+            .sort((left, right) => this.compareLwwStamp(left.lww, right.lww));
+          const value = this.applyPendingNotePatches(base, syncId, patches);
+          snapshotNotes.set(syncId, {
+            ...value,
+            id: serverNote?.id ?? value.id,
+            revision: serverNote?.revision ?? value.revision,
+            syncId
+          });
+        }
+        for (const entry of pendingNoteMerges) {
+          const payload = entry.payload as {
+            orderedSourceSyncIds?: string[];
+            sourceIds?: number[];
+            localMergeId?: number;
+            keptReminderSyncId?: string;
+            removedReminderSyncIds?: string[];
+          };
+          const mergeNote = snapshotNotes.get(entry.syncId);
+          const targetId = mergeNote?.id ?? payload.localMergeId;
+          const sourceIds = new Set<number>(payload.sourceIds || []);
+          for (const syncId of payload.orderedSourceSyncIds || []) {
+            const serverSource = snapshotNotes.get(syncId);
+            const localSource = localNotes.get(syncId);
+            if (serverSource) sourceIds.add(serverSource.id ?? 0);
+            if (localSource) sourceIds.add(localSource.id ?? 0);
+            if (!serverSource || !localSource) continue;
+            snapshotNotes.set(syncId, {
+              ...serverSource,
+              trashed: localSource.trashed,
+              trashedAt: localSource.trashedAt,
+              pinned: false,
+              updatedAt: localSource.updatedAt,
+              lastEditorUserId: localSource.lastEditorUserId
+            });
+          }
+          if (targetId != null) {
+            for (const [syncId, attachment] of snapshotAttachments) {
+              const localAttachment = localAttachments.get(syncId);
+              if (attachment.noteId != null && sourceIds.has(attachment.noteId)
+                  || localAttachment?.noteId === payload.localMergeId) {
+                snapshotAttachments.set(syncId, { ...(localAttachment || attachment), noteId: targetId });
+              }
+            }
+            for (const [syncId, reminder] of snapshotReminders) {
+              if ((payload.removedReminderSyncIds || []).includes(syncId)) {
+                snapshotReminders.delete(syncId);
+              } else if (syncId === payload.keptReminderSyncId) {
+                snapshotReminders.set(syncId, { ...reminder, noteId: targetId });
+              }
+            }
+            const currentMergeNote = snapshotNotes.get(entry.syncId);
+            if (currentMergeNote) {
+              snapshotNotes.set(entry.syncId, {
+                ...currentMergeNote,
+                attachments: [...snapshotAttachments.values()].filter(attachment => attachment.noteId === targetId)
+              });
+            }
+          }
+        }
+        snapshotNotes.forEach((note, syncId) => {
+          stores.notes.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: note });
+        });
+        snapshotReminders.forEach((reminder, syncId) => {
           stores.reminders.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: reminder });
         });
-        attachments.forEach(attachment => {
-          if (!attachment.syncId) return;
+        for (const attachment of snapshotAttachments.values()) {
+          if (!attachment.syncId) continue;
           stores.attachments.put({
             key: this.resourceKey(partition, attachment.syncId),
             partition,
             syncId: attachment.syncId,
             value: attachment
           });
-        });
+        }
         stores.syncState.put({
         key: partition,
         partition,
@@ -142,6 +298,13 @@ export class OfflineStoreService {
         request.onsuccess = () => {
           const keyCursor = request.result;
           if (keyCursor) {
+            const recordRequest = store.get(keyCursor.primaryKey);
+            recordRequest.onsuccess = () => {
+               const record = recordRequest.result as StoredResource<NoteI | ReminderI | NoteAttachmentI> | undefined;
+               if (record && store === stores.notes) localNotes.set(record.syncId, record.value as NoteI);
+               if (record && store === stores.reminders) localReminders.set(record.syncId, record.value as ReminderI);
+               if (record && store === stores.attachments) localAttachments.set(record.syncId, record.value as NoteAttachmentI);
+            };
             store.delete(keyCursor.primaryKey);
             keyCursor.continue();
             return;
@@ -150,9 +313,266 @@ export class OfflineStoreService {
           if (cursorsRemaining === 0) writeSnapshot();
         };
       }
+      const outboxRequest = stores.outbox.index('partition').openCursor(IDBKeyRange.only(partition));
+      outboxRequest.onerror = () => transaction.abort();
+      outboxRequest.onsuccess = () => {
+        const cursor = outboxRequest.result;
+        if (cursor) {
+          const entry = cursor.value as OutboxEntry;
+          if (entry.type === 'note.patch') {
+            const patches = pendingNotePatches.get(entry.syncId) || [];
+            patches.push(entry);
+            pendingNotePatches.set(entry.syncId, patches);
+            cursor.continue();
+            return;
+          }
+          if (entry.type === 'note.merge') pendingNoteMerges.push(entry);
+          const resource = entry.type.startsWith('note.') ? 'note'
+            : entry.type.startsWith('reminder.') ? 'reminder'
+              : entry.type.startsWith('attachment.') ? 'attachment' : '';
+          if (resource) {
+            const key = `${resource}|${entry.syncId}`;
+            const previous = latestPending.get(key);
+            if (!previous || this.compareLwwStamp(entry.lww, previous.lww) > 0) {
+              latestPending.set(key, entry);
+            }
+          }
+          cursor.continue();
+          return;
+        }
+        cursorsRemaining--;
+        if (cursorsRemaining === 0) writeSnapshot();
+      };
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error || new Error('Could not replace the offline snapshot.'));
       transaction.onabort = () => reject(transaction.error || new Error('Offline snapshot replacement was aborted.'));
+    });
+  }
+
+  async applyChangePage(partition: string, changes: readonly OfflineResourceChange[], cursor: number, serverTime: number) {
+    const db = await this.open();
+    return new Promise<AppliedChangeSummary>((resolve, reject) => {
+      const transaction = db.transaction(['notes', 'reminders', 'attachments', 'outbox', 'syncState'], 'readwrite');
+      const notes = transaction.objectStore('notes');
+      const reminders = transaction.objectStore('reminders');
+      const attachments = transaction.objectStore('attachments');
+      const outbox = transaction.objectStore('outbox');
+      const syncState = transaction.objectStore('syncState');
+      const pendingByResource = new Map<string, OutboxEntry>();
+      const pendingNotePatches = new Map<string, OutboxEntry[]>();
+      const pendingMergesBySourceSyncId = new Map<string, OutboxEntry>();
+      const pendingMergesBySourceId = new Map<number, OutboxEntry>();
+      const pendingMergesByReminderSyncId = new Map<string, { entry: OutboxEntry; remove: boolean }>();
+      const summary: AppliedChangeSummary = {
+        noteSyncIds: [],
+        removedNoteSyncIds: [],
+        reminderSyncIds: [],
+        removedReminderSyncIds: [],
+        attachmentSyncIds: []
+      };
+      let changesStarted = false;
+      let remaining = changes.length;
+      const advanceCursor = () => {
+        syncState.put({
+          key: partition,
+          partition,
+          cursor,
+          serverOffsetMs: Number(serverTime || Date.now()) - Date.now()
+        } satisfies SyncState);
+      };
+      const resourceKeyForEntry = (entry: OutboxEntry) => entry.type.startsWith('note.') ? 'note'
+        : entry.type.startsWith('reminder.') ? 'reminder'
+          : entry.type.startsWith('attachment.') ? 'attachment' : '';
+      const recordChange = (change: OfflineResourceChange, changed: boolean, removed: boolean) => {
+        if (changed) {
+          if (change.resourceType === 'note') (removed ? summary.removedNoteSyncIds : summary.noteSyncIds).push(change.resourceSyncId);
+          else if (change.resourceType === 'reminder') (removed ? summary.removedReminderSyncIds : summary.reminderSyncIds).push(change.resourceSyncId);
+          else summary.attachmentSyncIds.push(change.resourceSyncId);
+        }
+        remaining--;
+        if (remaining === 0) advanceCursor();
+      };
+      const applyLoadedChange = (change: OfflineResourceChange) => {
+        const store = change.resourceType === 'note' ? notes
+          : change.resourceType === 'reminder' ? reminders : attachments;
+        const key = this.resourceKey(partition, change.resourceSyncId);
+        const getRequest = store.get(key);
+        getRequest.onerror = () => transaction.abort();
+        getRequest.onsuccess = () => {
+          const existing = getRequest.result as StoredResource<NoteI | ReminderI | NoteAttachmentI> | undefined;
+          const previous = existing?.value;
+          const pending = pendingByResource.get(`${change.resourceType}|${change.resourceSyncId}`);
+          const pendingDelete = pending?.type === `${change.resourceType}.delete`;
+          const pendingUpsert = pending?.type === `${change.resourceType}.upsert`
+            || (change.resourceType === 'attachment' && pending?.type === 'attachment.upload')
+            || (change.resourceType === 'note' && pending?.type === 'note.merge');
+          let desired: NoteI | ReminderI | NoteAttachmentI | undefined;
+          if (change.operation === 'delete') {
+            if (pendingUpsert) {
+              desired = previous || pending.payload as NoteI | ReminderI | NoteAttachmentI;
+            }
+          } else if (!pendingDelete && change.payload) {
+            const serverValue = change.payload;
+            if (pendingUpsert) {
+              const localValue = change.resourceType === 'attachment'
+                ? previous || serverValue
+                : previous || (pending?.type === 'note.merge'
+                  ? serverValue
+                  : pending?.payload as NoteI | ReminderI | NoteAttachmentI);
+              if (change.resourceType === 'note') {
+                const serverNote = serverValue as NoteI;
+                const localNote = localValue as NoteI;
+                desired = {
+                  ...serverNote,
+                  ...localNote,
+                  id: serverNote.id ?? localNote.id,
+                  revision: serverNote.revision ?? localNote.revision,
+                  syncId: change.resourceSyncId
+                };
+              } else if (change.resourceType === 'reminder') {
+                const serverReminder = serverValue as ReminderI;
+                const localReminder = localValue as ReminderI;
+                desired = {
+                  ...serverReminder,
+                  ...localReminder,
+                  id: serverReminder.id ?? localReminder.id,
+                  noteId: localReminder.noteId != null && localReminder.noteId < 0
+                    ? serverReminder.noteId ?? localReminder.noteId
+                    : localReminder.noteId,
+                  syncId: change.resourceSyncId
+                };
+              } else desired = localValue as NoteAttachmentI;
+            } else desired = serverValue;
+          }
+          if (change.resourceType === 'note' && desired && !pendingDelete) {
+            const patches = pendingNotePatches.get(change.resourceSyncId) || [];
+            const pendingFullMutation = pendingByResource.get(`note|${change.resourceSyncId}`);
+            const applicablePatches = patches
+              .filter(entry => pendingFullMutation?.type !== 'note.upsert'
+                || this.compareLwwStamp(entry.lww, pendingFullMutation.lww) > 0)
+              .sort((left, right) => this.compareLwwStamp(left.lww, right.lww));
+            desired = this.applyPendingNotePatches(desired as NoteI, change.resourceSyncId, applicablePatches);
+          }
+          const sourceMerge = pendingMergesBySourceSyncId.get(change.resourceSyncId);
+          if (change.resourceType === 'note' && desired && !pendingDelete && sourceMerge) {
+            const localSource = previous as NoteI | undefined;
+            if (localSource) {
+              desired = {
+                ...(desired as NoteI),
+                trashed: localSource.trashed,
+                trashedAt: localSource.trashedAt,
+                pinned: false,
+                updatedAt: localSource.updatedAt,
+                lastEditorUserId: localSource.lastEditorUserId
+              };
+            }
+          }
+          if (change.resourceType === 'attachment' && desired) {
+            const merge = pendingMergesBySourceId.get((desired as NoteAttachmentI).noteId || 0);
+            if (merge) {
+              const mergePayload = merge.payload as { localMergeId?: number };
+              desired = { ...(desired as NoteAttachmentI), noteId: mergePayload.localMergeId };
+            }
+          }
+          if (change.resourceType === 'reminder') {
+            const mergeState = pendingMergesByReminderSyncId.get(change.resourceSyncId);
+            if (mergeState?.remove) desired = undefined;
+            else if (mergeState) {
+              const mergePayload = mergeState.entry.payload as { localMergeId?: number };
+              desired = desired ? { ...(desired as ReminderI), noteId: mergePayload.localMergeId ?? null } : desired;
+            }
+          }
+          if (!desired) {
+            if (!existing) {
+              recordChange(change, false, false);
+              return;
+            }
+            store.delete(key);
+            recordChange(change, true, true);
+            return;
+          }
+          if (previous && JSON.stringify(previous) === JSON.stringify(desired)) {
+            recordChange(change, false, false);
+            return;
+          }
+          const write = () => {
+            store.put({ key, partition, syncId: change.resourceSyncId, value: desired });
+            recordChange(change, true, false);
+          };
+          if (change.resourceType !== 'note' || (desired as NoteI).id == null) {
+            write();
+            return;
+          }
+          const duplicates = notes.index('partitionAndId').openKeyCursor(
+            IDBKeyRange.only([partition, (desired as NoteI).id!])
+          );
+          duplicates.onerror = () => transaction.abort();
+          duplicates.onsuccess = () => {
+            const duplicate = duplicates.result;
+            if (duplicate) {
+              if (duplicate.primaryKey !== key) notes.delete(duplicate.primaryKey);
+              duplicate.continue();
+            } else write();
+          };
+        };
+      };
+      const beginChanges = () => {
+        if (changesStarted) return;
+        changesStarted = true;
+        if (!changes.length) {
+          advanceCursor();
+          return;
+        }
+        changes.forEach(applyLoadedChange);
+      };
+      const pendingRequest = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
+      pendingRequest.onerror = () => transaction.abort();
+      pendingRequest.onsuccess = () => {
+        const cursorRecord = pendingRequest.result;
+        if (cursorRecord) {
+          const entry = cursorRecord.value as OutboxEntry;
+          if (entry.type === 'note.merge') {
+            const payload = entry.payload as {
+              orderedSourceSyncIds?: string[];
+              sourceIds?: number[];
+              keptReminderSyncId?: string;
+              removedReminderSyncIds?: string[];
+            };
+            for (const syncId of payload.orderedSourceSyncIds || []) pendingMergesBySourceSyncId.set(syncId, entry);
+            for (const id of payload.sourceIds || []) pendingMergesBySourceId.set(id, entry);
+            for (const change of changes) {
+              if (change.resourceType !== 'note' || !payload.orderedSourceSyncIds?.includes(change.resourceSyncId)) continue;
+              const serverId = (change.payload as NoteI | null)?.id;
+              if (serverId != null) pendingMergesBySourceId.set(serverId, entry);
+            }
+            if (payload.keptReminderSyncId) {
+              pendingMergesByReminderSyncId.set(payload.keptReminderSyncId, { entry, remove: false });
+            }
+            for (const syncId of payload.removedReminderSyncIds || []) {
+              pendingMergesByReminderSyncId.set(syncId, { entry, remove: true });
+            }
+          }
+          if (entry.type === 'note.patch') {
+            const patches = pendingNotePatches.get(entry.syncId) || [];
+            patches.push(entry);
+            pendingNotePatches.set(entry.syncId, patches);
+            cursorRecord.continue();
+            return;
+          }
+          const family = resourceKeyForEntry(entry);
+          if (family) {
+            const key = `${family}|${entry.syncId}`;
+            const existing = pendingByResource.get(key);
+            if (!existing || this.compareLwwStamp(entry.lww, existing.lww) > 0) pendingByResource.set(key, entry);
+          }
+          cursorRecord.continue();
+          return;
+        }
+        beginChanges();
+      };
+      transaction.oncomplete = () => resolve(summary);
+      transaction.onerror = () => reject(transaction.error || new Error('Could not apply the offline change page.'));
+      transaction.onabort = () => reject(transaction.error || new Error('Offline change page was aborted.'));
     });
   }
 
@@ -164,21 +584,49 @@ export class OfflineStoreService {
       const existing = byIdentity.get(identity);
       byIdentity.set(identity, existing ? this.preferNote(existing, record.value) : record.value);
     }
-    if (byIdentity.size !== records.length) {
-      const db = await this.open();
-      await this.clearPartitionStore(db, 'notes', partition);
-      await this.transaction(db, ['notes'], 'readwrite', stores => {
-        byIdentity.forEach(note => {
-          const syncId = this.ensureNoteIdentity(note);
-          stores['notes'].put({ key: this.resourceKey(partition, syncId), partition, syncId, value: note });
-        });
-      });
-    }
     return [...byIdentity.values()];
+  }
+
+  async repairDuplicateNoteIdentities(partition: string) {
+    const records = await this.listRecords<NoteI>('notes', partition);
+    const recordsById = new Map<number, StoredResource<NoteI>[]>();
+    for (const record of records) {
+      if (record.value.id == null) continue;
+      const matches = recordsById.get(record.value.id) || [];
+      matches.push(record);
+      recordsById.set(record.value.id, matches);
+    }
+    const duplicateGroups = [...recordsById.values()].filter(matches => matches.length > 1);
+    if (!duplicateGroups.length) return 0;
+
+    const repairs = duplicateGroups.map(matches => {
+      const preferred = matches.slice(1).reduce(
+        (best, record) => this.preferNote(best, record.value),
+        matches[0].value
+      );
+      const retained = matches.find(record => record.syncId === preferred.syncId) || matches[matches.length - 1];
+      const syncId = preferred.syncId || retained.syncId;
+      return {
+        records: matches,
+        record: { key: this.resourceKey(partition, syncId), partition, syncId, value: { ...preferred, syncId } }
+      };
+    });
+    const db = await this.open();
+    await this.transaction(db, ['notes'], 'readwrite', stores => {
+      for (const repair of repairs) {
+        repair.records.forEach(record => stores['notes'].delete(record.key));
+        stores['notes'].put(repair.record);
+      }
+    });
+    return duplicateGroups.reduce((count, matches) => count + matches.length - 1, 0);
   }
 
   async listReminders(partition: string) {
     return this.listValues<ReminderI>('reminders', partition);
+  }
+
+  async listAttachments(partition: string) {
+    return this.listValues<NoteAttachmentI>('attachments', partition);
   }
 
   async getNote(partition: string, id: number) {
@@ -283,15 +731,323 @@ export class OfflineStoreService {
     return entry;
   }
 
+  async persistNoteMutation(partition: string, note: NoteI, stamp: LwwStamp) {
+    const syncId = this.ensureNoteIdentity(note);
+    const persisted: NoteI = {
+      ...note,
+      lwwPhysicalMs: stamp.physicalMs,
+      lwwLogical: stamp.logical,
+      lwwDeviceId: stamp.deviceId,
+      lwwOperationId: stamp.operationId
+    };
+    const entry: OutboxEntry = {
+      key: `${partition}|${stamp.operationId}`,
+      partition,
+      operationId: stamp.operationId,
+      type: 'note.upsert',
+      syncId,
+      payload: persisted,
+      lww: stamp,
+      createdAt: Date.now(),
+      deliveryState: 'unsent',
+      attempts: 0
+    };
+    const db = await this.open();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(['notes', 'outbox'], 'readwrite');
+      const notes = transaction.objectStore('notes');
+      const outbox = transaction.objectStore('outbox');
+      const cursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
+      cursor.onerror = () => transaction.abort();
+      cursor.onsuccess = () => {
+        const queued = cursor.result;
+        if (queued) {
+          const previous = queued.value as OutboxEntry;
+          if (previous.type === 'note.upsert' && previous.syncId === syncId && previous.deliveryState === 'unsent') {
+            outbox.delete(queued.primaryKey);
+          }
+          queued.continue();
+          return;
+        }
+        notes.put({
+          key: this.resourceKey(partition, syncId),
+          partition,
+          syncId,
+          value: persisted
+        });
+        outbox.put(entry);
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error('Could not persist the note and outbox entry.'));
+      transaction.onabort = () => reject(transaction.error || new Error('Note persistence was aborted.'));
+    });
+    return { note: persisted, entry };
+  }
+
+  async persistNotePatchMutation(partition: string, note: NoteI, patch: Partial<NoteI>, stamp: LwwStamp) {
+    const syncId = this.ensureNoteIdentity(note);
+    let persisted: NoteI = { ...note, syncId };
+    const patchEntry: OutboxEntry = {
+      key: `${partition}|${stamp.operationId}`,
+      partition,
+      operationId: stamp.operationId,
+      type: 'note.patch',
+      syncId,
+      payload: { id: persisted.id, patch },
+      lww: stamp,
+      createdAt: Date.now(),
+      deliveryState: 'unsent',
+      attempts: 0
+    };
+    const db = await this.open();
+    let entry = patchEntry;
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(['notes', 'outbox'], 'readwrite');
+      const notes = transaction.objectStore('notes');
+      const outbox = transaction.objectStore('outbox');
+      let replacedUnsentUpsert = false;
+      const cursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
+      cursor.onerror = () => transaction.abort();
+      cursor.onsuccess = () => {
+        const queued = cursor.result;
+        if (queued) {
+          const previous = queued.value as OutboxEntry;
+          if (previous.type === 'note.upsert' && previous.syncId === syncId && previous.deliveryState === 'unsent') {
+            replacedUnsentUpsert = true;
+            outbox.delete(queued.primaryKey);
+          }
+          queued.continue();
+          return;
+        }
+        if (replacedUnsentUpsert) {
+          persisted = {
+            ...persisted,
+            lwwPhysicalMs: stamp.physicalMs,
+            lwwLogical: stamp.logical,
+            lwwDeviceId: stamp.deviceId,
+            lwwOperationId: stamp.operationId
+          };
+          entry = { ...patchEntry, type: 'note.upsert', payload: persisted };
+        }
+        notes.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: persisted });
+        outbox.put(entry);
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error('Could not persist the note patch and outbox entry.'));
+      transaction.onabort = () => reject(transaction.error || new Error('Note patch persistence was aborted.'));
+    });
+    return { note: persisted, entry };
+  }
+
+  async persistNoteMergeMutation(partition: string, mergedNote: NoteI, sourceNotes: NoteI[], stamp: LwwStamp) {
+    if (sourceNotes.length < 2) throw new Error('At least two source notes are required to merge.');
+    const sourceSyncIds = sourceNotes.map(note => this.ensureNoteIdentity(note));
+    if (new Set(sourceSyncIds).size !== sourceSyncIds.length) throw new Error('Source note identities must be unique.');
+    const sourceIds = sourceNotes.map(note => note.id).filter((id): id is number => id != null);
+    const sourceSyncIdSet = new Set(sourceSyncIds);
+    const sourceIdSet = new Set(sourceIds);
+    const now = new Date().toISOString();
+    const updatedSources = sourceNotes.map(note => ({
+      ...note,
+      trashed: true,
+      trashedAt: now,
+      updatedAt: now,
+      pinned: false
+    }));
+    const entry: OutboxEntry = {
+      key: `${partition}|${stamp.operationId}`,
+      partition,
+      operationId: stamp.operationId,
+      type: 'note.merge',
+      syncId: this.ensureNoteIdentity(mergedNote),
+      payload: {
+        orderedSourceSyncIds: sourceSyncIds,
+        sourceIds,
+        mergeSyncId: mergedNote.syncId,
+        localMergeId: mergedNote.id
+      },
+      lww: stamp,
+      createdAt: Date.now(),
+      deliveryState: 'unsent',
+      attempts: 0
+    };
+    const db = await this.open();
+    let persistedEntry = entry;
+    let persistedMerged = { ...mergedNote, syncId: entry.syncId, attachments: [...(mergedNote.attachments || [])] };
+    let keptReminder: ReminderI | undefined;
+    const removedReminderSyncIds: string[] = [];
+    const updatedAttachments: NoteAttachmentI[] = [];
+    let failure: Error | undefined;
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(['notes', 'reminders', 'attachments', 'outbox'], 'readwrite');
+      const notes = transaction.objectStore('notes');
+      const reminders = transaction.objectStore('reminders');
+      const attachments = transaction.objectStore('attachments');
+      const outbox = transaction.objectStore('outbox');
+      let scansRemaining = 3;
+      const finishScans = () => {
+        scansRemaining--;
+        if (scansRemaining !== 0 || failure) return;
+
+        for (const source of updatedSources) {
+          notes.put({ key: this.resourceKey(partition, source.syncId!), partition, syncId: source.syncId!, value: source });
+        }
+        const pendingReminders = (reminderRecords || [])
+          .filter(record => sourceIdSet.has(record.value.noteId || 0) && record.value.status === 'pending')
+          .map(record => record.value)
+          .sort((left, right) => {
+            const leftDue = left.dueAtUtc ? Date.parse(left.dueAtUtc) : -Infinity;
+            const rightDue = right.dueAtUtc ? Date.parse(right.dueAtUtc) : -Infinity;
+            return leftDue - rightDue || left.id - right.id;
+          });
+        if (pendingReminders.length) {
+          keptReminder = { ...pendingReminders[0], noteId: persistedMerged.id!, updatedAt: now };
+          reminders.put({
+            key: this.resourceKey(partition, keptReminder.syncId!),
+            partition,
+            syncId: keptReminder.syncId!,
+            value: keptReminder
+          });
+          for (const removed of pendingReminders.slice(1)) {
+            if (!removed.syncId) continue;
+            removedReminderSyncIds.push(removed.syncId);
+            reminders.delete(this.resourceKey(partition, removed.syncId));
+          }
+        }
+        persistedMerged = {
+          ...persistedMerged,
+          attachments: updatedAttachments,
+          hasAttachments: updatedAttachments.length > 0,
+          attachmentCount: updatedAttachments.length
+        };
+        notes.put({
+          key: this.resourceKey(partition, entry.syncId),
+          partition,
+          syncId: entry.syncId,
+          value: persistedMerged
+        });
+        persistedEntry = {
+          ...entry,
+          payload: {
+            ...entry.payload as object,
+            keptReminderSyncId: keptReminder?.syncId,
+            removedReminderSyncIds
+          }
+        };
+        outbox.put(persistedEntry);
+      };
+      let reminderRecords: StoredResource<ReminderI>[] = [];
+      const reminderCursor = reminders.index('partition').openCursor(IDBKeyRange.only(partition));
+      reminderCursor.onerror = () => transaction.abort();
+      reminderCursor.onsuccess = () => {
+        const cursor = reminderCursor.result;
+        if (cursor) {
+          reminderRecords.push(cursor.value as StoredResource<ReminderI>);
+          cursor.continue();
+        } else finishScans();
+      };
+      const attachmentCursor = attachments.index('partition').openCursor(IDBKeyRange.only(partition));
+      attachmentCursor.onerror = () => transaction.abort();
+      attachmentCursor.onsuccess = () => {
+        const cursor = attachmentCursor.result;
+        if (cursor) {
+          const record = cursor.value as StoredResource<NoteAttachmentI>;
+          if (sourceIdSet.has(record.value.noteId || 0)) {
+            const updated = { ...record.value, noteId: persistedMerged.id };
+            updatedAttachments.push(updated);
+            cursor.update({ ...record, value: updated } satisfies StoredResource<NoteAttachmentI>);
+          }
+          cursor.continue();
+        } else finishScans();
+      };
+      const outboxCursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
+      outboxCursor.onerror = () => transaction.abort();
+      outboxCursor.onsuccess = () => {
+        const cursor = outboxCursor.result;
+        if (cursor) {
+          const queued = cursor.value as OutboxEntry;
+          if (queued.type === 'note.merge') {
+            const payload = queued.payload as { orderedSourceSyncIds?: string[] };
+            if ((payload.orderedSourceSyncIds || []).some(syncId => sourceSyncIdSet.has(syncId))) {
+              failure = new Error('A merge involving one or more source notes is already pending.');
+              transaction.abort();
+              return;
+            }
+          }
+          if (queued.type === 'note.delete' && sourceSyncIdSet.has(queued.syncId)) {
+            failure = new Error('A source note is already queued for permanent deletion.');
+            transaction.abort();
+            return;
+          }
+          cursor.continue();
+        } else finishScans();
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(failure || transaction.error || new Error('Could not persist the note merge and outbox entry.'));
+      transaction.onabort = () => reject(failure || transaction.error || new Error('Note merge persistence was aborted.'));
+    });
+    return { note: persistedMerged, sourceNotes: updatedSources, keptReminder, removedReminderSyncIds, attachments: updatedAttachments, entry: persistedEntry };
+  }
+
+  async persistAttachmentUpload(
+    partition: string,
+    blobKey: string,
+    blob: Blob,
+    attachment: NoteAttachmentI,
+    note: NoteI,
+    payload: { noteSyncId: string; filename: string; syncId: string },
+    stamp: LwwStamp
+  ) {
+    const noteSyncId = this.ensureNoteIdentity(note);
+    if (!attachment.syncId) throw new Error('An attachment sync identity is required.');
+    const entry: OutboxEntry = {
+      key: `${partition}|${stamp.operationId}`,
+      partition,
+      operationId: stamp.operationId,
+      type: 'attachment.upload',
+      syncId: attachment.syncId,
+      payload: { ...payload, noteSyncId, blobKey },
+      lww: stamp,
+      createdAt: Date.now(),
+      deliveryState: 'unsent',
+      attempts: 0
+    };
+    const db = await this.open();
+    await this.transaction(db, ['blobs', 'attachments', 'notes', 'outbox'], 'readwrite', stores => {
+      stores['blobs'].put({
+        key: `${partition}|${blobKey}`,
+        partition,
+        blobKey,
+        value: blob
+      });
+      stores['attachments'].put({
+        key: this.resourceKey(partition, attachment.syncId!),
+        partition,
+        syncId: attachment.syncId,
+        value: attachment
+      });
+      stores['notes'].put({
+        key: this.resourceKey(partition, noteSyncId),
+        partition,
+        syncId: noteSyncId,
+        value: note
+      });
+      stores['outbox'].put(entry);
+    });
+    return { note, attachment, entry };
+  }
+
   async listOutbox(partition: string) {
     const priority: Record<SyncMutationType, number> = {
       'note.upsert': 0,
-      'note.delete': 1,
+      'note.patch': 0,
+      'note.delete': 7,
       'note.reorder': 2,
       'reminder.upsert': 3,
       'reminder.delete': 4,
-      'attachment.upload': 5,
-      'attachment.delete': 6
+      'note.merge': 5,
+      'attachment.upload': 6,
+      'attachment.delete': 8
     };
     return (await this.listByPartition<OutboxEntry>('outbox', partition)).sort((left, right) =>
       left.createdAt - right.createdAt ||
@@ -305,6 +1061,33 @@ export class OfflineStoreService {
     const db = await this.open();
     await this.transaction(db, ['outbox'], 'readwrite', stores => {
       keys.forEach(key => stores['outbox'].delete(key));
+    });
+  }
+
+  async claimOutboxForSend(keys: readonly string[]) {
+    if (!keys.length) return [];
+    const db = await this.open();
+    return new Promise<OutboxEntry[]>((resolve, reject) => {
+      const transaction = db.transaction('outbox', 'readwrite');
+      const outbox = transaction.objectStore('outbox');
+      const claimed: OutboxEntry[] = [];
+      keys.forEach(key => {
+        const request = outbox.get(key);
+        request.onerror = () => transaction.abort();
+        request.onsuccess = () => {
+          const entry = request.result as OutboxEntry | undefined;
+          if (entry) {
+            const claimedEntry = entry.sentAt == null
+              ? { ...entry, sentAt: Date.now(), deliveryState: 'sent' as const }
+              : entry;
+            if (claimedEntry !== entry) outbox.put(claimedEntry);
+            claimed.push(claimedEntry);
+          }
+        };
+      });
+      transaction.oncomplete = () => resolve(claimed);
+      transaction.onerror = () => reject(transaction.error || new Error('Could not claim outbox operations.'));
+      transaction.onabort = () => reject(transaction.error || new Error('Outbox claim was aborted.'));
     });
   }
 
@@ -460,6 +1243,29 @@ export class OfflineStoreService {
     }
     if (rightStamp !== leftStamp) return rightStamp > leftStamp ? right : left;
     return { ...left, ...right };
+  }
+
+  private compareLwwStamp(left: LwwStamp, right: LwwStamp) {
+    return left.physicalMs - right.physicalMs ||
+      left.logical - right.logical ||
+      left.deviceId.localeCompare(right.deviceId) ||
+      left.operationId.localeCompare(right.operationId);
+  }
+
+  private applyPendingNotePatches(note: NoteI, syncId: string, entries: readonly OutboxEntry[]) {
+    let value = note;
+    for (const entry of entries) {
+      const payload = entry.payload as { patch?: Partial<NoteI> };
+      if (!payload.patch) continue;
+      value = {
+        ...value,
+        ...payload.patch,
+        id: note.id ?? value.id,
+        revision: note.revision ?? value.revision,
+        syncId
+      };
+    }
+    return value;
   }
 
   private offlineMediaCanonicalMap(): Map<string, string> {

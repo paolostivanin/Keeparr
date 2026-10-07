@@ -62,9 +62,11 @@ sealed interface ConnectionState {
 
 interface ConnectionProfile {
     val ready: StateFlow<Boolean> get() = MutableStateFlow(true)
+    val writeError: StateFlow<String?> get() = MutableStateFlow(null)
     suspend fun initialize() {}
     suspend fun awaitReady() {}
     suspend fun awaitWrites() {}
+    fun clearWriteError() {}
     suspend fun activateSession(origin: String, headers: String, token: String, userId: Long) {
         this.origin = origin
         this.headers = headers
@@ -125,13 +127,17 @@ class ConnectionSettings(
     private val dataStore = dataStoreOverride ?: context.connectionDataStore
     private val persistenceMutex = Mutex()
     private val _ready = MutableStateFlow(false)
+    private val _writeError = MutableStateFlow<String?>(null)
     override val ready: StateFlow<Boolean> = _ready.asStateFlow()
+    override val writeError: StateFlow<String?> = _writeError.asStateFlow()
     @Volatile private var cache: Preferences = emptyPreferences()
     @Volatile private var originValue = ""
     @Volatile private var userIdValue = 0L
     @Volatile private var tokenValue = ""
     @Volatile private var messageValue = ""
     @Volatile private var darkModeValue = false
+    private val snapshotLock = Any()
+    @Volatile private var activeSnapshot = ConnectionSnapshot("", "", 0, "", 0, "")
     private val aliases = ConcurrentHashMap<String, String>()
     private val aliasRevisions = ConcurrentHashMap<String, Long>()
     private val gatewayHeaders = ConcurrentHashMap<String, String>()
@@ -171,6 +177,7 @@ class ConnectionSettings(
                     key.name.startsWith("headers_") -> (value as? String)?.let { gatewayHeaders[key.name.removePrefix("headers_")] = decrypt(it) }
                 }
             }
+            synchronized(snapshotLock) { refreshSnapshotLocked() }
             _ready.value = true
         }
     }
@@ -187,6 +194,8 @@ class ConnectionSettings(
         }
     }
 
+    override fun clearWriteError() { _writeError.value = null }
+
     private fun update(block: MutablePreferences.() -> Unit) {
         synchronized(pendingWriteLock) {
             val write = applicationScope.launch(Dispatchers.IO) {
@@ -194,7 +203,9 @@ class ConnectionSettings(
                     persistenceMutex.withLock {
                         cache = dataStore.edit { values -> values.block() }
                     }
+                    _writeError.value = null
                 } catch (error: Exception) {
+                    _writeError.value = "Connection settings could not be saved on this device. Check storage and try again."
                     Log.e("KeptSettings", "Could not persist connection settings.", error)
                 }
             }
@@ -213,18 +224,25 @@ class ConnectionSettings(
                 values[messagePreference] = ""
             }
             cache = updated
-            originValue = origin
-            userIdValue = userId
-            tokenValue = token
-            messageValue = ""
+            _writeError.value = null
             gatewayHeaders[originKey(origin)] = headers
+            synchronized(snapshotLock) {
+                originValue = origin
+                userIdValue = userId
+                tokenValue = token
+                messageValue = ""
+                refreshSnapshotLocked()
+            }
             _ready.value = true
         }
     }
 
     override var origin: String
-        get() = originValue
-        set(value) { originValue = value; update { this[originPreference] = value } }
+        get() = activeSnapshot.origin
+        set(value) {
+            synchronized(snapshotLock) { originValue = value; refreshSnapshotLocked() }
+            update { this[originPreference] = value }
+        }
     private fun originKey(value: String): String {
         val normalized = runCatching { value.trim().toHttpUrl().newBuilder().encodedPath("/").query(null).build().toString().trimEnd('/') }
             .getOrDefault(value.trim().trimEnd('/'))
@@ -241,6 +259,7 @@ class ConnectionSettings(
         val key = originKey(server)
         aliases[key] = value
         aliasRevisions[key] = (aliasRevisions[key] ?: cache[revisionKey] ?: 0) + 1
+        synchronized(snapshotLock) { refreshSnapshotLocked() }
         update {
             this[aliasKey] = value
             this[revisionKey] = (this[revisionKey] ?: 0) + 1
@@ -251,14 +270,33 @@ class ConnectionSettings(
     override fun headersFor(server: String) = gatewayHeaders[originKey(server)] ?: ""
     override fun setHeadersFor(server: String, value: String) {
         gatewayHeaders[originKey(server)] = value
+        synchronized(snapshotLock) { refreshSnapshotLocked() }
         update { this[headersPreference(server)] = encrypt(value) }
     }
-    override var userId: Long get() = userIdValue; set(value) { userIdValue = value; update { this[userIdPreference] = value } }
-    override val profile: String get() = "$origin#$userId"
-    override var token: String get() = tokenValue; set(value) { tokenValue = value; update { this[tokenPreference] = encrypt(value) } }
+    override var userId: Long get() = activeSnapshot.userId; set(value) {
+        synchronized(snapshotLock) { userIdValue = value; refreshSnapshotLocked() }
+        update { this[userIdPreference] = value }
+    }
+    override val profile: String get() = activeSnapshot.profile
+    override var token: String get() = activeSnapshot.token; set(value) {
+        synchronized(snapshotLock) { tokenValue = value; refreshSnapshotLocked() }
+        update { this[tokenPreference] = encrypt(value) }
+    }
     override var headers: String get() = headersFor(origin); set(value) = setHeadersFor(origin, value)
     override var message: String get() = messageValue; set(value) { messageValue = value; update { this[messagePreference] = value } }
     override var darkMode: Boolean get() = darkModeValue; set(value) { darkModeValue = value; update { this[darkModePreference] = value } }
+    override fun snapshot() = activeSnapshot
+
+    private fun refreshSnapshotLocked() {
+        activeSnapshot = ConnectionSnapshot(
+            originValue,
+            aliases[originKey(originValue)] ?: "",
+            aliasRevisions[originKey(originValue)] ?: 0,
+            gatewayHeaders[originKey(originValue)] ?: "",
+            userIdValue,
+            tokenValue
+        )
+    }
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         return (store.getKey("kept_session", null) as? SecretKey) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {

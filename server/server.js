@@ -7,6 +7,7 @@ const net = require('net');
 const path = require('path');
 const { AsyncLocalStorage } = require('async_hooks');
 const cors = require('cors');
+const compression = require('compression');
 const express = require('express');
 const multer = require('multer');
 const sqlite3 = require('sqlite3').verbose();
@@ -18,10 +19,14 @@ const { initNativeClientSchema, occurrenceId } = require('./native-client');
 const { nextRepeatDueAt, isRepeatOccurrence } = require('./reminder-recurrence');
 const { armTestFault, hitTestFault } = require('./test-faults');
 const { initOAuthTables, mountOAuthAndMcpRoutes, oauthTokenCanCallApi, resolveOAuthAccessToken } = require('./oauth-mcp');
+const { mountStaticAssets } = require('./static-assets');
+const { mountClientCapabilities } = require('./client-capabilities');
+const { mountSyncMutationRoute } = require('./sync-routes');
 
 const app = express();
 app.set('trust proxy', 1);
 app.disable('etag');
+app.use(compression());
 const server = http.createServer(app);
 const port = Number(process.env.PORT || 3000);
 const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
@@ -4824,7 +4829,7 @@ async function syncSnapshotForUser(userId) {
   }
   const reminders = await all(`SELECT reminders.* FROM reminders
     WHERE reminders.userId = ? AND ${visibleReminderWhere}`, [userId]);
-  const cursorRow = await get('SELECT COALESCE(MAX(sequence), 0) AS cursor FROM sync_changes WHERE userId = ?', [userId]);
+  const cursor = await syncCursorForUser(userId);
   return {
     notes: notes.map(row => {
       const note = dbNoteToApi(row);
@@ -4834,9 +4839,14 @@ async function syncSnapshotForUser(userId) {
     reminders: await enrichReminderResponses(reminders),
     occurrences: await nativeOccurrencesForUser(userId),
     attachments: Array.from(attachmentsByNoteId.values()).flat(),
-    cursor: Number(cursorRow?.cursor || 0),
+    cursor,
     serverTime: Date.now()
   };
+}
+
+async function syncCursorForUser(userId) {
+  const cursorRow = await get('SELECT COALESCE(MAX(sequence), 0) AS cursor FROM sync_changes WHERE userId = ?', [userId]);
+  return Number(cursorRow?.cursor || 0);
 }
 
 app.get('/api/sync/bootstrap', requireAuth, asyncRoute(async (req, res) => {
@@ -4891,6 +4901,8 @@ app.get('/api/sync/changes', requireAuth, asyncRoute(async (req, res) => {
 async function applySyncNoteMutation(userId, mutation) {
   const type = String(mutation.type || '');
   const payload = mutation.payload || {};
+  if (type === 'note.merge') return applySyncNoteMergeMutation(userId, mutation);
+  if (type === 'note.patch') return applySyncNotePatchMutation(userId, mutation);
   if (type === 'note.view-state') {
     const syncId = String(mutation.syncId || payload.syncId || '');
     const row = await get('SELECT id FROM notes WHERE syncId = ? OR id = ?', [syncId, Number(payload.noteId || mutation.id || 0)]);
@@ -5092,6 +5104,250 @@ async function applySyncNoteMutation(userId, mutation) {
   await cleanupUnusedLabels(userId);
   await broadcastNoteChange(note.id, 'updated', undefined, { preserveStamp: true });
   return { ok: true, resourceType: 'note', syncId, id: note.id, payload: dbNoteToApi(await getAccessibleNote(note.id, userId)) };
+}
+
+async function applySyncNotePatchMutation(userId, mutation) {
+  const payload = mutation.payload || {};
+  const syncId = String(mutation.syncId || payload.syncId || '');
+  const patch = payload.patch;
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    return { ok: false, status: 400, error: 'A note patch object is required.', syncId };
+  }
+  const patchableFields = new Set([
+    'noteTitle', 'noteBody', 'bgColor', 'bgImage', 'checkBoxes', 'images', 'isCbox', 'labels',
+    'binder', 'locked', 'lockSalt', 'lockHash', 'archived', 'trashed', 'pinned', 'isDemo'
+  ]);
+  const keys = Object.keys(patch);
+  if (keys.some(key => !patchableFields.has(key))) {
+    return { ok: false, status: 400, error: 'The patch contains an unsupported note field.', syncId };
+  }
+  const row = await get('SELECT id FROM notes WHERE syncId = ? OR id = ?', [syncId, Number(payload.id || mutation.id || 0)]);
+  if (!row) return { ok: false, status: 404, error: 'Note not found.', syncId };
+  const existing = await getAccessibleNote(row.id, userId);
+  if (!existing) return { ok: false, status: 404, error: 'Note not accessible.', syncId };
+  if (!keys.length) {
+    return { ok: true, skipped: true, resourceType: 'note', syncId: existing.syncId, id: existing.id };
+  }
+
+  const isOwner = existing.ownerUserId === userId;
+  const next = canonicalizeNotePayload({ ...dbNoteToApi(existing), ...patch });
+  const shouldPinForUser = Object.prototype.hasOwnProperty.call(patch, 'pinned')
+    ? !!patch.pinned
+    : !!existing.userPinned;
+  if (!isOwner) {
+    next.bgColor = existing.bgColor || '';
+    next.bgImage = existing.bgImage || '';
+    next.labels = parseJson(existing.labels, []);
+    next.binder = existing.binder || '';
+    next.archived = Boolean(existing.archived);
+    next.trashed = Boolean(existing.trashed);
+    next.pinned = Boolean(existing.pinned);
+    next.locked = Boolean(existing.locked);
+    next.lockSalt = existing.lockSalt || '';
+    next.lockHash = existing.lockHash || '';
+  }
+  const trashedAt = nextTrashedAt(existing, next);
+  await run(
+    `UPDATE notes SET
+      noteTitle = ?, noteBody = ?, bgColor = ?, bgImage = ?, checkBoxes = ?, images = ?, isCbox = ?,
+      labels = ?, binder = ?, extraFields = ?, locked = ?, lockSalt = ?, lockHash = ?, archived = ?, trashed = ?,
+      trashedAt = ?, updatedAt = ?, lastEditorUserId = ?, isDemo = ?
+     WHERE id = ?`,
+    [
+      String(next.noteTitle || ''),
+      next.noteBody || '',
+      next.bgColor || '',
+      next.bgImage || '',
+      JSON.stringify(next.checkBoxes || []),
+      JSON.stringify(next.images || []),
+      next.isCbox ? 1 : 0,
+      JSON.stringify(next.labels || []),
+      next.binder || '',
+      JSON.stringify(noteExtraFields(next)),
+      next.locked ? 1 : 0,
+      next.lockSalt || '',
+      next.lockHash || '',
+      next.archived ? 1 : 0,
+      next.trashed ? 1 : 0,
+      trashedAt,
+      new Date().toISOString(),
+      userId,
+      next.isDemo ? 1 : 0,
+      existing.id
+    ]
+  );
+  if (shouldPinForUser) {
+    await run('INSERT OR IGNORE INTO user_pins (userId, noteId) VALUES (?, ?)', [userId, existing.id]);
+  } else {
+    await run('DELETE FROM user_pins WHERE userId = ? AND noteId = ?', [userId, existing.id]);
+  }
+  if (keys.some(key => ['noteBody', 'images', 'bgImage'].includes(key))) {
+    await syncNoteImagesForNote(existing.id, existing.ownerUserId, next);
+  }
+  await broadcastNoteChange(existing.id, 'updated');
+  await cleanupUnusedLabels(userId);
+  return {
+    ok: true,
+    resourceType: 'note',
+    syncId: existing.syncId || syncId,
+    id: existing.id
+  };
+}
+
+async function applySyncNoteMergeMutation(userId, mutation) {
+  const payload = mutation.payload || {};
+  const mergeSyncId = String(payload.mergeSyncId || mutation.syncId || '');
+  const sourceSyncIds = Array.isArray(payload.orderedSourceSyncIds)
+    ? payload.orderedSourceSyncIds.map(value => String(value || '')).filter(Boolean)
+    : [];
+  if (!mergeSyncId || mergeSyncId.length > 160 || sourceSyncIds.length < 2
+      || new Set(sourceSyncIds).size !== sourceSyncIds.length) {
+    return { ok: false, status: 400, error: 'A merge identity and at least two unique source note identities are required.' };
+  }
+
+  let existingMerge = await get('SELECT * FROM notes WHERE syncId = ?', [mergeSyncId]);
+  if (existingMerge && existingMerge.ownerUserId !== userId) {
+    return { ok: false, status: 403, error: 'The merged note identity is not available to this user.', syncId: mergeSyncId };
+  }
+  const sourcePlaceholders = sourceSyncIds.map(() => '?').join(',');
+  const sourceRows = await all(
+    `SELECT * FROM notes WHERE syncId IN (${sourcePlaceholders}) AND ownerUserId = ?`,
+    [...sourceSyncIds, userId]
+  );
+  if (sourceRows.length !== sourceSyncIds.length) {
+    return { ok: false, status: 403, error: 'You can only merge notes you own.', syncId: mergeSyncId };
+  }
+  const sourcesBySyncId = new Map(sourceRows.map(row => [row.syncId, row]));
+  const sourceNotes = sourceSyncIds.map(syncId => sourcesBySyncId.get(syncId));
+  if (sourceNotes.some(note => !note)) {
+    return { ok: false, status: 404, error: 'One or more source notes were not found.', syncId: mergeSyncId };
+  }
+  const sourceIds = sourceNotes.map(note => note.id);
+  const sourceIdPlaceholders = sourceIds.map(() => '?').join(',');
+  const apiNotes = sourceNotes.map(dbNoteToApi);
+  const sourceRecipients = new Set([userId]);
+  for (const sourceId of sourceIds) {
+    (await getNoteRecipientIds(sourceId)).forEach(recipient => sourceRecipients.add(recipient));
+  }
+
+  // A client may have queued a normal upsert for the optimistic merged note
+  // before the merge command is sent. Reuse that identity and still perform
+  // the source/resource transaction exactly once.
+  const alreadyMaterialized = !!existingMerge;
+  if (!existingMerge) {
+    const mergedTitle = apiNotes.find(note => note.noteTitle && note.noteTitle.trim())?.noteTitle || '';
+    const mergedBgColor = apiNotes.find(note => note.bgColor)?.bgColor || '';
+    const hasRealBgImage = value => !!value && value !== 'url("")' && value !== 'url()';
+    const mergedBgImage = apiNotes.find(note => hasRealBgImage(note.bgImage))?.bgImage || '';
+    const bodyParts = [];
+    const mergedCheckBoxes = [];
+    const mergedImages = [];
+    const labelMap = new Map();
+    for (const note of apiNotes) {
+      if (note.noteBody && note.noteBody.trim()) bodyParts.push(note.noteBody);
+      for (const checkbox of note.checkBoxes || []) mergedCheckBoxes.push(checkbox);
+      for (const image of note.images || []) {
+        const flattened = image.id === 'drawing'
+          ? { ...image, id: `drawing-flat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: (image.name || '').replace(/^Drawing\|/, '') }
+          : image;
+        mergedImages.push(flattened);
+      }
+      for (const label of note.labels || []) {
+        if (label.id && !labelMap.has(label.id)) labelMap.set(label.id, label);
+      }
+    }
+    const mergedBody = bodyParts.join('<br><br>');
+    const mergedLabels = Array.from(labelMap.values());
+    const mergedBinder = apiNotes.find(note => note.binder)?.binder || '';
+    const mergedLock = apiNotes.find(note => note.locked && note.lockSalt && note.lockHash);
+    const mergedExtraFields = Object.assign({}, ...apiNotes.slice().reverse().map(noteExtraFields));
+    const mergedIsCbox = mergedCheckBoxes.length > 0 ? 1 : 0;
+    const now = new Date().toISOString();
+    const result = await run(
+      `INSERT INTO notes
+       (ownerUserId, syncId, noteTitle, noteBody, bgColor, bgImage, checkBoxes, images, isCbox, labels, binder, extraFields,
+        locked, lockSalt, lockHash, archived, trashed, trashedAt, sortOrder, createdAt, updatedAt, lastEditorUserId, isDemo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, NULL, ?, ?, ?, ?, 0)`,
+      [
+        userId,
+        mergeSyncId,
+        String(mergedTitle || ''),
+        mergedBody,
+        mergedBgColor,
+        mergedBgImage,
+        JSON.stringify(mergedCheckBoxes),
+        JSON.stringify(mergedImages),
+        mergedIsCbox,
+        JSON.stringify(mergedLabels),
+        mergedBinder,
+        JSON.stringify(mergedExtraFields),
+        mergedLock ? 1 : 0,
+        mergedLock?.lockSalt || '',
+        mergedLock?.lockHash || '',
+        Date.now(),
+        now,
+        now,
+        userId
+      ]
+    );
+    existingMerge = await get('SELECT * FROM notes WHERE id = ?', [result.id]);
+    await syncNoteImagesForNote(result.id, userId, { noteBody: mergedBody, images: mergedImages });
+  }
+
+  const mergedNoteId = existingMerge.id;
+  const sourceAttachments = await all(`SELECT * FROM note_attachments WHERE noteId IN (${sourceIdPlaceholders})`, sourceIds);
+  await run(
+    `UPDATE note_attachments SET noteId = ? WHERE noteId IN (${sourceIdPlaceholders})`,
+    [mergedNoteId, ...sourceIds]
+  );
+  for (const attachment of sourceAttachments) {
+    await recordAttachmentSyncChange({ ...attachment, noteId: mergedNoteId }, 'upsert', [userId]);
+    for (const recipient of sourceRecipients) {
+      if (recipient !== userId) await recordAttachmentSyncChange(attachment, 'delete', [recipient]);
+    }
+  }
+
+  const pendingReminders = await all(
+    `SELECT id, dueAtUtc FROM reminders
+     WHERE userId = ? AND status = 'pending' AND noteId IN (${sourceIdPlaceholders})
+     ORDER BY dueAtUtc ASC`,
+    [userId, ...sourceIds]
+  );
+  if (pendingReminders.length > 0) {
+    const keepId = pendingReminders[0].id;
+    await run('UPDATE reminders SET noteId = ?, updatedAt = ? WHERE id = ?', [mergedNoteId, new Date().toISOString(), keepId]);
+    const kept = await get('SELECT * FROM reminders WHERE id = ?', [keepId]);
+    await recordReminderSyncChange(kept);
+    if (pendingReminders.length > 1) {
+      const dropped = pendingReminders.slice(1);
+      const droppedPlaceholders = dropped.map(() => '?').join(',');
+      const droppedRows = await all(`SELECT * FROM reminders WHERE id IN (${droppedPlaceholders})`, dropped.map(row => row.id));
+      await run(`DELETE FROM reminders WHERE id IN (${droppedPlaceholders})`, dropped.map(row => row.id));
+      for (const reminder of droppedRows) await recordReminderSyncChange(reminder, 'delete');
+      const caldav = await get('SELECT * FROM caldav_settings WHERE userId = ? AND enabled = 1', [userId]);
+      afterDatabaseCommit(async () => {
+        for (const reminder of droppedRows) {
+          if (caldav) {
+            deleteReminderFromCaldav(caldav, reminder.id).catch(error => console.error('CalDAV delete failed during merge:', error.message));
+          }
+          gcalDeleteReminder(userId, reminder).catch(error => console.error('GCal delete failed during merge:', error.message));
+        }
+      });
+    }
+  }
+
+  const now = new Date().toISOString();
+  await run(
+    `UPDATE notes SET trashed = 1, trashedAt = ?, updatedAt = ?, lastEditorUserId = ? WHERE id IN (${sourceIdPlaceholders})`,
+    [now, now, userId, ...sourceIds]
+  );
+  await run(`DELETE FROM user_pins WHERE userId = ? AND noteId IN (${sourceIdPlaceholders})`, [userId, ...sourceIds]);
+
+  await broadcastNoteChange(mergedNoteId, alreadyMaterialized ? 'updated' : 'created', [userId], { syncId: mergeSyncId });
+  for (const sourceId of sourceIds) {
+    await broadcastNoteChange(sourceId, 'updated', Array.from(sourceRecipients));
+  }
+  return { ok: true, resourceType: 'note.merge', syncId: mergeSyncId, id: mergedNoteId };
 }
 
 async function applySyncReminderMutation(userId, mutation) {
@@ -5442,10 +5698,7 @@ async function applyReminderOccurrenceAction(userId, payload) {
   return { ok: true, resourceType: 'reminder-occurrence', syncId: row.occurrenceId };
 }
 
-app.get('/api/client/capabilities', requireAuth, (_req, res) => res.json({
-  serverVersion: KEPT_VERSION, nativeProtocolVersion: 3, noteRevisions: true,
-  personalReminders: true, reminderOccurrences: true, reminderScheduleDefinitions: true, idempotentMutations: true
-}));
+mountClientCapabilities(app, requireAuth, KEPT_VERSION);
 app.get('/api/native/reminders/occurrences', requireAuth, asyncRoute(async (req, res) => {
   res.json(await nativeOccurrencesForUser(req.user.id));
 }));
@@ -5463,40 +5716,14 @@ if (process.env.KEPT_TEST_MODE === '1') {
   }));
 }
 
-app.post('/api/sync/mutations', requireAuth, asyncRoute(async (req, res) => {
-  const mutations = Array.isArray(req.body?.mutations) ? req.body.mutations : [];
-  if (!mutations.length) return res.json({ results: [], serverTime: Date.now() });
-  const priority = {
-    'note.upsert': 0,
-    'note.view-state': 1,
-    'note.delete': 2,
-    'note.reorder': 3,
-    'reminder.upsert': 4,
-    'reminder.delete': 5,
-    'attachment.delete': 6
-  };
-  const ordered = mutations
-    .map((mutation, index) => ({ mutation, index }))
-    .sort((left, right) =>
-      (priority[left.mutation.type] ?? 99) - (priority[right.mutation.type] ?? 99) ||
-      left.index - right.index
-    );
-  const results = new Array(mutations.length);
-  for (const { mutation, index } of ordered) {
-    try {
-      results[index] = await executeSyncMutation(req.user.id, mutation);
-    } catch (error) {
-      console.error('Sync mutation failed:', error);
-      results[index] = { ok: false, status: 500, error: error.message || 'Sync mutation failed.', type: mutation.type };
-    }
-  }
-  const snapshot = await syncSnapshotForUser(req.user.id);
-  if (process.env.KEPT_TEST_MODE === '1' && req.get('x-kept-test-drop-response') === '1') {
-    req.socket.destroy();
-    return;
-  }
-  res.json({ results, serverTime: Date.now(), snapshot });
-}));
+mountSyncMutationRoute(app, {
+  requireAuth,
+  asyncRoute,
+  executeSyncMutation,
+  syncSnapshotForUser,
+  syncCursorForUser,
+  testMode: process.env.KEPT_TEST_MODE === '1'
+});
 
 
 app.get('/api/notes', requireAuth, asyncRoute(async (req, res) => {
@@ -8427,12 +8654,7 @@ app.post('/api/import/google-takeout', requireAuth, googleTakeoutUpload, asyncRo
   }
 }));
 
-if (fs.existsSync(staticDir)) {
-  app.use(express.static(staticDir));
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(staticDir, 'index.html'));
-  });
-}
+mountStaticAssets(app, staticDir);
 
 app.use((error, _req, res, _next) => {
   if (error instanceof multer.MulterError) {

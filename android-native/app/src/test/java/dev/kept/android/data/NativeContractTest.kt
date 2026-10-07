@@ -1,6 +1,7 @@
 package dev.kept.android.data
 
 import android.content.Context
+import dev.kept.android.R
 import org.junit.Assert.*
 import org.junit.Test
 import org.json.JSONArray
@@ -14,17 +15,31 @@ import dev.kept.android.widgets.singleNoteWidgetChecklistItems
 import dev.kept.android.widgets.boundedWidgetText
 import dev.kept.android.widgets.widgetForegroundColor
 import dev.kept.android.widgets.widgetNoteBodyText
+import dev.kept.android.BuildConfig
 import dev.kept.android.ui.canReorderNotes
 import dev.kept.android.ui.moveDraggedNote
 import dev.kept.android.ui.searchVisibleNotes
+import dev.kept.android.ui.buildHomeProjection
 import androidx.datastore.preferences.SharedPreferencesMigration
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import android.util.Base64
 import java.security.MessageDigest
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 private val Context.legacyMigrationStore by preferencesDataStore(name = "connection-migration-test",
     produceMigrations = { context -> listOf(SharedPreferencesMigration(context, "connection-migration-test")) })
+
+private class FailingSettingsDataStore : DataStore<Preferences> {
+    override val data: Flow<Preferences> = flowOf(emptyPreferences())
+    override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences {
+        throw IllegalStateException("Simulated settings storage failure")
+    }
+}
 
 @RunWith(RobolectricTestRunner::class)
 class NativeContractTest {
@@ -44,6 +59,20 @@ class NativeContractTest {
         val notes = listOf(note(1, 1.0, true), note(2, 2.0, true), note(3, 3.0, true))
         notes[1].raw.put("archived", true); notes[2].raw.put("trashed", true)
         assertEquals(listOf(1L), NoteOrder.visible(notes, "pinned").map { it.id })
+    }
+    @Test fun homeProjectionMovesCardParsingIntoTypedImmutableDisplayValues() {
+        val note = Note(JSONObject().put("id", 4).put("syncId", "projected-note").put("noteTitle", "<b>Card title</b>")
+            .put("noteBody", "<p>Card body</p>").put("bgColor", "#fce8e6").put("labels", JSONArray()
+                .put(JSONObject().put("name", "Ideas").put("added", true))).put("collaborators", JSONArray().put(JSONObject())))
+
+        val projection = buildHomeProjection(listOf(note), "home", "", emptyList())
+        val card = projection.cards.single()
+
+        assertEquals("Card title", card.title)
+        assertEquals("Card body", card.bodyText)
+        assertEquals(listOf("Ideas"), card.labels)
+        assertTrue(card.shared)
+        assertEquals(note, projection.notesBySyncId[note.syncId])
     }
     @Test fun unchangedBodyAndUnknownFieldsSurviveTitleEdits() {
         val content = fixtures.getJSONObject("content")
@@ -292,6 +321,20 @@ class NativeContractTest {
         settings.setAliasFor("https://first.example.test", "first-certificate")
         assertTrue("reselecting the same alias invalidates cached TLS clients", settings.aliasRevisionFor("https://first.example.test") > revision)
     }
+    @Test fun widgetPickerPreviewsUseTheMainAppIconAndNativeVersionIsV2() {
+        val context = RuntimeEnvironment.getApplication()
+        assertEquals(R.drawable.kept_icon, context.packageManager.getApplicationInfo(context.packageName, 0).icon)
+        val androidNamespace = "http://schemas.android.com/apk/res/android"
+        for (widgetXml in listOf(R.xml.notes_widget, R.xml.quick_create_widget)) {
+            context.resources.getXml(widgetXml).use { parser ->
+                while (parser.eventType != org.xmlpull.v1.XmlPullParser.START_TAG &&
+                    parser.eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) parser.next()
+                assertEquals(R.drawable.kept_icon, parser.getAttributeResourceValue(androidNamespace, "previewImage", 0))
+            }
+        }
+        assertEquals("2.0.0", BuildConfig.VERSION_NAME)
+        assertEquals(2, BuildConfig.VERSION_CODE)
+    }
     @Test fun connectionSnapshotsAreImmutableAndRedactCredentialsFromDiagnostics() {
         val snapshot = ConnectionSnapshot("https://server.example.test", "cert-alias", 3,
             "{\"X-Gateway-Key\":\"gateway-secret\"}", 42, "session-secret")
@@ -299,6 +342,27 @@ class NativeContractTest {
         assertFalse(snapshot.toString().contains("session-secret"))
         assertFalse(snapshot.toString().contains("gateway-secret"))
         assertFalse(snapshot.toString().contains("cert-alias"))
+    }
+    @Test fun connectionSettingsPublishOneImmutableProfileSnapshot() {
+        val settings = ConnectionSettings(RuntimeEnvironment.getApplication())
+        settings.origin = "https://first.example.test"
+        settings.userId = 42
+        val captured = settings.snapshot()
+
+        settings.origin = "https://second.example.test"
+        settings.userId = 99
+
+        assertEquals("https://first.example.test#42", captured.profile)
+        assertEquals("https://second.example.test#99", settings.snapshot().profile)
+    }
+    @Test fun connectionSettingsExposePersistenceFailuresToTheUi() = runBlocking {
+        val settings = ConnectionSettings(RuntimeEnvironment.getApplication(), FailingSettingsDataStore())
+        settings.setAliasFor("https://settings.example.test", "client-certificate")
+        settings.awaitWrites()
+
+        assertTrue(settings.writeError.value?.contains("could not be saved") == true)
+        settings.clearWriteError()
+        assertNull(settings.writeError.value)
     }
     @Test fun accountChangesRequireExplicitProfileConfirmation() {
         val active = ConnectionSnapshot("https://server.example.test", "", 0, "", 42, "expired-token")
@@ -315,6 +379,7 @@ class NativeContractTest {
         val decoded = envelope.getJSONArray("mutations").getJSONObject(0)
         assertEquals(extension.toString(), decoded.getJSONObject("payload").getJSONObject("futureField").toString())
         assertEquals("op-1", decoded.getString("operationId"))
+        assertTrue(NativeProtocol.mutationBatch(listOf(mutation), includeSnapshot = false).getBoolean("includeSnapshot").not())
     }
     @Test fun redactedDiagnosticsIncludeCountsWithoutSecretsOrDocumentContent() {
         val sensitive = Outbox("operation", "profile", "note.upsert", "note", "SECRET NOTE BODY",

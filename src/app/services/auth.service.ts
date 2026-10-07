@@ -138,11 +138,15 @@ export class AuthService {
     return `${imageUrl}?token=${encodeURIComponent(token)}`;
   }
 
-  authenticatedImageHtml(html: string) {
+  authenticatedImageHtml(html: string, options: { lazyPreviewImages?: boolean } = {}) {
     const div = document.createElement('div');
     div.innerHTML = html || '';
     div.querySelectorAll<HTMLImageElement>('img[src]').forEach(img => {
       img.setAttribute('src', this.authenticatedImageUrl(img.getAttribute('src') || img.src));
+      if (options.lazyPreviewImages) {
+        img.loading = 'lazy';
+        img.decoding = 'async';
+      }
     });
     return div.innerHTML;
   }

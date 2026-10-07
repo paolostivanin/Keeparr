@@ -1,4 +1,6 @@
+import { CommonModule } from '@angular/common';
 import { Component } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { AuthService } from 'src/app/services/auth.service';
 
@@ -6,7 +8,8 @@ import { AuthService } from 'src/app/services/auth.service';
     selector: 'app-setup',
     templateUrl: './setup.component.html',
     styleUrls: ['../auth-shared.scss'],
-    standalone: false
+    standalone: true,
+    imports: [CommonModule, FormsModule]
 })
 export class SetupComponent {
   username = '';

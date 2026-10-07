@@ -10,6 +10,11 @@ import android.util.LruCache
 import com.caverock.androidsvg.SVG
 import dev.kept.android.KeptApplication
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -18,15 +23,51 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.UUID
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
-private object DecodedPreviewCache {
+internal object DecodedPreviewCache {
     private val bitmaps = object : LruCache<String, Bitmap>(32 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = (value.allocationByteCount / 1024).coerceAtLeast(1)
     }
+    private data class Request(val deferred: Deferred<Bitmap?>, var consumers: Int)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inFlight = mutableMapOf<String, Request>()
 
-    @Synchronized fun get(key: String) = bitmaps.get(key)
-    @Synchronized fun put(key: String, bitmap: Bitmap) { bitmaps.put(key, bitmap) }
+    suspend fun getOrLoad(key: String, load: suspend () -> Bitmap?): Bitmap? {
+        val pending = synchronized(this) {
+            bitmaps.get(key)?.let { return it }
+            inFlight[key]?.also { it.consumers++ } ?: run {
+                lateinit var request: Request
+                val deferred = scope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                    load()?.also { bitmap -> synchronized(this@DecodedPreviewCache) { bitmaps.put(key, bitmap) } }
+                }
+                request = Request(deferred, 1)
+                inFlight[key] = request
+                deferred.invokeOnCompletion {
+                    synchronized(this@DecodedPreviewCache) {
+                        if (inFlight[key] === request) inFlight.remove(key)
+                    }
+                }
+                deferred.start()
+                request
+            }
+        }
+        try {
+            return pending.deferred.await()
+        } finally {
+            synchronized(this) {
+                pending.consumers--
+                if (pending.consumers == 0 && !pending.deferred.isCompleted) {
+                    if (inFlight[key] === pending) inFlight.remove(key)
+                    pending.deferred.cancel()
+                }
+            }
+        }
+    }
+
     @Synchronized fun removeProfile(profileKey: String) {
         bitmaps.snapshot().keys.filter { it.startsWith("$profileKey:") }.forEach(bitmaps::remove)
     }
@@ -72,7 +113,7 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
                 else addFormDataPart("operationId", "attachment-${entry.operationId}").addFormDataPart("syncId", "attachment-${entry.operationId}")
             }
             .build()
-        val response = repository.api.client(connection).newCall(repository.api.request(route, connection).post(body).build()).execute().use { response ->
+        val response = repository.api.client(connection).newCall(repository.api.request(route, connection).post(body).build()).awaitResponse().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw ApiException(response.code, "Attachment upload failed (${response.code})")
             JSONObject(text)
@@ -86,10 +127,11 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
             raw.put("images", images)
             val mutation = JSONObject().put("type", "note.upsert").put("syncId", note.syncId).put("baseRevision", note.revision)
                 .put("operationId", "image-${entry.operationId}").put("payload", raw)
-            val result = JSONObject(repository.api.call("/api/sync/mutations", "POST", NativeProtocol.mutationBatch(listOf(mutation)), connection))
+            val result = JSONObject(repository.api.call("/api/sync/mutations", "POST", NativeProtocol.mutationBatch(listOf(mutation), includeSnapshot = false), connection))
             val outcome = result.getJSONArray("results").getJSONObject(0)
             if (!outcome.optBoolean("ok")) throw ApiException(outcome.optInt("status", 409), outcome.text("error", "The note changed during the image upload."))
-            val serverNote = result.optJSONObject("snapshot")?.optJSONArray("notes")?.objects()?.firstOrNull { it.text("syncId") == note.syncId }
+            val serverNote = outcome.optJSONObject("payload")
+                ?: result.optJSONObject("snapshot")?.optJSONArray("notes")?.objects()?.firstOrNull { it.text("syncId") == note.syncId }
             JSONObject().put("kind", "image").put("noteSyncId", note.syncId).put("noteId", note.id)
                 .put("noteRevision", serverNote?.optLong("revision") ?: (note.revision + 1)).put("image", imageRecord)
         } else {
@@ -97,8 +139,7 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
         }
     }
 
-    suspend fun download(path: String): File = withContext(Dispatchers.IO) {
-        val connection = app.settings.snapshot()
+    suspend fun download(path: String, connection: ConnectionSnapshot = app.settings.snapshot()): File = withContext(Dispatchers.IO) {
         val base = connection.origin.toHttpUrl()
         val url = base.resolve(path) ?: error("Invalid media address")
         require(url.scheme == base.scheme && url.host == base.host && url.port == base.port) { "External media is not downloaded with Kept credentials." }
@@ -110,7 +151,7 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
         val requestPath = url.encodedPath + (url.encodedQuery?.let { "?$it" } ?: "")
         val temporary = File(folder, "${profileKey}_$hash.pending-${UUID.randomUUID()}")
         try {
-            app.repository.api.client(connection).newCall(app.repository.api.request(requestPath, connection).build()).execute().use { response ->
+            app.repository.api.client(connection).newCall(app.repository.api.request(requestPath, connection).build()).awaitResponse().use { response ->
                 if (!response.isSuccessful) throw ApiException(response.code, "Media download failed (${response.code})")
                 response.body?.byteStream()?.use { input -> temporary.outputStream().use { output ->
                     val buffer = ByteArray(8192); var total = 0
@@ -125,41 +166,41 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
     }
 
     suspend fun preview(path: String, maxDimension: Int = 1000): Bitmap? = withContext(Dispatchers.IO) {
-        runCatching {
-            val boundedDimension = maxDimension.coerceIn(64, 2048)
-            val profileHash = profileKey(app.settings.profile)
-            val pathHash = java.security.MessageDigest.getInstance("SHA-256")
-                .digest((app.settings.profile + "\u0000" + path).toByteArray())
-                .joinToString("") { "%02x".format(it) }
-            val cacheKey = "$profileHash:$pathHash:$boundedDimension"
-            DecodedPreviewCache.get(cacheKey)?.let { return@withContext it }
-            val bytes = if (path.startsWith("data:image/")) {
-                val comma = path.indexOf(',')
-                require(comma >= 0) { "Invalid image data." }
-                val metadata = path.substring(0, comma)
-                val content = path.substring(comma + 1)
-                if (metadata.contains(";base64", true)) Base64.decode(content, Base64.DEFAULT)
-                else Uri.decode(content).toByteArray(Charsets.UTF_8)
-            } else download(path).readBytes()
-            require(bytes.size <= 25 * 1024 * 1024) { "Image preview exceeds the size limit." }
-            val bitmap = if (path.startsWith("data:image/svg+xml", true) || bytes.take(256).toByteArray().toString(Charsets.UTF_8).contains("<svg", true)) {
-                val svg = SVG.getFromString(bytes.toString(Charsets.UTF_8))
-                val intrinsicWidth = svg.documentWidth.takeIf { it.isFinite() && it > 0f } ?: 400f
-                val intrinsicHeight = svg.documentHeight.takeIf { it.isFinite() && it > 0f } ?: 400f
-                val scale = minOf(1f, boundedDimension / maxOf(intrinsicWidth, intrinsicHeight))
-                val width = (intrinsicWidth * scale).toInt().coerceAtLeast(1)
-                val height = (intrinsicHeight * scale).toInt().coerceAtLeast(1)
-                val picture = svg.renderToPicture(width, height)
-                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap -> Canvas(bitmap).drawPicture(picture) }
-            } else {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                val sample = imageSampleSize(bounds.outWidth, bounds.outHeight, boundedDimension)
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
-            }
-            DecodedPreviewCache.put(cacheKey, bitmap)
-            bitmap
-        }.getOrNull()
+        val connection = app.settings.snapshot()
+        val boundedDimension = maxDimension.coerceIn(64, 2048)
+        val profileHash = profileKey(connection.profile)
+        val pathHash = java.security.MessageDigest.getInstance("SHA-256")
+            .digest((connection.profile + "\u0000" + path).toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        val cacheKey = "$profileHash:$pathHash:$boundedDimension"
+        DecodedPreviewCache.getOrLoad(cacheKey) {
+            runCatching {
+                val bytes = if (path.startsWith("data:image/")) {
+                    val comma = path.indexOf(',')
+                    require(comma >= 0) { "Invalid image data." }
+                    val metadata = path.substring(0, comma)
+                    val content = path.substring(comma + 1)
+                    if (metadata.contains(";base64", true)) Base64.decode(content, Base64.DEFAULT)
+                    else Uri.decode(content).toByteArray(Charsets.UTF_8)
+                } else download(path, connection).readBytes()
+                require(bytes.size <= 25 * 1024 * 1024) { "Image preview exceeds the size limit." }
+                if (path.startsWith("data:image/svg+xml", true) || bytes.take(256).toByteArray().toString(Charsets.UTF_8).contains("<svg", true)) {
+                    val svg = SVG.getFromString(bytes.toString(Charsets.UTF_8))
+                    val intrinsicWidth = svg.documentWidth.takeIf { it.isFinite() && it > 0f } ?: 400f
+                    val intrinsicHeight = svg.documentHeight.takeIf { it.isFinite() && it > 0f } ?: 400f
+                    val scale = minOf(1f, boundedDimension / maxOf(intrinsicWidth, intrinsicHeight))
+                    val width = (intrinsicWidth * scale).toInt().coerceAtLeast(1)
+                    val height = (intrinsicHeight * scale).toInt().coerceAtLeast(1)
+                    val picture = svg.renderToPicture(width, height)
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap -> Canvas(bitmap).drawPicture(picture) }
+                } else {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                    val sample = imageSampleSize(bounds.outWidth, bounds.outHeight, boundedDimension)
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+                }
+            }.getOrNull()
+        }
     }
 
     suspend fun clearProfile(profile: String, pendingUploads: Boolean = false) = withContext(Dispatchers.IO) {
@@ -189,6 +230,19 @@ internal fun imageSampleSize(width: Int, height: Int, maxDimension: Int): Int {
     var sample = 1
     while (maxOf(width / sample, height / sample) > limit && sample <= (1 shl 29)) sample *= 2
     return sample
+}
+
+private suspend fun okhttp3.Call.awaitResponse(): okhttp3.Response = suspendCancellableCoroutine { continuation ->
+    continuation.invokeOnCancellation { cancel() }
+    enqueue(object : okhttp3.Callback {
+        override fun onFailure(call: okhttp3.Call, error: IOException) {
+            if (continuation.isActive) continuation.resumeWithException(error)
+        }
+
+        override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+            if (continuation.isActive) continuation.resume(response) else response.close()
+        }
+    })
 }
 
 internal fun evictProfileCache(folder: File, profileKey: String, current: File, maxBytes: Long = 100L * 1024 * 1024) {

@@ -52,7 +52,7 @@ export class LinkPreviewComponent implements AfterViewInit, OnDestroy {
       this.observer?.disconnect();
       this.observer = undefined;
       this.maybeFetchPreview();
-    }, { root: null, rootMargin: '3000px 0px', threshold: 0 });
+    }, { root: null, rootMargin: '1000px 0px', threshold: 0 });
     this.observer.observe(this.host.nativeElement);
   }
 
@@ -79,11 +79,11 @@ export class LinkPreviewComponent implements AfterViewInit, OnDestroy {
   }
 
   private resetPreview() {
-    this.preview = null;
-    this.loading = true;
+    this.preview = this.notesService.peekLinkPreviewCache(this._url);
+    this.loading = !this.preview;
     this.failed = false;
     this.imageError = false;
-    this.fetchStarted = false;
+    this.fetchStarted = !!this.preview;
   }
 
   private maybeFetchPreview() {

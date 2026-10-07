@@ -1,17 +1,21 @@
+import { CommonModule } from '@angular/common';
 import { Component, OnInit, NgZone } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { UserI, UserRole } from 'src/app/interfaces/users';
 import { AuthService } from 'src/app/services/auth.service';
 import { environment } from 'src/environments/environment';
 import { TimepickerUI, type ConfirmEventData } from 'timepicker-ui';
+import { RouterLink } from '@angular/router';
 
 
 @Component({
     selector: 'app-user-management',
     templateUrl: './user-management.component.html',
     styleUrls: ['../auth-shared.scss', './user-management.component.scss'],
-    standalone: false
+    standalone: true,
+    imports: [CommonModule, FormsModule, RouterLink]
 })
 export class UserManagementComponent implements OnInit {
   users: UserI[] = [];

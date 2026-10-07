@@ -1,5 +1,7 @@
+import { CommonModule } from '@angular/common';
 import { Component, OnDestroy, OnInit } from '@angular/core';
-import { ActivatedRoute, Router } from '@angular/router';
+import { FormsModule } from '@angular/forms';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { AuthService } from 'src/app/services/auth.service';
 
@@ -7,7 +9,8 @@ import { AuthService } from 'src/app/services/auth.service';
     selector: 'app-login',
     templateUrl: './login.component.html',
     styleUrls: ['../auth-shared.scss'],
-    standalone: false
+    standalone: true,
+    imports: [CommonModule, FormsModule, RouterLink]
 })
 export class LoginComponent implements OnInit, OnDestroy {
   username = '';

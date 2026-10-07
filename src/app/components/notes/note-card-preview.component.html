@@ -37,7 +37,7 @@
       <div class="note-images">
         @for (image of note.images || []; track trackImage($index, image)) {
           @if (image.placement === 'top') {
-            <img [src]="imageSrc(image.dataUrl)" [alt]="image.name" decoding="async"
+            <img [src]="imageSrc(image.dataUrl)" [alt]="image.name" loading="lazy" decoding="async"
               (contextmenu)="downloadImageFromEvent(image, $event)">
           }
         }
@@ -86,7 +86,7 @@
       <div class="note-images">
         @for (image of note.images || []; track trackImage($index, image)) {
           @if (image.placement === 'bottom') {
-            <img [src]="imageSrc(image.dataUrl)" [alt]="image.name" decoding="async"
+            <img [src]="imageSrc(image.dataUrl)" [alt]="image.name" loading="lazy" decoding="async"
               (contextmenu)="downloadImageFromEvent(image, $event)">
           }
         }

@@ -17,6 +17,8 @@ import java.util.UUID
 
 class KeptRepository(private val app: KeptApplication, val database: KeptDatabase,
     val settings: ConnectionProfile, val api: NativeApi, private val mediaUploader: MediaUploadPort = Media(app)) {
+    private data class DecodedNote(val payload: String, val note: Note)
+
     val store = database.store()
     val status = MutableStateFlow(settings.message.takeIf { it.isNotBlank() }?.let { "Saved on device · $it" } ?: "Saved on device")
     val connectionState = MutableStateFlow<ConnectionState>(when {
@@ -35,6 +37,9 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     private val editMutex = Mutex()
     private val syncMutex = Mutex()
     private val acceptedRevisions = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val noteDecodeLock = Any()
+    private var noteDecodeProfile = ""
+    private val decodedNotes = mutableMapOf<String, DecodedNote>()
     private val reconcileScheduleLock = Any()
     private var pendingReconcile: Job? = null
     private var socket: WebSocket? = null
@@ -56,10 +61,29 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         }
     }
 
-    fun notes(): Flow<List<Note>> = store.observe(settings.profile, "note")
-        .distinctUntilChanged()
-        .map { rows -> rows.map { Note(JSONObject(it.payload)) }.sortedWith(NoteOrder.comparator) }
-        .flowOn(Dispatchers.Default)
+    fun notes(): Flow<List<Note>> {
+        val profile = settings.profile
+        return store.observe(profile, "note")
+            .distinctUntilChanged()
+            .map { rows ->
+                synchronized(noteDecodeLock) {
+                    if (noteDecodeProfile != profile) {
+                        noteDecodeProfile = profile
+                        decodedNotes.clear()
+                    }
+                    val present = HashSet<String>(rows.size)
+                    val projected = rows.map { row ->
+                        present += row.syncId
+                        val cached = decodedNotes[row.syncId]
+                        if (cached?.payload == row.payload) cached.note
+                        else Note(JSONObject(row.payload)).also { decodedNotes[row.syncId] = DecodedNote(row.payload, it) }
+                    }
+                    decodedNotes.keys.retainAll(present)
+                    projected.sortedWith(NoteOrder.comparator)
+                }
+            }
+            .flowOn(Dispatchers.Default)
+    }
     fun reminders(): Flow<List<JSONObject>> = store.observe(settings.profile, "reminder")
         .distinctUntilChanged()
         .map { rows -> rows.map { JSONObject(it.payload) } }
@@ -290,6 +314,8 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         val connection = settings.snapshot()
         if (connection.token.isBlank()) return@withLock
         val profile = connection.profile
+        var effectsChanged = false
+        val acceptedThisSync = mutableSetOf<String>()
         try {
             status.value = "Syncing…"
             database.withTransaction {
@@ -301,7 +327,6 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                     store.enqueue(orphan.copy(dependsOnOperationId = null, baseRevision = revision ?: orphan.baseRevision))
                 }
             }
-            val acceptedThisSync = mutableSetOf<String>()
             while (true) {
                 val entry = database.withTransaction {
                     val candidate = store.nextSendable(profile) ?: return@withTransaction null
@@ -358,7 +383,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                         .put("payload", JSONObject(entry.payload))
                     entry.baseRevision?.let { mutation.put("baseRevision", it) }
                     entry.baseScheduleVersion?.let { mutation.put("baseScheduleVersion", it) }
-                    val response = JSONObject(api.call("/api/sync/mutations", "POST", NativeProtocol.mutationBatch(listOf(mutation)), connection))
+                    val response = JSONObject(api.call("/api/sync/mutations", "POST", NativeProtocol.mutationBatch(listOf(mutation), includeSnapshot = false), connection))
                     val result = response.getJSONArray("results").getJSONObject(0)
                     var retryError: ApiException? = null
                     var acceptedNote: Note? = null
@@ -425,24 +450,35 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             if (cursor == null) {
                 val snapshot = JSONObject(api.call("/api/sync/bootstrap", connection = connection))
                 database.withTransaction { applySnapshot(profile, snapshot, acceptedThisSync) }
+                effectsChanged = true
             } else {
                 var current = cursor
                 do {
                     val response = JSONObject(api.call("/api/sync/changes?cursor=$current", connection = connection))
                     var removedNote = false
+                    var pageChanged = false
                     val incomingNotes = mutableListOf<Note>()
                     database.withTransaction {
                         val pending = store.pending(profile)
                         for (change in response.getJSONArray("changes").objects()) {
                             val kind = change.text("resourceType"); val id = change.text("resourceSyncId")
                             if (change.text("operation") == "delete") {
-                                if (kind == "note") preserveRevokedNoteDrafts(profile, id)
-                                store.remove(profile, kind, id)
-                                if (kind == "note") removedNote = true
+                                if (store.record(profile, kind, id) != null) {
+                                    if (kind == "note") preserveRevokedNoteDrafts(profile, id)
+                                    store.remove(profile, kind, id)
+                                    pageChanged = true
+                                    if (kind == "note") removedNote = true
+                                }
                                 pending.filter { it.syncId == id }.forEach { store.enqueue(it.copy(state = OutboxState.CONFLICT,
                                     conflict = JSONObject().put("error", "This item was removed or access was revoked.").toString())) }
                             } else if (pending.none { it.syncId == id }) {
-                                change.optJSONObject("payload")?.let { store.put(Record(profile, kind, id, it.toString())) }
+                                change.optJSONObject("payload")?.let { payload ->
+                                    val encoded = payload.toString()
+                                    if (store.record(profile, kind, id)?.payload != encoded) {
+                                        store.put(Record(profile, kind, id, encoded))
+                                        pageChanged = true
+                                    }
+                                }
                             } else if (kind == "note") {
                                 val remote = change.optJSONObject("payload")?.let(::Note)
                                 val baseRevision = pending.firstOrNull { it.type == "note.upsert" && it.syncId == id }?.baseRevision
@@ -456,10 +492,11 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                     }
                     incomingNotes.forEach { _incomingNoteSnapshots.tryEmit(ProfiledNoteSnapshot(profile, it)) }
                     if (removedNote) Media(app).clearProfile(profile)
+                    if (pageChanged) effectsChanged = true
                 } while (response.optBoolean("hasMore"))
             }
             val occurrences = JSONArray(api.call("/api/native/reminders/occurrences", connection = connection))
-            database.withTransaction { applyOccurrences(profile, occurrences) }
+            if (database.withTransaction { applyOccurrences(profile, occurrences) }) effectsChanged = true
             val hasConflicts = store.pending(profile).any { it.conflict != null }
             status.value = if (hasConflicts) "An edit needs your attention" else "Synced"
             connectionState.value = ConnectionState.Authenticated
@@ -478,7 +515,9 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                 }
             }
             throw error
-        } finally { reconcile() }
+        } finally {
+            if (effectsChanged || acceptedThisSync.isNotEmpty()) reconcile()
+        }
     }
 
     private suspend fun applySnapshot(profile: String, snapshot: JSONObject, acceptedThisSync: Set<String> = emptySet()) {
@@ -608,16 +647,24 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         }
     }
 
-    private suspend fun applyOccurrences(profile: String, incoming: JSONArray) {
+    private suspend fun applyOccurrences(profile: String, incoming: JSONArray): Boolean {
         val pending = store.pending(profile)
         val ids = incoming.objects().map { it.getString("occurrenceId") }.toSet()
+        var changed = false
         for (row in store.list(profile, "occurrence")) {
-            if (row.syncId !in ids && pending.none { it.syncId == row.syncId }) store.remove(profile, "occurrence", row.syncId)
+            if (row.syncId !in ids && pending.none { it.syncId == row.syncId }) {
+                store.remove(profile, "occurrence", row.syncId)
+                changed = true
+            }
         }
         for (raw in incoming.objects()) {
             val id = raw.getString("occurrenceId")
-            if (pending.none { it.syncId == id }) store.put(Record(profile, "occurrence", id, raw.toString()))
+            if (pending.none { it.syncId == id } && store.record(profile, "occurrence", id)?.payload != raw.toString()) {
+                store.put(Record(profile, "occurrence", id, raw.toString()))
+                changed = true
+            }
         }
+        return changed
     }
 
     suspend fun resolve(entry: Outbox, resolution: ConflictResolution) = editMutex.withLock {

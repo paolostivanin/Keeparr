@@ -1,19 +1,18 @@
 {
   "name": "keep",
-  "version": "1.8.1",
+  "version": "2.0.0",
   "scripts": {
     "ng": "ng",
     "start": "concurrently \"npm run api\" \"npm run client\"",
     "client": "set NG_SASS_VERBOSE_DEPRECATIONS=0&& ng serve --host 0.0.0.0 --port 6767 --proxy-config proxy.conf.json",
     "api": "nodemon --no-deprecation server/server.js",
-    "build": "ng build && npm run purgecss",
+    "build": "ng build",
     "benchmark:web": "node test-fixtures/performance/web-ui-check.mjs",
     "test:sync": "node server/sync-smoke.test.js",
     "test:native": "node server/native-client.test.js",
     "test:reminders": "node --test server/reminder-recurrence.test.js",
     "mcp": "node mcp/index.mjs",
     "test:mcp": "node --test mcp/*.test.mjs",
-    "purgecss": "purgecss -c purgecss.config.js",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "analyze": "webpack-bundle-analyzer dist/keep/stats.json",
@@ -39,6 +38,7 @@
     "@types/jszip": "^3.4.0",
     "adm-zip": "^0.5.16",
     "bricks.js": "^1.8.0",
+    "compression": "^1.8.2",
     "concurrently": "^9.2.1",
     "cors": "^2.8.6",
     "express": "^4.22.1",
@@ -71,7 +71,6 @@
     "karma-jasmine": "~5.0.0",
     "karma-jasmine-html-reporter": "~1.7.0",
     "nodemon": "^3.1.9",
-    "purgecss": "^4.1.3",
     "typescript": "~5.9.3",
     "webpack-bundle-analyzer": "^4.6.1"
   }

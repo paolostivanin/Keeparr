@@ -118,7 +118,12 @@ export class ReminderService {
     private userPreferences: UserPreferencesService
   ) {
     this.offlineSync.cacheChanged$.subscribe(change => {
-      if (change.remindersChanged) this.loadCachedReminders().catch(console.error);
+      if (!change.remindersChanged) return;
+      if (change.fullSnapshot || (!change.reminderSyncIds?.length && !change.removedReminderSyncIds?.length)) {
+        this.loadCachedReminders().catch(console.error);
+      } else {
+        this.applyCachedReminderChanges(change.reminderSyncIds || [], change.removedReminderSyncIds || []).catch(console.error);
+      }
     });
     this.auth.currentUser$.subscribe(user => {
       if (user?.id !== this.lifecycleUserId) {
@@ -249,6 +254,31 @@ export class ReminderService {
     if (!this.offlineSync.partition) return;
     const reminders = await this.offlineStore.listReminders(this.offlineSync.partition);
     this.setReminders(reminders);
+  }
+
+  private async applyCachedReminderChanges(syncIds: readonly string[], removedSyncIds: readonly string[]) {
+    const partition = this.offlineSync.partition;
+    if (!partition) return;
+    const removed = new Set(removedSyncIds);
+    const next = this.reminders$.value.filter(reminder => !removed.has(reminder.syncId || ''));
+    let changed = next.length !== this.reminders$.value.length;
+    for (const syncId of syncIds) {
+      const reminder = await this.offlineStore.getReminder(partition, syncId);
+      const index = next.findIndex(candidate => candidate.syncId === syncId);
+      if (!reminder) {
+        if (index >= 0) {
+          next.splice(index, 1);
+          changed = true;
+        }
+      } else if (index < 0) {
+        next.push(reminder);
+        changed = true;
+      } else if (JSON.stringify(next[index]) !== JSON.stringify(reminder)) {
+        next[index] = reminder;
+        changed = true;
+      }
+    }
+    if (changed) this.setReminders(next);
   }
 
   getActiveForNote(noteId: number): ReminderI | undefined {

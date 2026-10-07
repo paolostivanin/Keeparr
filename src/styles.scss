@@ -1183,7 +1183,7 @@ body.light-theme [data-tooltip="true"].collaboratorMenu .owner-pill {
 @import "./assets/fonts/fonts.scss";
 
 //? snackbar AKA toast
-@import "~node-snackbar/dist/snackbar.css";
+@import "node-snackbar/dist/snackbar.css";
 .snackbar-container {
   background-color: #feefc3 !important;
   color: #202124 !important;

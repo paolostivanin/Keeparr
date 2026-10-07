@@ -9,7 +9,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Serializable
-private data class MutationEnvelope(val mutations: List<JsonObject>)
+private data class MutationEnvelope(val mutations: List<JsonObject>, val includeSnapshot: Boolean? = null)
 
 object NativeProtocol {
     private val json = Json {
@@ -19,10 +19,10 @@ object NativeProtocol {
     }
 
     /** The envelope is typed while each raw JSON payload keeps arbitrary extension fields. */
-    fun mutationBatch(mutations: List<JSONObject>): JSONObject {
+    fun mutationBatch(mutations: List<JSONObject>, includeSnapshot: Boolean? = null): JSONObject {
         val payloads = mutations.map { json.parseToJsonElement(it.toString()).jsonObject }
-        return JSONObject(json.encodeToString(MutationEnvelope(payloads)))
+        return JSONObject(json.encodeToString(MutationEnvelope(payloads, includeSnapshot)))
     }
 
-    fun mutationBatch(mutations: JSONArray): JSONObject = mutationBatch(mutations.objects())
+    fun mutationBatch(mutations: JSONArray, includeSnapshot: Boolean? = null): JSONObject = mutationBatch(mutations.objects(), includeSnapshot)
 }

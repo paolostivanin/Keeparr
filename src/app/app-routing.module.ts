@@ -6,15 +6,14 @@ import { LoginComponent } from './components/auth/login/login.component';
 import { RegisterComponent } from './components/auth/register/register.component';
 import { SetupComponent } from './components/auth/setup/setup.component';
 import { UserManagementComponent } from './components/auth/user-management/user-management.component';
-import { SettingsComponent } from './components/settings/settings.component';
 import { AdminGuard, AuthGuard, LoginGuard, SetupGuard } from './services/auth.guard';
 
 const routes: Routes = [
-  { path: "setup", component: SetupComponent, canActivate: [SetupGuard] },
-  { path: "login", component: LoginComponent, canActivate: [LoginGuard] },
-  { path: "register", component: RegisterComponent, canActivate: [LoginGuard] },
-  { path: "users", component: UserManagementComponent, canActivate: [AdminGuard] },
-  { path: "settings", component: SettingsComponent, canActivate: [AuthGuard] },
+  { path: "setup", loadComponent: () => import('./components/auth/setup/setup.component').then(module => module.SetupComponent), canActivate: [SetupGuard] },
+  { path: "login", loadComponent: () => import('./components/auth/login/login.component').then(module => module.LoginComponent), canActivate: [LoginGuard] },
+  { path: "register", loadComponent: () => import('./components/auth/register/register.component').then(module => module.RegisterComponent), canActivate: [LoginGuard] },
+  { path: "users", loadComponent: () => import('./components/auth/user-management/user-management.component').then(module => module.UserManagementComponent), canActivate: [AdminGuard] },
+  { path: "settings", loadComponent: () => import('./components/settings/settings.component').then(module => module.SettingsComponent), canActivate: [AuthGuard] },
   { path: "", component: MainComponent, canActivate: [AuthGuard] },
   { path: "archive", component: MainComponent, canActivate: [AuthGuard] },
   { path: "trash", component: MainComponent, canActivate: [AuthGuard] },

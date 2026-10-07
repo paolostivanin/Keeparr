@@ -29,6 +29,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -99,6 +100,29 @@ class KeptRepositoryTest {
         delay(150)
 
         assertEquals("unrelated Room rows do not trigger note decoding/projection emissions", 1, emissions.get())
+        collector.cancel()
+    }
+
+    @Test fun oneNoteWriteReusesDecodedObjectsForUnchangedRows() = runBlocking {
+        val first = Note.create(profile.userId)
+        val unchanged = Note.create(profile.userId)
+        repository.store.put(Record(profile.profile, "note", first.syncId, first.raw.toString()))
+        repository.store.put(Record(profile.profile, "note", unchanged.syncId, unchanged.raw.toString()))
+        val initial = CompletableDeferred<List<Note>>()
+        val updated = CompletableDeferred<List<Note>>()
+        val collector = launch {
+            repository.notes().collect { value ->
+                if (!initial.isCompleted) initial.complete(value) else updated.complete(value)
+            }
+        }
+        val original = withTimeoutOrNull(2_000) { initial.await() } ?: error("initial note projection did not emit")
+
+        repository.store.put(Record(profile.profile, "note", first.syncId,
+            first.raw.copyJson().put("noteTitle", "Changed only one row").toString()))
+        val next = withTimeoutOrNull(2_000) { updated.await() } ?: error("updated note projection did not emit")
+
+        assertSame("Unchanged documents should reuse their decoded model object.",
+            original.first { it.syncId == unchanged.syncId }, next.first { it.syncId == unchanged.syncId })
         collector.cancel()
     }
 
@@ -323,6 +347,31 @@ class KeptRepositoryTest {
         assertNotNull(repository.store.record(profile.profile, "note", second.syncId))
         assertEquals(1, repository.store.pending(firstProfile).size)
         assertEquals(1, repository.store.pending(profile.profile).size)
+    }
+
+    @Test fun aNoopSyncDoesNotReconcileRemindersOrRefreshWidgets() = runBlocking {
+        profile.token = "test-session"
+        repository.store.cursor(SyncState(profile.profile, 12))
+        val api = FakeNativeApi().apply {
+            callHandler = { path, _, _ ->
+                when {
+                    path.startsWith("/api/sync/changes?") -> JSONObject().put("changes", JSONArray())
+                        .put("cursor", 12).put("hasMore", false).toString()
+                    path == "/api/native/reminders/occurrences" -> "[]"
+                    else -> error("Unexpected request $path")
+                }
+            }
+        }
+        repository = KeptRepository(app, app.database, profile, api)
+        app.repository = repository
+        var widgetRefreshes = 0
+        app.refreshWidgets = { widgetRefreshes++ }
+        val reminderController = app.reminders as FakeReminderController
+
+        repository.sync()
+
+        assertEquals(0, widgetRefreshes)
+        assertEquals(0, reminderController.reconcileCalls)
     }
 
     @Test fun anEditorFromThePreviousAccountCannotQueueItsDraftUnderTheNewProfile() = runBlocking {
@@ -1336,10 +1385,11 @@ class KeptRepositoryTest {
     }
 
     private class FakeReminderController : ReminderController {
+        var reconcileCalls = 0
         override fun precise() = true
         override fun notificationsAllowed() = true
         override fun now() = java.time.Instant.EPOCH
-        override suspend fun reconcile() = Unit
+        override suspend fun reconcile() { reconcileCalls++ }
         override suspend fun resetAlarmRegistry() = Unit
         override suspend fun deliver(key: String, occurrence: JSONObject) = Unit
         override suspend fun act(key: String, occurrence: JSONObject, state: String, snoozeUntil: String?) = false

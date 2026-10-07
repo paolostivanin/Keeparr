@@ -16,11 +16,6 @@ import { AppRoutingModule } from './app-routing.module';
 import { CboxSortPipe } from './pipes/cbox-sort.pipe';
 import { CboxDonePipe } from './pipes/cbox-done.pipe';
 import { NotesToolsPipe } from './pipes/notes-tools.pipe';
-import { SetupComponent } from './components/auth/setup/setup.component';
-import { LoginComponent } from './components/auth/login/login.component';
-import { UserManagementComponent } from './components/auth/user-management/user-management.component';
-import { RegisterComponent } from './components/auth/register/register.component';
-import { SettingsComponent } from './components/settings/settings.component';
 import { ReminderNotificationComponent } from './components/reminder/reminder-notification.component';
 import { LinkPreviewComponent } from './components/link-preview/link-preview.component';
 import { UpdateBannerComponent } from './components/update-banner/update-banner.component';
@@ -42,11 +37,6 @@ import { ConnectionHeadersInterceptor } from './services/connection-headers.inte
         CboxSortPipe,
         CboxDonePipe,
         NotesToolsPipe,
-        SetupComponent,
-        LoginComponent,
-        UserManagementComponent,
-        RegisterComponent,
-        SettingsComponent,
         ReminderNotificationComponent,
         LinkPreviewComponent,
         UpdateBannerComponent,

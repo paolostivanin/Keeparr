@@ -156,10 +156,51 @@ async function main() {
     assert.strictEqual(reminder?.noteId, note.id, 'reminder should resolve noteSyncId to server note id');
     assert.strictEqual(reminder?.locationTrigger, 'arrive');
 
+    await request(`/notes/${note.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ noteBody: 'Updated by another client after the local note was read.' })
+    });
+    const patchMutation = {
+      type: 'note.patch',
+      syncId: note.syncId,
+      operationId: 'note-patch-smoke-operation',
+      payload: { id: note.id, patch: { bgColor: '#abc123' } }
+    };
+    const patchReply = await request('/sync/mutations', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ includeSnapshot: false, mutations: [patchMutation] })
+    });
+    assert.strictEqual(patchReply.results[0].ok, true, 'a patch mutation should be accepted');
+    const patchedNote = await request(`/notes/${note.id}`, { headers });
+    assert.strictEqual(patchedNote.bgColor, '#abc123');
+    assert.strictEqual(patchedNote.noteBody, 'Updated by another client after the local note was read.',
+      'a field patch must retain unrelated content changed by another client');
+    const patchedRevision = patchedNote.revision;
+    const replayReply = await request('/sync/mutations', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ includeSnapshot: false, mutations: [patchMutation] })
+    });
+    assert.strictEqual(replayReply.results[0].ok, true, 'a lost-response retry should replay its accepted receipt');
+    assert.strictEqual((await request(`/notes/${note.id}`, { headers })).revision, patchedRevision,
+      'replaying a patch operation must not apply it twice');
+    const invalidPatch = await request('/sync/mutations', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ includeSnapshot: false, mutations: [{
+        type: 'note.patch', syncId: note.syncId, operationId: 'note-patch-invalid-field',
+        payload: { id: note.id, patch: { revision: 999 } }
+      }] })
+    });
+    assert.strictEqual(invalidPatch.results[0].ok, false, 'server-managed fields must not be patchable');
+    assert.strictEqual(invalidPatch.results[0].status, 400);
+
     const remindersBeforeNoteEdit = await request('/reminders', { headers });
     const linkedReminderBeforeEdit = remindersBeforeNoteEdit.find(item => item.id === reminder.id);
     assert.strictEqual(linkedReminderBeforeEdit?.title, 'Offline note', 'linked reminder title should come from its current note');
-    assert.strictEqual(linkedReminderBeforeEdit?.body, 'Created offline', 'linked reminder body should come from its current note');
+    assert.strictEqual(linkedReminderBeforeEdit?.body, 'Updated by another client after the local note was read.', 'linked reminder body should come from its current note');
 
     await request(`/notes/${note.id}`, {
       method: 'PATCH',
@@ -350,6 +391,23 @@ async function main() {
     assert.strictEqual(ownerView.pinned, false, 'owner unpin should update only the owner pin state');
     assert.strictEqual(collaboratorView.pinned, true, 'collaborator pin should survive owner unpin');
 
+    const collaboratorPatch = await request('/sync/mutations', {
+      method: 'POST',
+      headers: collabHeaders,
+      body: JSON.stringify({ includeSnapshot: false, mutations: [{
+        type: 'note.patch',
+        syncId: 'shared-pin-note',
+        operationId: 'shared-note-partial-patch',
+        payload: { id: sharedNote.id, patch: { noteTitle: 'Shared note patched', binder: 'owner-only change', pinned: false } }
+      }] })
+    });
+    assert.strictEqual(collaboratorPatch.results[0].ok, true, 'collaborators can apply a field-only shared-note patch');
+    const ownerAfterPatch = await request(`/notes/${sharedNote.id}`, { headers });
+    const collaboratorAfterPatch = await request(`/notes/${sharedNote.id}`, { headers: collabHeaders });
+    assert.strictEqual(ownerAfterPatch.noteTitle, 'Shared note patched');
+    assert.strictEqual(ownerAfterPatch.binder, '', 'a collaborator patch must not change owner-only organization fields');
+    assert.strictEqual(collaboratorAfterPatch.pinned, false, 'a collaborator field patch may update only their personal pin');
+
     await request(`/notes/${sharedNote.id}`, {
       method: 'PUT',
       headers: collabHeaders,
@@ -419,6 +477,89 @@ async function main() {
     const ownerUnpinnedView = await request(`/notes/${ownerUnpinnedSharedNote.id}`, { headers });
     assert.strictEqual(ownerUnpinnedView.pinned, false, 'collaborator pin should not pin the note for the owner');
     assert.strictEqual(collaboratorPinnedView.pinned, true, 'collaborator should be able to pin an owner-unpinned shared note');
+
+    const mergeSourceA = await request('/notes', {
+      method: 'POST', headers,
+      body: JSON.stringify({ syncId: 'receipt-merge-source-a', noteTitle: 'Merge A', noteBody: '<p>Body A</p>', futureA: 'keep-a' })
+    });
+    const mergeSourceB = await request('/notes', {
+      method: 'POST', headers,
+      body: JSON.stringify({ syncId: 'receipt-merge-source-b', noteTitle: 'Merge B', noteBody: '<p>Body B</p>', futureB: 'keep-b' })
+    });
+    const attachmentForm = new FormData();
+    attachmentForm.append('file', new Blob(['merge attachment'], { type: 'text/plain' }), 'merge.txt');
+    attachmentForm.append('syncId', 'receipt-merge-attachment');
+    const attachmentResponse = await fetch(`${base}/notes/${mergeSourceA.id}/attachments`, {
+      method: 'POST', headers: authHeaders(token), body: attachmentForm
+    });
+    assert.strictEqual(attachmentResponse.status, 201, `merge source attachment failed: ${await attachmentResponse.text()}`);
+    const dueSoon = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const dueLater = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const firstMergeReminder = await request('/reminders', {
+      method: 'POST', headers, body: JSON.stringify({ noteId: mergeSourceA.id, dueAtUtc: dueSoon, timezone: 'UTC', title: 'Keep reminder' })
+    });
+    const droppedMergeReminder = await request('/reminders', {
+      method: 'POST', headers, body: JSON.stringify({ noteId: mergeSourceB.id, dueAtUtc: dueLater, timezone: 'UTC', title: 'Drop reminder' })
+    });
+    const mergeCursorBefore = (await request('/sync/changes?cursor=0&limit=500', { headers })).serverCursor;
+    const mergeMutation = {
+      type: 'note.merge',
+      syncId: 'receipt-merge-result',
+      operationId: 'receipt-merge-operation',
+      payload: { mergeSyncId: 'receipt-merge-result', orderedSourceSyncIds: [mergeSourceA.syncId, mergeSourceB.syncId] }
+    };
+    const queuedReminderSyncId = 'receipt-merge-earliest-reminder';
+    const queuedReminderMutation = {
+      type: 'reminder.upsert',
+      syncId: queuedReminderSyncId,
+      operationId: 'receipt-merge-earliest-reminder-operation',
+      payload: {
+        syncId: queuedReminderSyncId,
+        noteId: -101,
+        noteSyncId: mergeSourceB.syncId,
+        userId: login.user.id,
+        dueAtUtc: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        timezone: 'UTC',
+        repeatRule: null,
+        status: 'pending',
+        title: 'Earlier queued reminder'
+      },
+      lww: { physicalMs: Date.now(), logical: 0, deviceId: 'merge-test', operationId: 'receipt-merge-earliest-reminder-operation' }
+    };
+    const mergeReply = await request('/sync/mutations', {
+      method: 'POST', headers,
+      body: JSON.stringify({ includeSnapshot: false, mutations: [mergeMutation, queuedReminderMutation] })
+    });
+    assert.strictEqual(mergeReply.results[0].ok, true, 'a merge command should be accepted');
+    assert.strictEqual(mergeReply.results[1].ok, true, 'a queued reminder should be applied before the merge transaction');
+    const mergedByReceipt = await request(`/notes/${mergeReply.results[0].id}`, { headers });
+    assert.strictEqual(mergedByReceipt.syncId, 'receipt-merge-result');
+    assert.strictEqual(mergedByReceipt.noteBody, '<p>Body A</p><br><br><p>Body B</p>');
+    assert.strictEqual(mergedByReceipt.futureA, 'keep-a');
+    assert.strictEqual(mergedByReceipt.futureB, 'keep-b');
+    assert.strictEqual(mergedByReceipt.attachments.length, 1, 'source attachments should be re-parented to the merged note');
+    assert.strictEqual(mergedByReceipt.attachments[0].originalName, 'merge.txt');
+    const mergedReminders = (await request('/reminders', { headers })).filter(reminder => reminder.noteId === mergedByReceipt.id);
+    assert.deepStrictEqual(mergedReminders.map(reminder => reminder.syncId), [droppedMergeReminder.syncId], 'the earliest queued pending reminder should be re-parented');
+    assert.strictEqual((await request(`/notes/${mergeSourceA.id}`, { headers })).trashed, true);
+    const sourceUpdatedAt = (await request(`/notes/${mergeSourceA.id}`, { headers })).updatedAt;
+    const replayMergeReply = await request('/sync/mutations', {
+      method: 'POST', headers,
+      body: JSON.stringify({ includeSnapshot: false, mutations: [mergeMutation] })
+    });
+    assert.strictEqual(replayMergeReply.results[0].id, mergedByReceipt.id, 'a merge retry should replay its original acknowledgement');
+    assert.strictEqual((await request(`/notes/${mergeSourceA.id}`, { headers })).updatedAt, sourceUpdatedAt,
+      'receipt replay must not reapply source trashing side effects');
+    const mergeChanges = await request(`/sync/changes?cursor=${mergeCursorBefore}&limit=500`, { headers });
+    assert(mergeChanges.changes.some(change => change.resourceType === 'attachment'
+      && change.resourceSyncId === 'receipt-merge-attachment' && change.operation === 'upsert'
+      && change.payload.noteId === mergedByReceipt.id), 'the change feed should publish the attachment re-parenting');
+    assert(mergeChanges.changes.some(change => change.resourceType === 'reminder'
+      && change.resourceSyncId === droppedMergeReminder.syncId && change.operation === 'upsert'
+      && change.payload.noteId === mergedByReceipt.id), 'the change feed should publish the kept reminder re-parenting');
+    assert(mergeChanges.changes.some(change => change.resourceType === 'reminder'
+      && change.operation === 'delete' && change.resourceSyncId === firstMergeReminder.syncId),
+    'the change feed should publish removal of an existing dropped reminder');
 
     const deleted = await request('/sync/mutations', {
       method: 'POST',

@@ -1,8 +1,11 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
-const { mkdtempSync, rmSync } = require('node:fs');
+const { existsSync, mkdtempSync, rmSync } = require('node:fs');
+const http = require('node:http');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
+const { gunzipSync } = require('node:zlib');
+const packageVersion = require('../package.json').version;
 const sqlite3 = require('sqlite3');
 const WebSocket = require('ws');
 const { initNativeClientSchema, occurrenceId } = require('./native-client');
@@ -95,6 +98,28 @@ async function integrationTest() {
   };
   try {
     await waitForServer(child);
+    if (existsSync(path.join(__dirname, '..', 'dist', 'keep', 'index.html'))) {
+      const indexResponse = await fetch(origin);
+      assert.equal(indexResponse.status, 200);
+      assert.match(indexResponse.headers.get('cache-control') || '', /no-cache/);
+      const indexHtml = await indexResponse.text();
+      const assets = [...indexHtml.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g)].map(match => match[1]);
+      assert.ok(assets.length, 'production index should reference built JavaScript and stylesheets');
+      const bundledAsset = assets.find(asset => new URL(asset, origin).origin === origin && /-[a-z0-9_-]{8,}\.(?:js|css)$/i.test(asset));
+      assert.ok(bundledAsset, 'production index should reference a same-origin hashed bundle');
+      const assetResponse = await fetch(new URL(bundledAsset, origin));
+      assert.equal(assetResponse.status, 200);
+      assert.match(assetResponse.headers.get('cache-control') || '', /max-age=31536000, immutable/);
+      const compressedAsset = await new Promise((resolve, reject) => {
+        http.get(new URL(bundledAsset, origin), { headers: { 'Accept-Encoding': 'gzip' } }, response => {
+          const chunks = [];
+          response.on('data', chunk => chunks.push(chunk));
+          response.on('end', () => resolve({ headers: response.headers, body: Buffer.concat(chunks) }));
+        }).on('error', reject);
+      });
+      assert.equal(compressedAsset.headers['content-encoding'], 'gzip');
+      assert.ok(gunzipSync(compressedAsset.body).length > compressedAsset.body.length);
+    }
     await request('/setup/admin', null, { username: 'owner', password: 'test-password-123', displayName: 'Owner' });
     const owner = await request('/auth/login', null, { username: 'owner', password: 'test-password-123' });
     await request('/users', owner.token, { username: 'editor', password: 'test-password-456', displayName: 'Editor' });
@@ -106,9 +131,11 @@ async function integrationTest() {
       socket.once('error', error => { clearTimeout(timeout); reject(error); });
     });
     const capabilities = await request('/client/capabilities', owner.token);
+    assert.equal(capabilities.serverVersion, packageVersion);
     assert.equal(capabilities.personalReminders, true);
     assert.equal(capabilities.nativeProtocolVersion, 3);
     assert.equal(capabilities.reminderScheduleDefinitions, true);
+    assert.equal(capabilities.incrementalMutationResponses, true);
     const imported = await request('/reminders/import', owner.token, { icsContent: [
       'BEGIN:VCALENDAR', 'BEGIN:VEVENT', 'DTSTART:20300105T090000Z', 'SUMMARY:Fixture import', 'END:VEVENT', 'END:VCALENDAR'
     ].join('\r\n') });
@@ -139,6 +166,16 @@ async function integrationTest() {
     assert.deepEqual(original.futureMetadata, { schema: 7, flags: ['keep-me'] }, 'note creation returns unrecognized fields');
     assert.equal(original.clientExtension, 'preserved');
     const mutate = (token, mutations) => request('/sync/mutations', token, { mutations });
+    const incrementalReply = await request('/sync/mutations', owner.token, {
+      includeSnapshot: false,
+      mutations: [{ type: 'note.view-state', syncId: original.syncId, operationId: 'incremental-view-state',
+        payload: { noteId: original.id, completedChecklistCollapsed: true } }]
+    });
+    assert.equal(incrementalReply.snapshot, undefined, 'incremental requests omit the full account snapshot');
+    assert.ok(incrementalReply.serverCursor > 0, 'incremental responses carry the durable pull cursor');
+    const compatibleReply = await mutate(owner.token, [{ type: 'note.view-state', syncId: original.syncId,
+      operationId: 'snapshot-view-state', payload: { noteId: original.id, completedChecklistCollapsed: false } }]);
+    assert.ok(compatibleReply.snapshot?.notes, 'older/default requests retain full snapshot responses');
     const coloredNote = await request('/notes', owner.token, { noteTitle: 'Colored restore', bgColor: '#5b2121', checkBoxes: [], images: [], labels: [] });
     const trashColored = await mutate(owner.token, [{ type: 'note.upsert', syncId: coloredNote.syncId, baseRevision: coloredNote.revision,
       operationId: 'trash-colored-note', payload: { ...coloredNote, trashed: true } }]);

@@ -9,7 +9,7 @@ import { debounceTime } from 'rxjs/operators';
 import { LabelI } from 'src/app/interfaces/labels';
 import { AuthService } from 'src/app/services/auth.service';
 import { ShareUserI } from 'src/app/interfaces/users';
-import { LinkPreviewData, NotesService } from 'src/app/services/notes.service';
+import { LinkPreviewData, LocalNotePersistenceError, NotesService } from 'src/app/services/notes.service';
 import { PushNotificationService } from 'src/app/services/push-notification.service';
 import { ReminderService } from 'src/app/services/reminder.service';
 import { ReminderRepeatRule, ReminderRepeatType } from 'src/app/interfaces/reminder';
@@ -546,6 +546,11 @@ export class InputComponent implements OnInit {
       archived: this.isArchived,
       trashed: this.isTrashed
     }
+    if (this.isEditing) {
+      noteObj.id = this.noteToEdit.id
+      noteObj.syncId = this.noteToEdit.syncId
+      noteObj.revision = this.noteToEdit.revision
+    }
     const hasContent = !!(noteObj.noteTitle.length || noteObj.noteBody && noteObj.noteBody?.length || checkBoxesForSave.length || this.images.length || this.attachments.length || this.pendingAttachmentFiles.length || this.isDrawingNote)
     const pendingCollaboratorIds = [...this.selectedCollaboratorIds]
 
@@ -563,7 +568,7 @@ export class InputComponent implements OnInit {
       }
       noteObj.labels = await this.labelsForSave()
       const noteChanged = this.noteChangedForSave(noteObj)
-      if (!noteChanged && !hasPendingReminderSave) {
+      if (!noteChanged && !hasPendingReminderSave && !this.pendingAttachmentFiles.length) {
         if (closeAfterSave) this.Shared.closeModal.next(true)
         return
       }
@@ -580,7 +585,7 @@ export class InputComponent implements OnInit {
           this.flushPendingReminderSaves(this.noteToEdit.id!, noteObj)
         } catch (error) {
           if (this.auth.isAuthExpiredError(error)) return false
-          this.showNoteSaveError()
+          this.showNoteSaveError(error instanceof LocalNotePersistenceError)
           return false
         } finally {
           this.coEditSaveInFlight = false
@@ -594,7 +599,7 @@ export class InputComponent implements OnInit {
           await this.notesService.update(noteObj, this.noteToEdit.id!)
         } catch (error) {
           if (this.auth.isAuthExpiredError(error)) return false
-          this.showNoteSaveError()
+          this.showNoteSaveError(error instanceof LocalNotePersistenceError)
           return false
         }
         this.saveBaselineSnapshot = this.noteSaveSnapshot(noteObj)
@@ -612,6 +617,10 @@ export class InputComponent implements OnInit {
           id = await this.Shared.note.db.add(noteObj)
         } catch (error) {
           if (this.auth.isAuthExpiredError(error)) return false
+          if (error instanceof LocalNotePersistenceError) {
+            this.showNoteSaveError(true)
+            return false
+          }
           throw error
         }
         if (!id || id === -1) {
@@ -619,7 +628,13 @@ export class InputComponent implements OnInit {
           return false
         }
         await this.applyPendingCollaborators(id, pendingCollaboratorIds)
-        await this.uploadPendingAttachments(id)
+        if (!(await this.uploadPendingAttachments(id))) {
+          this.isEditing = true
+          const saved = this.notesService.notesList$.value?.find(note => note.id === id)
+          this.noteToEdit = { ...noteObj, id, syncId: saved?.syncId }
+          this.saveBaselineSnapshot = this.noteSaveSnapshot(this.noteToEdit)
+          return false
+        }
         this.flushPendingReminderSaves(id, noteObj)
         if (this.isArchived) {
           this.Shared.snackBar({ action: 'archived', opposite: 'unarchived' }, { archived: false }, id)
@@ -1278,7 +1293,7 @@ export class InputComponent implements OnInit {
   }
 
   private async uploadPendingAttachments(noteId: number) {
-    if (!this.pendingAttachmentFiles.length || !noteId || noteId === -1) return
+    if (!this.pendingAttachmentFiles.length || !noteId || noteId === -1) return true
     this.isUploadingAttachment = true
     try {
       for (const file of this.pendingAttachmentFiles) {
@@ -1286,8 +1301,14 @@ export class InputComponent implements OnInit {
       }
       this.pendingAttachmentFiles = []
       await this.notesService.load()
+      return true
     } catch (error: any) {
+      if (error instanceof LocalNotePersistenceError) {
+        this.showAttachmentMessage("Attachment couldn't be saved on this device. The note remains open; try again.")
+        return false
+      }
       this.showAttachmentMessage(error?.error?.error || 'The note was saved, but an attachment could not be uploaded.')
+      return false
     } finally {
       this.isUploadingAttachment = false
     }
@@ -4913,9 +4934,15 @@ export class InputComponent implements OnInit {
     } catch {}
   }
 
-  private showNoteSaveError() {
+  private showNoteSaveError(localPersistenceFailure = false) {
     try {
-      Snackbar.show({ pos: 'bottom-left', text: "Note couldn't be saved", duration: 3500 })
+      Snackbar.show({
+        pos: 'bottom-left',
+        text: localPersistenceFailure
+          ? "Note couldn't be saved on this device. It's still open; try again."
+          : "Note couldn't be saved",
+        duration: 3500
+      })
     } catch {}
   }
 }

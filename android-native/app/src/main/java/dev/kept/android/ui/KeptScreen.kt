@@ -53,6 +53,7 @@ fun KeptScreen(activity: MainActivity, app: KeptApplication) {
     val repo = app.repository
     val scope = rememberCoroutineScope()
     val settingsReady by app.settings.ready.collectAsStateWithLifecycle()
+    val settingsWriteError by app.settings.writeError.collectAsStateWithLifecycle()
     var signedIn by remember { mutableStateOf(false) }
     var dark by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -108,8 +109,14 @@ fun KeptScreen(activity: MainActivity, app: KeptApplication) {
                 if (showSettings) SettingsDialog(activity, app, reminders, occurrences, dark, onDark = { dark = it; app.settings.darkMode = it },
                     onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedIn = false; showSettings = false } }, onError = { error = it })
             }
-            error?.let { message -> AlertDialog(onDismissRequest = { error = null }, title = { Text("Kept") }, text = { Text(message) },
-                confirmButton = { TextButton(onClick = { error = null }) { Text("OK") } }) }
+            val visibleError = settingsWriteError ?: error
+            visibleError?.let { message ->
+                val dismiss = {
+                    if (settingsWriteError != null) app.settings.clearWriteError() else error = null
+                }
+                AlertDialog(onDismissRequest = dismiss, title = { Text("Kept") }, text = { Text(message) },
+                    confirmButton = { TextButton(onClick = dismiss) { Text("OK") } })
+            }
         }
     }
 }
@@ -209,12 +216,12 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
     val noteBounds = remember { mutableStateMapOf<String, Rect>() }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val reorderEnabled = canReorderNotes(filter, search)
-    var visible by remember { mutableStateOf(emptyList<Note>()) }
-    LaunchedEffect(notes, filter, search) {
-        visible = withContext(Dispatchers.Default) { searchVisibleNotes(notes, filter, search) }
+    var projection by remember { mutableStateOf(EmptyHomeProjection, referentialEqualityPolicy()) }
+    LaunchedEffect(notes, filter, search, reminders) {
+        projection = withContext(Dispatchers.Default) { buildHomeProjection(notes, filter, search, reminders) }
     }
-    val remindersByNote = remember(reminders, notes) { ReminderFormat.indexByNote(notes, reminders) }
-    val selectedNotes = notes.filter { it.syncId in selectedIds }
+    val visible = projection.visibleNotes
+    val selectedNotes = selectedIds.mapNotNull(projection.notesBySyncId::get)
     val canTrashSelected = selectedNotes.isNotEmpty() && selectedNotes.all { it.owner == app.settings.userId }
     val allSelectedTrashed = selectedNotes.isNotEmpty() && selectedNotes.all { it.trashed }
     LaunchedEffect(search, filter) { selectedIds = emptySet() }
@@ -226,9 +233,7 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
         ModalDrawerSheet(Modifier.verticalScroll(rememberScrollState())) {
             Text("Kept", Modifier.padding(24.dp), style = MaterialTheme.typography.headlineMedium)
-            val choices = listOf("home" to "Notes", "reminders" to "Reminders", "shared" to "Shared notes", "archive" to "Archive", "trash" to "Trash") +
-                notes.flatMap { it.labels }.distinct().sorted().map { "label:$it" to it } + notes.map { it.binder }.filter { it.isNotBlank() }.distinct().sorted().map { "binder:$it" to it }
-            choices.forEach { (value, label) -> NavigationDrawerItem(label = { Text(label) }, selected = filter == value,
+            projection.filterChoices.forEach { (value, label) -> NavigationDrawerItem(label = { Text(label) }, selected = filter == value,
                 onClick = { filter = value; selectedIds = emptySet(); scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp)) }
         }
     }) {
@@ -294,16 +299,20 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
                 Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Outlined.Lightbulb, null, Modifier.size(80.dp)); Text("Your notes appear here", Modifier.padding(16.dp)) }
             } else LazyVerticalStaggeredGrid(columns = if (grid) StaggeredGridCells.Adaptive(170.dp) else StaggeredGridCells.Fixed(1), modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp) {
-                val pinned = visible.filter { it.pinned }; val other = visible.filter { !it.pinned }
+                val pinned = projection.pinnedCards; val other = projection.otherCards
                 if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(pinned, key = { it.syncId }) { note -> NoteCard(app, note, remindersByNote[note.syncId], note.syncId in selectedIds, reorderEnabled, noteBounds,
-                    onClick = { if (selectedIds.isEmpty()) onEdit(note) else toggleSelected(note.syncId) }, onLongClick = { selectNote(note.syncId) }, onDrop = { target ->
-                        if (reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
+                items(pinned, key = { it.syncId }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, noteBounds,
+                    onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
+                    onLongClick = { selectNote(card.syncId) }, onDrop = { target ->
+                        val source = projection.notesBySyncId[card.syncId]
+                        if (source != null && reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, source, target)?.let { ids -> action { app.repository.reorder(ids) } }
                     }) }
                 if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(other, key = { it.syncId }) { note -> NoteCard(app, note, remindersByNote[note.syncId], note.syncId in selectedIds, reorderEnabled, noteBounds,
-                    onClick = { if (selectedIds.isEmpty()) onEdit(note) else toggleSelected(note.syncId) }, onLongClick = { selectNote(note.syncId) }, onDrop = { target ->
-                        if (reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, note, target)?.let { ids -> action { app.repository.reorder(ids) } }
+                items(other, key = { it.syncId }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, noteBounds,
+                    onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
+                    onLongClick = { selectNote(card.syncId) }, onDrop = { target ->
+                        val source = projection.notesBySyncId[card.syncId]
+                        if (source != null && reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, source, target)?.let { ids -> action { app.repository.reorder(ids) } }
                     }) }
             }
         }
@@ -425,12 +434,12 @@ private fun ReminderList(app: KeptApplication, reminders: List<JSONObject>, note
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NoteCard(app: KeptApplication, note: Note, reminder: JSONObject?, selected: Boolean, reorderEnabled: Boolean, bounds: MutableMap<String, Rect>,
+private fun NoteCard(app: KeptApplication, note: NoteCardUiModel, selected: Boolean, reorderEnabled: Boolean, bounds: MutableMap<String, Rect>,
     onClick: () -> Unit, onLongClick: () -> Unit, onDrop: (String) -> Unit) {
     var coordinates by remember(note.syncId) { mutableStateOf<LayoutCoordinates?>(null) }
     var target by remember(note.syncId) { mutableStateOf(note.syncId) }
     DisposableEffect(note.syncId) { onDispose { bounds.remove(note.syncId) } }
-    val color = NotePalette.parse(note.raw.text("bgColor"))?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
+    val color = note.colorArgb?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
     val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF1F1F1)
     Surface(shape = RoundedCornerShape(12.dp), color = color, contentColor = foreground,
         border = BorderStroke(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
@@ -450,22 +459,21 @@ private fun NoteCard(app: KeptApplication, note: Note, reminder: JSONObject?, se
                 )
             }) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (note.locked) { Icon(Icons.Outlined.Lock, "Locked note"); Text("Locked note") }
-            else {
-                note.raw.optJSONArray("images")?.objects()?.firstOrNull()?.let { MediaImage(app, it.text("dataUrl")) }
+                if (note.locked) { Icon(Icons.Outlined.Lock, "Locked note"); Text("Locked note") }
+                else {
+                note.imagePath?.let { MediaImage(app, it) }
                 if (note.title.isNotBlank()) Text(note.title, style = MaterialTheme.typography.titleMedium, maxLines = 3)
-                if (note.checklist) note.items.take(8).forEach { item -> Row {
-                    Text(if (item.optBoolean("done")) "☑  " else "☐  "); Text(NoteFormat.displayText(item.text("data")), maxLines = 3)
-                } } else if (note.body.isNotBlank()) Text(remember(note.body) { NoteFormat.displayText(note.body) }, maxLines = 12)
-                reminder?.let { activeReminder ->
+                if (note.checklist) note.checklistItems.forEach { item -> Row {
+                    Text(if (item.done) "☑  " else "☐  "); Text(item.text, maxLines = 3)
+                } } else if (note.bodyText.isNotBlank()) Text(note.bodyText, maxLines = 12)
+                note.reminderText?.let { reminderText ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Outlined.Schedule, "Reminder", Modifier.size(16.dp))
-                        Text(ReminderFormat.dateTime(ReminderFormat.displayDueAt(activeReminder)), Modifier.padding(start = 5.dp),
-                            style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                        Text(reminderText, Modifier.padding(start = 5.dp), style = MaterialTheme.typography.labelSmall, maxLines = 1)
                     }
                 }
                 if (note.labels.isNotEmpty()) Text(note.labels.joinToString(" · "), style = MaterialTheme.typography.labelSmall)
-                if ((note.raw.optJSONArray("collaborators")?.length() ?: 0) > 0) Icon(Icons.Outlined.PeopleOutline, "Shared note", Modifier.size(18.dp))
+                if (note.shared) Icon(Icons.Outlined.PeopleOutline, "Shared note", Modifier.size(18.dp))
             }
         }
     }

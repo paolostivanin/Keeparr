@@ -17,14 +17,14 @@
     [class.grid-view]="Shared.noteViewType.value === 'grid'"
     [class.list-view]="Shared.noteViewType.value === 'list'"
     [ngClass]="notePreviewTextSizeClass">
-    <div class="pb-80" [hidden]="!(Shared.note.pinned | notesTools:currentPageName:Shared.searchQuery:Shared.searchScope.value).length">
+    <div class="pb-80" data-list-section="pinned" [hidden]="!(Shared.note.pinned | notesTools:currentPageName:Shared.searchQuery:Shared.searchScope.value).length">
       <p #title _title>pinned</p>
-      <ng-container [ngTemplateOutlet]="noteTemplate" [ngTemplateOutletContext]="{notes:Shared.note.pinned}">
+      <ng-container [ngTemplateOutlet]="noteTemplate" [ngTemplateOutletContext]="{notes:Shared.note.pinned, group:'pinned'}">
       </ng-container>
     </div>
-    <div [hidden]="!(Shared.note.unpinned | notesTools:currentPageName:Shared.searchQuery:Shared.searchScope.value).length">
+    <div data-list-section="unpinned" [hidden]="!(Shared.note.unpinned | notesTools:currentPageName:Shared.searchQuery:Shared.searchScope.value).length">
       <p #title _title>other</p>
-      <ng-container [ngTemplateOutlet]="noteTemplate" [ngTemplateOutletContext]="{notes:Shared.note.unpinned}">
+      <ng-container [ngTemplateOutlet]="noteTemplate" [ngTemplateOutletContext]="{notes:Shared.note.unpinned, group:'unpinned'}">
       </ng-container>
     </div>
     @if (hasMoreServerNotes() && pageNotes.length) {
@@ -140,13 +140,28 @@
 </div>
 
 <!--*  note template -->
-<ng-template #noteTemplate let-notes="notes">
-  <div #noteEl class="notes-layout" [class.list-layout]="Shared.noteViewType.value === 'list'">
+<ng-template #noteTemplate let-notes="notes" let-group="group">
+  <div #noteEl class="notes-layout" [attr.data-list-group]="group"
+    [class.list-layout]="Shared.noteViewType.value === 'list'"
+    [class.virtual-grid-layout]="isVirtualGridEnabled()"
+    [style.height.px]="isVirtualGridEnabled() ? gridNoteWindow(notes | notesTools:currentPageName:Shared.searchQuery:Shared.searchScope.value, group).totalHeight : null">
     @let filteredNotes = notes | notesTools:currentPageName:Shared.searchQuery:Shared.searchScope.value;
-    @for (note of visibleNotes(filteredNotes); track note.id) {
+    @let isListView = Shared.noteViewType.value === 'list';
+    @let isVirtualGrid = isVirtualGridEnabled();
+    @let listWindow = noteListWindow(filteredNotes, group);
+    @let gridWindow = gridNoteWindow(filteredNotes, group);
+    @let renderedNoteList = isListView ? listWindow.notes : (isVirtualGrid ? gridWindow.notes : visibleNotes(filteredNotes));
+    @if (isListView) {
+      <div class="note-list-spacer" [style.height.px]="listWindow.topSpacer" aria-hidden="true"></div>
+    }
+    @for (note of renderedNoteList; track note.syncId || note.id) {
       <div #noteEL class="note-container" [class.selected]="Shared.isNoteSelected(note.id)"
         [class.note-dragging]="draggedNoteId === note.id"
         [attr.data-note-id]="note.id"
+        [attr.data-note-key]="note.syncId || note.id"
+        [class.virtual-grid-card]="isVirtualGrid"
+        [style.width.px]="isVirtualGrid ? gridWindow.columnWidth : null"
+        [style.transform]="isVirtualGrid ? gridCardTransform(note, group) : null"
         [draggable]="canReorderNote(note)"
         (dragstart)="noteDragStart(note,$event)"
         (dragover)="noteDragOver(note,notes,$event)"
@@ -160,7 +175,7 @@
           <span class="note-badge"
           [innerText]="note.archived ? 'archive': (note.trashed ? 'trash' : '') "></span>
         }
-          <app-note-card-preview [note]="note" [meta]="noteCardMeta(note)"
+         <app-note-card-preview [note]="note" [meta]="noteCardMeta(note)"
             [lockedPreviewHidden]="noteLock.lockPreviewHidden(note)"
             [moveCompletedChecklistItemsToBottom]="preferences.value.moveCompletedChecklistItemsToBottom"
             [ownerOnline]="note.ownerOnline === true"
@@ -170,7 +185,7 @@
             (downloadImage)="downloadImage($event.image.dataUrl, $event.image.name, $event.event)"
             (downloadInlineImage)="downloadInlineImage($event)"
             (removeLabel)="removeLabel($event.note, $event.label)"
-            (downloadAttachment)="downloadAttachment($event.attachment, $event.event)"></app-note-card-preview>
+         (downloadAttachment)="downloadAttachment($event.attachment, $event.event)"></app-note-card-preview>
         <app-note-card-actions [note]="note"
           [activeReminder]="getActiveReminderForNote(note.id!)"
           [displayedReminder]="getDisplayedReminderForNote(note.id!)"
@@ -194,8 +209,11 @@
         (selectionChanged)="toggleSelection($event.note, $event.event)"
         (pinChanged)="togglePin($event.noteId, $event.pinned)"></app-note-card-controls>
     </div>
+    @if (isListView) {
+      <div class="note-list-spacer" [style.height.px]="listWindow.bottomSpacer" aria-hidden="true"></div>
+    }
   }
-  @if (canShowMoreLoadedNotes(filteredNotes)) {
+  @if (!isListView && !isVirtualGrid && canShowMoreLoadedNotes(filteredNotes)) {
     <button type="button" class="load-more-notes" (click)="increaseVisibleNoteLimit()">Load more</button>
   }
 </div>

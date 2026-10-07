@@ -108,6 +108,23 @@
   }
 }
 
+.notes-layout.virtual-grid-layout {
+  box-sizing: border-box;
+  position: relative;
+
+  .note-container.virtual-grid-card {
+    left: 0;
+    margin: 0;
+    position: absolute;
+    top: 0;
+  }
+}
+
+.note-list-spacer {
+  width: 1px;
+  pointer-events: none;
+}
+
 .pull-refresh-indicator {
   align-items: center;
   background: rgba(32, 33, 36, 0.92);

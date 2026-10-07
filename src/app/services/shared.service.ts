@@ -7,6 +7,7 @@ import { LabelI, LabelModelI } from '../interfaces/labels';
 import { bgColors, bgImages } from '../interfaces/tooltip';
 import { AuthService } from './auth.service';
 import { ReminderService } from './reminder.service';
+import { NotesStoreService } from './notes-store.service';
 import { createPopper, type Placement } from '@popperjs/core';
 import { environment } from 'src/environments/environment';
 declare var Snackbar: any
@@ -35,8 +36,10 @@ export class SharedService {
     private Labels: LabelsService,
     private auth: AuthService,
     private reminders: ReminderService,
-    private ngZone: NgZone
+    private ngZone: NgZone,
+    private notesStore: NotesStoreService
   ) {
+    this.note = this.createNoteModel();
     // Wire the result subscriptions once. Loads happen in response to
     // currentUser$ — that way a fresh login (or a session that arrives
     // after async auth bootstrap, common on iOS Safari/PWA) triggers a
@@ -53,10 +56,6 @@ export class SharedService {
       next: (result: NoteI[] | null) => {
         if (result === null) return;
         this.ngZone.run(() => {
-          const ordered = [...result]
-          this.note.pinned = ordered.filter(x => x.pinned === true)
-          this.note.unpinned = ordered.filter(x => x.pinned === false)
-          this.note.all = ordered
           this.refreshLabelList();
           this.refreshBinderList();
         })
@@ -79,9 +78,6 @@ export class SharedService {
       } else {
         // Logout: clear the in-memory mirror so the next user doesn't
         // briefly see the previous account's notes.
-        this.note.pinned = []
-        this.note.unpinned = []
-        this.note.all = []
         this.serverLabels = []
         this.label.list = []
         this.binder.list = []
@@ -357,47 +353,64 @@ export class SharedService {
 
   // ? note -------------------------------------------------
 
-  note: NoteModelI = {
-    id: -1,
-    pinned: [],
-    unpinned: [],
-    all: [],
-    db: {
-      add: (data: NoteI) => this.Notes.add(data),
-      update: (data: NoteI) => this.Notes.update(data, this.note.id),
-      updateKey: (data: UpdateKeyI) => this.Notes.updateKey(data, this.note.id),
-      updateAllLabels: (labelId: number, labelValue: string) => this.Notes.updateAllLabels(labelId, labelValue),
-      uploadImage: (file: File) => this.Notes.uploadImage(file),
-      uploadAttachment: (noteId: number, file: File) => this.Notes.uploadAttachment(noteId, file),
-      deleteAttachment: (noteId: number, attachmentId: number) => this.Notes.deleteAttachment(noteId, attachmentId),
-      downloadAttachment: (attachment) => this.Notes.downloadAttachment(attachment),
-      get: () => this.Notes.get(this.note.id),
-      listShareUsers: () => this.Notes.listShareUsers(),
-      getCollaborators: () => this.Notes.getCollaborators(this.note.id),
-      updateCollaborators: (userIds: number[]) => this.Notes.updateCollaborators(this.note.id, userIds),
-      reorder: (ids: number[]) => this.Notes.reorder(ids),
-      clone: () => this.Notes.clone(this.note.id),
-      delete: () => this.Notes.delete(this.note.id),
-      trash: async () => {
-        const note = this.note.all.find(n => n.id === this.note.id)
-        if (note?.isDemo) {
-          const otherDemoNotes = this.note.all.filter(n => n.isDemo && n.id !== this.note.id)
-          if (otherDemoNotes.length > 0) {
-            if (confirm('Would you like to delete the rest of the demo notes, too?')) {
-              const demoNotes = this.note.all.filter(n => n.isDemo)
-              for (const dn of demoNotes) {
-                await this.Notes.updateKey({ trashed: true, archived: false }, dn.id!)
+  note!: NoteModelI
+
+  private noteSections() {
+    return { pinned: this.notesStore.pinnedNotes(), unpinned: this.notesStore.unpinnedNotes() };
+  }
+
+  private createNoteModel(): NoteModelI {
+    const shared = this;
+    return {
+      id: -1,
+      get all() { return shared.notesStore.allNotes(); },
+      set all(notes: NoteI[]) {
+        shared.notesStore.publish(notes);
+      },
+      get pinned() { return shared.noteSections().pinned; },
+      set pinned(notes: NoteI[]) {
+        const unpinned = shared.noteSections().unpinned;
+        shared.note.all = [...notes, ...unpinned];
+      },
+      get unpinned() { return shared.noteSections().unpinned; },
+      set unpinned(notes: NoteI[]) {
+        const pinned = shared.noteSections().pinned;
+        shared.note.all = [...pinned, ...notes];
+      },
+      db: {
+        add: (data: NoteI) => shared.Notes.add(data),
+        update: (data: NoteI) => shared.Notes.update(data, shared.note.id),
+        updateKey: (data: UpdateKeyI) => shared.Notes.updateKey(data, shared.note.id),
+        updateAllLabels: (labelId: number, labelValue: string) => shared.Notes.updateAllLabels(labelId, labelValue),
+        uploadImage: (file: File) => shared.Notes.uploadImage(file),
+        uploadAttachment: (noteId: number, file: File) => shared.Notes.uploadAttachment(noteId, file),
+        deleteAttachment: (noteId: number, attachmentId: number) => shared.Notes.deleteAttachment(noteId, attachmentId),
+        downloadAttachment: (attachment) => shared.Notes.downloadAttachment(attachment),
+        get: () => shared.Notes.get(shared.note.id),
+        listShareUsers: () => shared.Notes.listShareUsers(),
+        getCollaborators: () => shared.Notes.getCollaborators(shared.note.id),
+        updateCollaborators: (userIds: number[]) => shared.Notes.updateCollaborators(shared.note.id, userIds),
+        reorder: (ids: number[]) => shared.Notes.reorder(ids),
+        clone: () => shared.Notes.clone(shared.note.id),
+        delete: () => shared.Notes.delete(shared.note.id),
+        trash: async () => {
+          const note = shared.note.all.find(candidate => candidate.id === shared.note.id);
+          if (note?.isDemo) {
+            const otherDemoNotes = shared.note.all.filter(candidate => candidate.isDemo && candidate.id !== shared.note.id);
+            if (otherDemoNotes.length > 0 && confirm('Would you like to delete the rest of the demo notes, too?')) {
+              const demoNotes = shared.note.all.filter(candidate => candidate.isDemo);
+              for (const demo of demoNotes) {
+                await shared.Notes.updateKey({ trashed: true, archived: false }, demo.id!);
               }
-              this.snackBar({ action: 'trashed all demo notes', opposite: 'restored' }, { trashed: false }, this.note.id)
-              return
+              shared.snackBar({ action: 'trashed all demo notes', opposite: 'restored' }, { trashed: false }, shared.note.id);
+              return;
             }
           }
+          await shared.note.db.updateKey({ trashed: true, archived: false });
+          shared.snackBar({ action: 'trashed', opposite: 'restored' }, { trashed: false }, shared.note.id);
         }
-        await this.note.db.updateKey({ trashed: true, archived: false })
-        this.snackBar({ action: 'trashed', opposite: 'restored' }, { trashed: false }, this.note.id)
-      },
-    },
-
+      }
+    };
   }
 
   private async createExampleNotes() {
