@@ -30,4 +30,28 @@ describe('NoteMasonryWindowModel', () => {
     expect(model.placement('a')?.height).toBe(220);
     expect(model.placement('a')?.index).toBe(1);
   });
+
+  it('serves the newest note objects when the same cards are set again with unchanged geometry', () => {
+    const model = new NoteMasonryWindowModel<{ id: string; title: string }>();
+    const first = [{ id: 'a', title: 'old a' }, { id: 'b', title: 'old b' }];
+    model.setItems(first, row => row.id, () => 100, 2, 200, 8);
+    const second = [{ id: 'a', title: 'new a' }, { id: 'b', title: 'old b' }];
+
+    expect(model.setItems(second, row => row.id, () => 100, 2, 200, 8)).toBeFalse();
+
+    expect(model.window(0, 500).placements.map(item => item.item.title)).toEqual(['new a', 'old b']);
+    expect(model.placement('a')?.item).toBe(second[0]);
+  });
+
+  it('moves later cards when a card above grows after its media loads', () => {
+    const model = new NoteMasonryWindowModel<{ id: string }>();
+    const rows = ['a', 'b', 'c', 'd'].map(id => ({ id }));
+    model.setItems(rows, row => row.id, () => 100, 1, 200, 10);
+    expect(model.placement('c')?.top).toBe(220);
+
+    model.measureMany([{ key: 'a', height: 300 }]);
+
+    expect(model.placement('c')?.top).toBe(420);
+    expect(model.window(430, 50, 0).placements.map(item => item.key)).toEqual(['c']);
+  });
 });

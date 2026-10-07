@@ -32,7 +32,12 @@ export class NoteMasonryWindowModel<T> {
     const nextColumns = Math.max(1, columnCount);
     const nextWidth = Math.max(1, columnWidth);
     const nextGutter = Math.max(0, gutter);
-    if (this.sameLayout(keys, nextColumns, nextWidth, nextGutter)) return false;
+    if (this.sameLayout(keys, nextColumns, nextWidth, nextGutter)) {
+      // Same cards in the same places, but the note objects may be newer versions: never serve stale ones.
+      this.items = items;
+      for (let index = 0; index < items.length; index++) this.placementsByKey.get(keys[index])!.item = items[index];
+      return false;
+    }
     const measured = new Map(this.keys.map((key, index) => [key, this.heights[index]]));
     this.keys = keys;
     this.items = items;

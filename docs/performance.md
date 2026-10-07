@@ -38,7 +38,7 @@ The scroll counter is a repeatable synthetic interaction proxy, not a measuremen
 
 On the available headless Chromium 154 environment, the post-refactor 240-note harness run reported about **41 ms of `ScriptDuration`** over its synthetic 120-frame scroll sequence, 21 layout passes during the viewport resize, 28 style recalculations, no mobile card overlap, and no browser exceptions. Previous temporary runs measured about 59 ms scripting after the first scroll optimizations and about 809 ms before them. These are directional results from this local synthetic setup, not directly comparable device latency or a release performance guarantee.
 
-The smoke checks cover list/grid switching, sidebar resize, search/clear, lazy settings-chunk loading, unchanged-note close without a detail read/write, and reduced-motion editor closure. The production build also reports which auth/admin route chunks are deferred.
+The smoke checks cover list/grid switching, sidebar resize, search/clear, keyboard open of a focused card with focus returning to it on close, lazy settings-chunk loading, unchanged-note close without a detail read/write, and reduced-motion editor closure. The production build also reports which auth/admin route chunks are deferred.
 
 After migration to the application builder, the current production build emits a 1.47 MB initial bundle (~288 KB estimated transfer), with settings and auth/admin code in separate lazy chunks. The previous browser-builder output was about 1.60 MB initial (~317 KB estimated transfer) in the same workspace. The new initial budget warns at 1.6 MB and errors at 1.75 MB; individual scripts warn at 800 KB and error at 900 KB.
 

@@ -105,6 +105,13 @@ export class NoteCardPreviewComponent {
     return value;
   }
 
+  /** Enter/Space on the card itself opens it; the same keys on a control inside the card keep their own meaning. */
+  openFromKeyboard(event: Event) {
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    this.open.emit(this.note);
+  }
+
   checkboxIndentPx(checkbox: CheckboxI) {
     return normalizeIndentLevel(checkbox.indentLevel) * 28;
   }

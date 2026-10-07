@@ -467,6 +467,17 @@ async function run() {
     assert.equal(noteWritesAfterClose, noteWritesBeforeClose, 'Closing an unchanged note issued a note write.');
     smoke.push('unchanged note closes without network reads');
 
+    // Keyboard: Enter on a focused card opens it, and closing returns focus to that card.
+    const keyboardKey = await evaluate(`(() => { const card = document.querySelector('app-notes .note-container .note-preview-open'); card.focus(); const key = card.closest('.note-container').dataset.noteKey; card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return key; })()`);
+    await sleep(detailDelay + 150);
+    assert(await evaluate(`!!document.querySelector('app-notes .modal app-input')`), 'Enter on a focused card did not open the editor.');
+    await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    for (let attempt = 0; attempt < 20 && await evaluate(`document.querySelector('app-notes .modal-container').style.display !== 'none'`); attempt++) await sleep(50);
+    await sleep(500);
+    assert.equal(await evaluate(`document.activeElement?.classList.contains('note-preview-open') && document.activeElement.closest('.note-container')?.dataset.noteKey`), keyboardKey,
+      'Closing the editor did not return focus to the card it was opened from.');
+    smoke.push('keyboard open and focus return');
+
     await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     await evaluate(`document.querySelector('app-notes .note-container .title').click()`);
     await sleep(500);

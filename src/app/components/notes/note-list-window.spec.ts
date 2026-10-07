@@ -36,4 +36,28 @@ describe('NoteListWindowModel', () => {
     expect(visible.end - visible.start).toBeLessThan(20);
     expect(visible.topSpacer + visible.bottomSpacer + (visible.end - visible.start) * 120).toBe(1_200_000);
   });
+
+  it('keeps measured heights when a pin or reorder moves a row, and re-windows around the new order', () => {
+    const model = new NoteListWindowModel<{ id: string }>();
+    const rows = ['a', 'b', 'c', 'd', 'e'].map(id => ({ id }));
+    model.setItems(rows, row => row.id, () => 100);
+    model.measure('e', 400);
+
+    // Pinning 'e' moves it to the top: its measured height travels with it.
+    expect(model.setItems([rows[4], ...rows.slice(0, 4)], row => row.id, () => 100)).toBeTrue();
+
+    const top = model.window(0, 300, 0);
+    expect(model.keyAt(0)).toBe('e');
+    expect(top.start).toBe(0);
+    expect(top.end).toBe(1);
+    expect(top.totalHeight).toBe(800);
+    expect(model.window(400, 100, 0).start).toBe(1);
+  });
+
+  it('reports no change for an identical key order so an unrelated publication does not re-window', () => {
+    const model = new NoteListWindowModel<{ id: string }>();
+    const rows = ['a', 'b'].map(id => ({ id }));
+    expect(model.setItems(rows, row => row.id, () => 100)).toBeTrue();
+    expect(model.setItems(rows.map(row => ({ ...row })), row => row.id, () => 100)).toBeFalse();
+  });
 });

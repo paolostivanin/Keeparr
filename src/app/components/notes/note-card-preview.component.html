@@ -12,7 +12,8 @@
     </div>
   }
 
-  <div class="note-preview-open" (click)="open.emit(note)">
+  <div class="note-preview-open" tabindex="0" role="button" [attr.aria-label]="'Open note ' + (note.noteTitle || '')"
+    (click)="open.emit(note)" (keydown.enter)="openFromKeyboard($event)" (keydown.space)="openFromKeyboard($event)">
     @let view = presentation;
     @if (lockedPreviewHidden) {
       @if (view.hasVisibleTitle) {

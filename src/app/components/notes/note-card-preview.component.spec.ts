@@ -80,6 +80,24 @@ describe('NoteCardPreviewComponent', () => {
     expect(cards[1].nativeElement.querySelector('.title').textContent.trim()).toBe('Updated note');
   });
 
+  it('opens from the keyboard on the card itself but not from keys pressed in a control inside it', () => {
+    const card = fixture.debugElement.queryAll(By.directive(NoteCardPreviewComponent))[0];
+    const open = jasmine.createSpy('open');
+    card.componentInstance.open.subscribe(open);
+    const target = card.nativeElement.querySelector('.note-preview-open') as HTMLElement;
+    expect(target.tabIndex).toBe(0);
+
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    expect(open).toHaveBeenCalledTimes(2);
+
+    const inner = document.createElement('button');
+    target.appendChild(inner);
+    inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(open).toHaveBeenCalledTimes(2);
+    inner.remove();
+  });
+
   it('emits the complete note when its preview is opened', () => {
     const card = fixture.debugElement.queryAll(By.directive(NoteCardPreviewComponent))[0];
     const open = jasmine.createSpy('open');

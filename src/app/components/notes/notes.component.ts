@@ -14,6 +14,7 @@ import { ReminderService } from 'src/app/services/reminder.service';
 import { ReminderRepeatRule, ReminderRepeatType } from 'src/app/interfaces/reminder';
 import { NoteIncompleteError, NotesService } from 'src/app/services/notes.service';
 import { notesChangeLayout, reminderChipKey } from 'src/app/utils/note-presence';
+import { dragAutoScrollDelta } from 'src/app/utils/drag-autoscroll';
 import { TimepickerUI, type ConfirmEventData } from 'timepicker-ui';
 import { NotesToolsPipe } from 'src/app/pipes/notes-tools.pipe';
 import { isExpandedNativeFoldable, isNativePhonePlatform, shouldUseFullscreenNoteEditor } from 'src/app/utils/platform';
@@ -761,7 +762,10 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     const sectionTop = layout.getBoundingClientRect().top + window.scrollY;
     const range = cached.model.window(window.scrollY - sectionTop, window.innerHeight, Math.max(400, Math.floor(window.innerHeight * 0.66)));
     const signature = `${range.totalHeight}|${range.placements.map(item => item.key).join('\u0000')}`;
-    if (signature !== cached.signature) {
+    // A new version of a visible note changes neither keys nor geometry but must still reach the card.
+    const staleItems = cached.result.notes.length !== range.placements.length
+      || range.placements.some((item, index) => cached!.result.notes[index] !== item.item);
+    if (signature !== cached.signature || staleItems) {
       cached.signature = signature;
       cached.result = { ...range, notes: range.placements.map(item => item.item) };
     }
@@ -776,7 +780,8 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     return `translate3d(${left}px, ${placement.top}px, 0)`;
   }
 
-  private measureGridCards(entries: ResizeObserverEntry[]) {
+  /** Apply measured card heights; content above the viewport that grows or shrinks (late media) keeps the visible cards still. */
+  private measureGridNoteCards(entries: ResizeObserverEntry[]) {
     let changed = false;
     const grouped = new Map<string, Array<{ key: string; height: number }>>();
     for (const entry of entries) {
@@ -851,28 +856,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (!cached || !measurement) return false;
     if (measurement.index < cached.start && card.getBoundingClientRect().bottom <= 0) window.scrollBy(0, measurement.delta);
     return true;
-  }
-
-  private measureGridNoteCards(entries: ResizeObserverEntry[]) {
-    let changed = false;
-    const measurementsByGroup = new Map<string, Array<{ key: string; height: number }>>();
-    for (const entry of entries) {
-      const card = entry.target as HTMLElement;
-      const key = card.dataset['noteKey'];
-      const group = card.closest<HTMLElement>('.notes-layout')?.dataset['listGroup'];
-      if (!key || !group || entry.contentRect.height <= 0) continue;
-      const measurements = measurementsByGroup.get(group) || [];
-      measurements.push({ key, height: entry.contentRect.height });
-      measurementsByGroup.set(group, measurements);
-    }
-    for (const [group, measurements] of measurementsByGroup) {
-      const cached = this.gridWindows.get(group);
-      if (!cached || !cached.model.measureMany(measurements)) continue;
-      cached.signature = '';
-      this.gridNoteWindow(cached.source, group);
-      changed = true;
-    }
-    return changed;
   }
 
   canShowMoreLoadedNotes(notes: NoteI[]) {
@@ -1024,6 +1007,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.openImagePickerOnModal = openImagePicker
     this.Shared.note.id = noteData.id!
     this.clickedNoteEl = clickedNote || undefined
+    // Opened from the keyboard (focus is inside the card): return focus to that card when the editor closes.
+    this.focusReturnNoteKey = clickedNote && clickedNote.contains(document.activeElement) && document.activeElement !== document.body
+      ? clickedNote.dataset['noteKey'] : undefined
     const source = clickedNote?.getBoundingClientRect()
     this.suppressScrollPagination()
     this.captureModalScrollPosition()
@@ -1159,6 +1145,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.editorLoadError = ''
       this.modal.nativeElement.removeAttribute('style')
       this.restoreModalScrollPosition()
+      this.restoreCardFocus()
       this.scheduleIPadMasonrySettle()
       this.schedulePostModalPaginationCheck()
       this.suppressScrollPagination()
@@ -1168,6 +1155,25 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   private suppressScrollPagination(durationMs = 1200) {
     this.suppressScrollPaginationUntil = Math.max(this.suppressScrollPaginationUntil, Date.now() + durationMs)
+  }
+
+  private focusReturnNoteKey?: string
+
+  /**
+   * Put keyboard focus back on the card the editor was opened from. A card outside the current
+   * render window is not mounted, so it is focused once the scroll restore has brought it back.
+   */
+  private restoreCardFocus() {
+    const key = this.focusReturnNoteKey
+    this.focusReturnNoteKey = undefined
+    if (!key) return
+    const focus = () => {
+      const target = this.mainContainer?.nativeElement.querySelector<HTMLElement>(`.note-container[data-note-key="${CSS.escape(key)}"] .note-preview-open`)
+      target?.focus({ preventScroll: true })
+      return !!target
+    }
+    if (focus()) return
+    setTimeout(() => requestAnimationFrame(() => { focus() }), 160)
   }
 
   private captureModalScrollPosition() {
@@ -1718,10 +1724,31 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.touchDragLastY = t.clientY
       this.fastUpdateGhost(t.clientX, t.clientY)
       this.scheduleReorderTick()
+      this.ensureTouchAutoScroll()
     }
     document.addEventListener('touchmove', this.touchDragMoveListener, { passive: false })
 
     try { (navigator as any).vibrate?.(15) } catch {}
+  }
+
+  private touchAutoScrollFrame?: number
+
+  /**
+   * Scroll the page while the dragged finger rests in an edge zone, so a card can be carried past what
+   * is mounted; each step re-tests the card under the finger because the virtual window moves with it.
+   */
+  private ensureTouchAutoScroll() {
+    if (this.touchAutoScrollFrame != null) return
+    const step = () => {
+      this.touchAutoScrollFrame = undefined
+      if (!this.touchDragNote) return
+      const delta = dragAutoScrollDelta(this.touchDragLastY, window.innerHeight)
+      if (!delta) return
+      window.scrollBy(0, delta)
+      this.scheduleReorderTick()
+      this.touchAutoScrollFrame = requestAnimationFrame(step)
+    }
+    this.touchAutoScrollFrame = requestAnimationFrame(step)
   }
 
   private touchDragLastX = 0
@@ -1798,6 +1825,10 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (this.touchDragMoveListener) {
       document.removeEventListener('touchmove', this.touchDragMoveListener)
       this.touchDragMoveListener = undefined
+    }
+    if (this.touchAutoScrollFrame != null) {
+      cancelAnimationFrame(this.touchAutoScrollFrame)
+      this.touchAutoScrollFrame = undefined
     }
 
     // Re-enable normal page scrolling / pinch-zoom (the latter still gated
