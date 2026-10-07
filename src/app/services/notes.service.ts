@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { editorSessionKey, type EditorSessionRecord, type EditorSessionStorage } from '../utils/editor-session';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { BehaviorSubject, firstValueFrom, Subscription } from 'rxjs';
+import { BehaviorSubject, firstValueFrom, Subscription, takeUntil } from 'rxjs';
 
 export interface LinkPreviewData {
   title: string;
@@ -42,6 +42,7 @@ import { OfflineSyncService } from './offline-sync.service';
 import { UserPreferencesService } from './user-preferences.service';
 import { NotesStoreService } from './notes-store.service';
 import { withPresence } from '../utils/note-presence';
+import { RequestGate, StaleRequestError, type RequestTicket } from '../utils/request-gate';
 
 const KeptDownloads = registerPlugin<KeptDownloadsPlugin>('KeptDownloads');
 
@@ -64,6 +65,12 @@ export class NoteIncompleteError extends Error {
   providedIn: 'root'
 })
 export class NotesService {
+  /** Versions search/page/refresh requests so only the latest may publish the collection. */
+  private readonly listGate = new RequestGate();
+  /** Orders cache projections: an older, slower one must never overwrite a newer one. */
+  private cacheProjectionSerial = 0;
+  /** Bumped on every publication so read-modify-write publishers can detect interleaving. */
+  private publicationSerial = 0;
   private readonly apiUrl = `${environment.apiUrl}/notes`;
   private readonly noteWriteTimeoutMs = 5500;
   private readonly mediaUploadTimeoutMs = 12000;
@@ -114,6 +121,9 @@ export class NotesService {
       }
     });
     this.authSubscription = this.auth.currentUser$.subscribe(user => {
+      // Anything in flight belongs to the previous profile.
+      this.listGate.invalidate();
+      this.cacheProjectionSerial++;
       this.disconnectRealtime();
       if (user?.token) {
         this.connectRealtime(user.token);
@@ -133,19 +143,22 @@ export class NotesService {
 
   async load(searchQuery = this.searchQuery, options: NotesLoadOptions = {}) {
     if (this.isLoading) {
+      // Newer work for a different query supersedes the request in flight instead of waiting for it.
+      if (searchQuery !== this.searchQuery) this.listGate.invalidate();
       this.pendingLoadQuery = searchQuery;
       return new Promise<void>(resolve => this.pendingLoadWaiters.push(resolve));
     }
     this.isLoading = true;
     this.loading = true;
     this.loadError = false;
+    const ticket = this.listGate.begin();
     try {
       if (searchQuery !== this.searchQuery) this.nextCursor = null;
       this.searchQuery = searchQuery;
-      await this.publishCachedNotes(searchQuery);
-      const requestedQuery = searchQuery;
-      const page = await this.loadCardPageWithRetry(requestedQuery, options.cacheBust);
-      if (requestedQuery !== this.searchQuery) return;
+      await this.publishCachedNotes(searchQuery, ticket);
+      ticket.assertCurrent();
+      const page = await this.loadCardPageWithRetry(searchQuery, ticket, options.cacheBust);
+      ticket.assertCurrent();
       this.nextCursor = page.nextCursor;
       this.hasLoaded = true;
       const notes = this.withOptimisticNotes(page.notes);
@@ -154,8 +167,11 @@ export class NotesService {
       notes.forEach(note => this.cacheNoteMedia(note).catch(console.error));
       this.offlineSync.syncNow({ bootstrapIfEmpty: true }).catch(console.error);
     } catch (error) {
-      this.loadError = !this.notesList$.value?.length;
-      if (navigator.onLine) console.error(error);
+      // A superseded request is not a failure of the list.
+      if (!(error instanceof StaleRequestError)) {
+        this.loadError = !this.notesList$.value?.length;
+        if (navigator.onLine) console.error(error);
+      }
     } finally {
       this.isLoading = false;
       this.loading = false;
@@ -169,21 +185,34 @@ export class NotesService {
     }
   }
 
-  private async loadCardPageWithRetry(searchQuery: string, cacheBust = false) {
+  /** One card-page request, cancelled at the network level when its ticket expires. */
+  private async fetchCardPage(params: Record<string, string>, ticket: RequestTicket) {
+    try {
+      return await firstValueFrom(this.http.get<NotesCardPage>(this.apiUrl, {
+        headers: this.auth.authHeaders(),
+        params
+      }).pipe(takeUntil(ticket.expired$)));
+    } catch (error) {
+      // takeUntil completes without a value, which firstValueFrom reports as EmptyError.
+      if (!ticket.current) throw new StaleRequestError();
+      throw error;
+    }
+  }
+
+  private async loadCardPageWithRetry(searchQuery: string, ticket: RequestTicket, cacheBust = false) {
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const params: Record<string, string> = { view: 'card', limit: String(this.cardPageSize) };
         if (searchQuery.trim()) params['q'] = searchQuery.trim();
         if (cacheBust) params['_'] = String(Date.now());
-        return await firstValueFrom(this.http.get<NotesCardPage>(this.apiUrl, {
-          headers: this.auth.authHeaders(),
-          params
-        }));
+        return await this.fetchCardPage(params, ticket);
       } catch (error) {
+        if (error instanceof StaleRequestError) throw error;
         lastError = error;
-        if (attempt === 2 || searchQuery !== this.searchQuery) break;
+        if (attempt === 2) break;
         await this.delay(250 * (attempt + 1));
+        ticket.assertCurrent();
       }
     }
     throw lastError;
@@ -198,6 +227,8 @@ export class NotesService {
     if (next === this.searchQuery) return;
     this.searchQuery = next;
     this.nextCursor = null;
+    // Results for the previous query are obsolete the moment the text changes.
+    this.listGate.invalidate();
     if (this.searchReloadTimer) clearTimeout(this.searchReloadTimer);
     this.searchReloadTimer = setTimeout(() => {
       this.searchReloadTimer = undefined;
@@ -217,20 +248,21 @@ export class NotesService {
     if (!this.nextCursor || this.isLoading || this.isLoadingNextPage) return;
     this.isLoadingNextPage = true;
     try {
-      const requestedQuery = this.searchQuery;
+      // Belongs to the list it was requested for: a refresh, new query or new
+      // account expires it, so an old cursor can never rewind the new list.
+      const ticket = this.listGate.current();
       const params: Record<string, string> = { view: 'card', limit: String(this.cardPageSize), cursor: this.nextCursor };
       if (this.searchQuery.trim()) params['q'] = this.searchQuery.trim();
-      const page = await firstValueFrom(this.http.get<NotesCardPage>(this.apiUrl, {
-        headers: this.auth.authHeaders(),
-        params
-      }));
-      if (requestedQuery !== this.searchQuery) return;
+      const page = await this.fetchCardPage(params, ticket);
+      if (!ticket.current) return;
       this.nextCursor = page.nextCursor;
       const current = this.notesList$.value || [];
       const seen = new Set(current.map(note => note.id).filter(Boolean));
       const merged = [...current, ...page.notes.filter(note => !note.id || !seen.has(note.id))];
       this.publishNotes(merged);
       this.queueLinkPreviewPreload(page.notes);
+    } catch (error) {
+      if (!(error instanceof StaleRequestError)) throw error;
     } finally {
       this.isLoadingNextPage = false;
     }
@@ -344,6 +376,7 @@ export class NotesService {
 
   /** Publish changed notes without rebuilding the identity indexes or re-deriving reminder lifecycle. */
   private publishNoteDelta(next: NoteI[], upserts: readonly NoteI[]) {
+    this.publicationSerial++;
     if (next.length) this.lastNonEmptyNotes = next;
     this.notesStore.publishDelta(next, upserts, []);
   }
@@ -897,14 +930,18 @@ export class NotesService {
         const cached = this.offlineSync.partition ? await this.offlineStore.getNote(this.offlineSync.partition, id) : undefined;
         if (cached) return cached;
       }
+      const partition = this.offlineSync.partition;
       try {
         const note = await firstValueFrom(this.http.get<NoteI>(`${this.apiUrl}/${id}`, { headers: this.auth.authHeaders() }));
+        // Never cache or merge a note fetched for a profile that is no longer active.
+        if (partition !== this.offlineSync.partition) throw new StaleRequestError();
         if (this.offlineSync.partition) await this.offlineStore.putNote(this.offlineSync.partition, note);
         await this.cacheNoteMedia(note);
         await this.reminders.refreshNoteContent(note);
         if (options.merge !== false) this.mergeNoteIntoList(note);
         return note;
       } catch (error) {
+        if (error instanceof StaleRequestError) throw error;
         const cached = this.offlineSync.partition ? await this.offlineStore.getNote(this.offlineSync.partition, id) : undefined;
         if (cached) return cached;
         throw error;
@@ -956,6 +993,7 @@ export class NotesService {
   }
 
   private publishNotes(notes: NoteI[]) {
+    this.publicationSerial++;
     if (notes.length) this.lastNonEmptyNotes = notes;
     this.reminders.updateNoteLifecycle(notes);
     this.notesStore.publish(notes);
@@ -1406,17 +1444,23 @@ export class NotesService {
     }
   }
 
-  private async publishCachedNotes(searchQuery: string) {
-    if (!this.offlineSync.partition) return;
-    const cached = await this.offlineStore.listNotes(this.offlineSync.partition);
+  private async publishCachedNotes(searchQuery: string, ticket?: RequestTicket) {
+    const partition = this.offlineSync.partition;
+    if (!partition) return;
+    const serial = ++this.cacheProjectionSerial;
+    const cached = await this.offlineStore.listNotes(partition);
     const hydrated = await Promise.all(cached.map(note => this.hydrateOfflineNoteMedia(note)));
+    // Only the newest projection of the active profile may publish.
+    if (serial !== this.cacheProjectionSerial || partition !== this.offlineSync.partition || ticket?.current === false) return;
     hydrated.sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(b.sortOrder || 0) - Number(a.sortOrder || 0));
     this.hasLoaded = true;
     this.publishNotes(this.withOptimisticNotes(hydrated));
   }
 
-  private async publishChangedCachedNotes(syncIds: readonly string[], removedSyncIds: readonly string[]) {
-    if (!this.offlineSync.partition) return;
+  private async publishChangedCachedNotes(syncIds: readonly string[], removedSyncIds: readonly string[], attempt = 0): Promise<void> {
+    const partition = this.offlineSync.partition;
+    if (!partition) return;
+    const serial = this.publicationSerial;
     const current = this.notesList$.value || this.lastNonEmptyNotes;
     const oldBySyncId = new Map(current.filter(note => note.syncId).map(note => [note.syncId!, note]));
     const removed = new Set(removedSyncIds.filter(syncId => oldBySyncId.has(syncId)));
@@ -1440,10 +1484,15 @@ export class NotesService {
       changedNotes.push(hydrated);
     }
     if (!changedNotes.length && !removed.size) return;
+    if (partition !== this.offlineSync.partition) return;
+    // The list moved on while the cache was read (a page load or another change): derive again
+    // from the current list instead of overwriting it with a stale copy plus this change.
+    if (serial !== this.publicationSerial && attempt < 3) return this.publishChangedCachedNotes(syncIds, removedSyncIds, attempt + 1);
     for (const syncId of removed) {
       const noteId = oldBySyncId.get(syncId)?.id;
       if (noteId != null) this.reminders.markNoteInactive(noteId);
     }
+    this.publicationSerial++;
     if (next.length) this.lastNonEmptyNotes = next;
     this.reminders.updateNoteLifecycle(changedNotes);
     this.notesStore.publishDelta(next, changedNotes, [...removed]);

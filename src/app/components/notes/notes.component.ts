@@ -899,9 +899,13 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.lastBackfillContext = context
     if (this.pageNotes().length) return
     this.isBackfillingFilteredPage = true
+    const viewKey = `${this.currentPageName}|${this.Shared.searchQuery}|${this.Shared.searchScope.value}`
     Promise.resolve().then(async () => {
       try {
-        while (this.notesService.hasMoreNotes && !this.pageNotes().length) {
+        // Stop as soon as the user moves to another view or query: paging for the old one is obsolete.
+        while (!this.destroyed
+          && viewKey === `${this.currentPageName}|${this.Shared.searchQuery}|${this.Shared.searchScope.value}`
+          && this.notesService.hasMoreNotes && !this.pageNotes().length) {
           const before = this.Shared.note.all?.length || 0
           await this.notesService.loadNextPage()
           const after = this.Shared.note.all?.length || 0

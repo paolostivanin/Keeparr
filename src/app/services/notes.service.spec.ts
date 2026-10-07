@@ -1,6 +1,8 @@
 import { NoteI } from '../interfaces/notes';
 import { LocalNotePersistenceError, NoteIncompleteError, NotesService } from './notes.service';
-import { of, throwError } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
+import { RequestGate } from '../utils/request-gate';
+import { NotesStoreService } from './notes-store.service';
 
 const note: NoteI = {
   id: 1,
@@ -415,5 +417,165 @@ describe('NotesService narrow card updates', () => {
     (instance as any).get = async () => { throw new Error('offline'); };
     await expectAsync(instance.deleteImage(card, { id: 'a' })).toBeRejectedWithError(NoteIncompleteError);
     expect(update).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('NotesService stale request handling', () => {
+  type Pending = { params: Record<string, string>; subject: Subject<unknown>; unsubscribed: boolean };
+
+  function harness() {
+    const requests: Pending[] = [];
+    const store = new NotesStoreService();
+    const published: NoteI[][] = [];
+    const instance = Object.create(NotesService.prototype) as NotesService;
+    Object.assign(instance, {
+      apiUrl: '/api/notes',
+      cardPageSize: 80,
+      searchQuery: '',
+      nextCursor: null,
+      isLoading: false,
+      isLoadingNextPage: false,
+      loading: false,
+      loadError: false,
+      hasLoaded: false,
+      pendingLoadWaiters: [],
+      lastNonEmptyNotes: [],
+      listGate: new RequestGate(),
+      cacheProjectionSerial: 0,
+      publicationSerial: 0,
+      notesStore: store,
+      notesList$: store.notes$,
+      auth: { authHeaders: () => ({}) },
+      offlineSync: { partition: 'p', syncNow: () => Promise.resolve() },
+      http: {
+        get: (_url: string, options: { params: Record<string, string> }) => new Observable(subscriber => {
+          const subject = new Subject<unknown>();
+          const pending: Pending = { params: options.params, subject, unsubscribed: false };
+          requests.push(pending);
+          const inner = subject.subscribe(subscriber);
+          return () => { pending.unsubscribed = true; inner.unsubscribe(); };
+        })
+      }
+    });
+    (instance as any).publishCachedNotes = async () => undefined;
+    (instance as any).publishNotes = (notes: NoteI[]) => { (instance as any).publicationSerial++; published.push(notes); store.publish(notes); };
+    (instance as any).queueLinkPreviewPreload = () => undefined;
+    (instance as any).cacheNoteMedia = async () => undefined;
+    (instance as any).withOptimisticNotes = (notes: NoteI[]) => notes;
+    return { instance, requests, published, store };
+  }
+
+  const card = (id: number): NoteI => ({ ...note, id, syncId: `n${id}`, noteTitle: `Note ${id}` });
+  const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+  it('cancels the request for an old query and never publishes its result when the query changes', async () => {
+    const { instance, requests, published } = harness();
+    const first = instance.load('alpha');
+    await tick();
+    expect(requests[0].params['q']).toBe('alpha');
+
+    instance.setSearchQuery('beta');
+    await first;
+    expect(requests[0].unsubscribed).toBeTrue();
+    expect(published).toEqual([]);
+    expect((instance as any).loadError).toBeFalse();
+
+    const second = instance.load('beta');
+    await tick();
+    requests[1].subject.next({ notes: [card(2)], nextCursor: null });
+    requests[1].subject.complete();
+    await second;
+    expect(published.length).toBe(1);
+    expect(published[0].map(item => item.id)).toEqual([2]);
+  });
+
+  it('supersedes a load in flight when another query is requested, then loads only the newer one', async () => {
+    const { instance, requests, published } = harness();
+    const first = instance.load('alpha');
+    await tick();
+    const second = instance.load('beta');
+    await tick();
+    expect(requests[0].unsubscribed).toBeTrue();
+    expect(requests.length).toBe(2);
+    expect(requests[1].params['q']).toBe('beta');
+    requests[1].subject.next({ notes: [card(7)], nextCursor: 'c1' });
+    requests[1].subject.complete();
+    await Promise.all([first, second]);
+    expect(published.map(list => list.map(item => item.id))).toEqual([[7]]);
+    expect((instance as any).nextCursor).toBe('c1');
+  });
+
+  it('discards a next page that was requested before a refresh and does not rewind the cursor', async () => {
+    const { instance, requests, published } = harness();
+    (instance as any).nextCursor = 'old-cursor';
+    (instance as any).notesStore.publish([card(1)]);
+    const paging = instance.loadNextPage();
+    await tick();
+    expect(requests[0].params['cursor']).toBe('old-cursor');
+
+    const refresh = instance.load('');
+    await tick();
+    expect(requests[0].unsubscribed).toBeTrue();
+    requests[1].subject.next({ notes: [card(10), card(11)], nextCursor: 'fresh-cursor' });
+    requests[1].subject.complete();
+    await Promise.all([paging, refresh]);
+
+    expect((instance as any).nextCursor).toBe('fresh-cursor');
+    expect(published.map(list => list.map(item => item.id))).toEqual([[10, 11]]);
+  });
+
+  it('drops in-flight results for a previous account', async () => {
+    const { instance, requests, published } = harness();
+    const pending = instance.load('');
+    await tick();
+    (instance as any).listGate.invalidate();
+    await pending;
+    expect(requests[0].unsubscribed).toBeTrue();
+    expect(published).toEqual([]);
+  });
+
+  it('lets only the newest cache projection publish when an older one finishes later', async () => {
+    const { instance, published } = harness();
+    delete (instance as any).publishCachedNotes;
+    const releases: Array<() => void> = [];
+    (instance as any).offlineStore = {
+      listNotes: () => new Promise<NoteI[]>(resolve => { releases.push(() => resolve([card(releases.length)])); })
+    };
+    (instance as any).hydrateOfflineNoteMedia = async (value: NoteI) => value;
+
+    const older = (instance as any).publishCachedNotes('');
+    const newer = (instance as any).publishCachedNotes('');
+    releases[1]();
+    await newer;
+    releases[0]();
+    await older;
+
+    expect(published.length).toBe(1);
+  });
+
+  it('re-derives a changed-note publication when the list moved on while the cache was read', async () => {
+    const { instance, published, store } = harness();
+    store.publish([card(1)]);
+    const reads: Array<() => void> = [];
+    (instance as any).offlineStore = {
+      getNoteBySyncId: () => new Promise<NoteI | undefined>(resolve => { reads.push(() => resolve({ ...card(2), noteTitle: 'Changed' })); })
+    };
+    (instance as any).hydrateOfflineNoteMedia = async (value: NoteI) => value;
+    (instance as any).reminders = { markNoteInactive: () => undefined, updateNoteLifecycle: () => undefined };
+
+    const changed = (instance as any).publishChangedCachedNotes(['n2'], []);
+    await tick();
+    // A page load lands first and replaces the list.
+    (instance as any).publishNotes([card(1), card(3)]);
+    reads[0]();
+    await tick();
+    expect(reads.length).toBe(2);
+    reads[1]();
+    await changed;
+
+    const finalIds = store.value!.map(item => item.id);
+    expect(finalIds).toContain(3);
+    expect(finalIds).toContain(2);
+    expect(published.length).toBe(1); // only the page load went through publishNotes; the change is a delta
   });
 });
