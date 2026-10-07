@@ -5186,11 +5186,14 @@ async function applySyncNotePatchMutation(userId, mutation) {
   }
   await broadcastNoteChange(existing.id, 'updated');
   await cleanupUnusedLabels(userId);
+  // The acknowledged revision lets a client chain a guarded save behind this patch.
+  const patched = await get('SELECT revision FROM notes WHERE id = ?', [existing.id]);
   return {
     ok: true,
     resourceType: 'note',
     syncId: existing.syncId || syncId,
-    id: existing.id
+    id: existing.id,
+    revision: Number(patched?.revision || 1)
   };
 }
 

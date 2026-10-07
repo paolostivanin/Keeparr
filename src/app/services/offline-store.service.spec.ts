@@ -517,3 +517,117 @@ describe('OfflineStoreService editor sessions', () => {
     await store.purgePartition(other);
   });
 });
+
+describe('OfflineStoreService guarded note saves', () => {
+  let store: OfflineStoreService;
+  let partition: string;
+
+  beforeEach(() => {
+    store = new OfflineStoreService();
+    partition = `guard-test-${crypto.randomUUID()}`;
+  });
+
+  const server = (id: number, syncId: string, title: string, revision = 3): NoteI => ({ ...note(id, syncId, title), revision });
+
+  it('bases a save of an accepted server note on its cached revision and fields', async () => {
+    await store.replaceSnapshot(partition, [server(5, 'n5', 'Server title', 7)], [], [], 1, Date.now());
+    const { entry } = await store.persistNoteMutation(partition, { ...server(5, 'n5', 'Edited', 7) }, store.nextStamp());
+    expect(entry.guard?.baseRevision).toBe(7);
+    expect(entry.guard?.baseFields.noteTitle).toBe('Server title');
+    expect(entry.guard?.after).toBeUndefined();
+  });
+
+  it('does not guard notes that do not exist on the server yet', async () => {
+    const { entry } = await store.persistNoteMutation(partition, note(-4, 'local-only', 'New'), store.nextStamp());
+    expect(entry.guard).toBeUndefined();
+    const { entry: second } = await store.persistNoteMutation(partition, note(-4, 'local-only', 'New again'), store.nextStamp());
+    expect(second.guard).toBeUndefined();
+  });
+
+  it('keeps the original accepted base when an unsent save is coalesced', async () => {
+    await store.replaceSnapshot(partition, [server(5, 'n5', 'Server title', 7)], [], [], 1, Date.now());
+    await store.persistNoteMutation(partition, server(5, 'n5', 'First edit', 7), store.nextStamp());
+    const { entry } = await store.persistNoteMutation(partition, server(5, 'n5', 'Second edit', 7), store.nextStamp());
+
+    const queued = await store.listOutbox(partition);
+    expect(queued.length).toBe(1);
+    expect(queued[0].operationId).toBe(entry.operationId);
+    expect(entry.guard?.baseFields.noteTitle).toBe('Server title');
+    expect(entry.guard?.baseRevision).toBe(7);
+  });
+
+  it('chains a save behind a possibly-sent one without coalescing or overwriting its payload', async () => {
+    await store.replaceSnapshot(partition, [server(5, 'n5', 'Server title', 7)], [], [], 1, Date.now());
+    const { entry: first } = await store.persistNoteMutation(partition, server(5, 'n5', 'First edit', 7), store.nextStamp());
+    await store.claimOutboxForSend([first.key]);
+    const { entry: second } = await store.persistNoteMutation(partition, server(5, 'n5', 'Second edit', 7), store.nextStamp());
+
+    const queued = await store.listOutbox(partition);
+    expect(queued.map(item => item.operationId)).toEqual([first.operationId, second.operationId]);
+    expect((queued[0].payload as NoteI).noteTitle).toBe('First edit');
+    expect(queued[0].deliveryState).toBe('sent');
+    expect(second.guard?.after).toBe(first.operationId);
+    expect(second.guard?.baseRevision).toBeUndefined();
+  });
+
+  it('also chains behind legacy entries whose delivery state is unknown', async () => {
+    await store.replaceSnapshot(partition, [server(5, 'n5', 'Server title', 7)], [], [], 1, Date.now());
+    const legacyStamp = store.nextStamp();
+    await store.enqueue(partition, 'note.upsert', 'n5', server(5, 'n5', 'Legacy', 7), legacyStamp);
+    const { entry } = await store.persistNoteMutation(partition, server(5, 'n5', 'New edit', 7), store.nextStamp());
+    expect(entry.guard?.after).toBe(legacyStamp.operationId);
+    expect((await store.listOutbox(partition)).length).toBe(2);
+  });
+
+  it('leaves a coalesced legacy unguarded save unguarded so its edits are not hidden from the merge', async () => {
+    await store.replaceSnapshot(partition, [server(5, 'n5', 'Server title', 7)], [], [], 1, Date.now());
+    await store.persistNoteMutation(partition, server(5, 'n5', 'First', 7), store.nextStamp());
+    const [existing] = await store.listOutbox(partition);
+    await store.removeOutbox([existing.key]);
+    await store.enqueue(partition, 'note.upsert', 'n5', server(5, 'n5', 'Legacy unsent', 7), store.nextStamp());
+    const [legacy] = await store.listOutbox(partition);
+    // Mark as known-unsent without a guard to model an entry written before guards existed.
+    await store.removeOutbox([legacy.key]);
+    const db = await (store as any).open();
+    await new Promise<void>(resolve => {
+      const tx = db.transaction('outbox', 'readwrite');
+      tx.objectStore('outbox').put({ ...legacy, deliveryState: 'unsent' });
+      tx.oncomplete = () => resolve();
+    });
+    const { entry } = await store.persistNoteMutation(partition, server(5, 'n5', 'Newer', 7), store.nextStamp());
+    expect(entry.guard).toBeUndefined();
+  });
+
+  it('keeps same-millisecond outbox entries in creation order', async () => {
+    const first = store.nextStamp();
+    const second = store.nextStamp();
+    await store.enqueue(partition, 'note.upsert', 'n1', note(1, 'n1', 'a'), first);
+    await store.enqueue(partition, 'note.upsert', 'n1', note(1, 'n1', 'b'), second);
+    const db = await (store as any).open();
+    // Force identical creation times, which made the order depend on random operation IDs.
+    const entries = await store.listOutbox(partition);
+    await new Promise<void>(resolve => {
+      const tx = db.transaction('outbox', 'readwrite');
+      entries.forEach(entry => tx.objectStore('outbox').put({ ...entry, createdAt: 1 }));
+      tx.oncomplete = () => resolve();
+    });
+    expect((await store.listOutbox(partition)).map(entry => entry.operationId)).toEqual([first.operationId, second.operationId]);
+  });
+
+  it('replaces a rejected save atomically and re-chains operations waiting behind it', async () => {
+    await store.replaceSnapshot(partition, [server(5, 'n5', 'Server title', 7)], [], [], 1, Date.now());
+    const { entry: rejected } = await store.persistNoteMutation(partition, server(5, 'n5', 'First', 7), store.nextStamp());
+    await store.claimOutboxForSend([rejected.key]);
+    const { entry: waiting } = await store.persistNoteMutation(partition, server(5, 'n5', 'Second', 7), store.nextStamp());
+
+    const { entry: rebased } = await store.replaceRejectedNoteUpsert(
+      partition, rejected.key, server(5, 'n5', 'Merged', 9), { baseRevision: 9, baseFields: {} }, store.nextStamp()
+    );
+
+    const queued = await store.listOutbox(partition);
+    expect(queued.map(item => item.operationId).sort()).toEqual([waiting.operationId, rebased.operationId].sort());
+    expect(queued.find(item => item.operationId === waiting.operationId)?.guard?.after).toBe(rebased.operationId);
+    expect(queued.find(item => item.key === rejected.key)).toBeUndefined();
+    expect((await store.getNoteBySyncId(partition, 'n5'))?.noteTitle).toBe('Merged');
+  });
+});

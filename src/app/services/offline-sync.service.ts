@@ -6,8 +6,27 @@ import { NoteAttachmentI, NoteI } from '../interfaces/notes';
 import { ReminderI } from '../interfaces/reminder';
 import { AuthService } from './auth.service';
 import { OfflineResourceChange, OfflineStoreService, OutboxEntry } from './offline-store.service';
+import { changedNoteFields, mergeGuardedNote, overlayNoteFields, pickGuardFields } from '../utils/note-merge';
 
-export type OfflineSyncState = 'offline' | 'syncing' | 'saved' | 'error';
+export type OfflineSyncState = 'offline' | 'syncing' | 'saved' | 'error' | 'auth-required';
+
+/** A saved change the server rejected; it stays on this device until the user resolves it. */
+export interface SyncAttentionItem {
+  key: string;
+  syncId: string;
+  reason: 'conflict' | 'access-revoked';
+  message: string;
+  conflictFields: string[];
+  noteTitle: string;
+  canKeepMine: boolean;
+}
+
+export type SyncResolution = 'mine' | 'theirs';
+
+type MutationResult = {
+  ok: boolean; syncId?: string; id?: number; skipped?: boolean; error?: string; status?: number;
+  resourceType?: string; revision?: number; latest?: NoteI | null; payload?: NoteI | ReminderI | NoteAttachmentI;
+};
 
 export interface OfflineCacheChange {
   notesChanged: boolean;
@@ -37,6 +56,8 @@ type SyncChange = OfflineResourceChange & {
 export class OfflineSyncService {
   readonly state$ = new BehaviorSubject<OfflineSyncState>(navigator.onLine ? 'saved' : 'offline');
   readonly cacheChanged$ = new Subject<OfflineCacheChange>();
+  readonly attention$ = new BehaviorSubject<SyncAttentionItem[]>([]);
+  private guardedNotes?: { partition: string; supported: boolean };
   private readonly apiUrl = environment.apiUrl;
   private readonly syncRequestTimeoutMs = 12000;
   private degradedUntil = 0;
@@ -55,6 +76,8 @@ export class OfflineSyncService {
     this.auth.currentUser$.subscribe(user => {
       const previous = this.currentPartition;
       this.currentPartition = user?.id ? this.store.partition(user.id) : '';
+      this.attention$.next([]);
+      this.guardedNotes = undefined;
       if (!user && previous) this.store.purgePartition(previous).catch(console.error);
       if (user) {
         const partition = this.currentPartition;
@@ -222,13 +245,16 @@ export class OfflineSyncService {
       if (this.isOfflineError(error)) {
         this.markConnectionDegraded();
         this.state$.next('offline');
-      }
-      else {
+      } else if (this.auth.isAuthExpiredError(error)) {
+        // Pending changes stay durable; syncing resumes after the user signs in again.
+        this.state$.next('auth-required');
+      } else {
         this.state$.next('error');
         console.error('Offline sync failed', error);
       }
     } finally {
       this.running = false;
+      await this.refreshAttention().catch(console.error);
       if (this.rerun) {
         this.rerun = false;
         queueMicrotask(() => this.syncNow().catch(console.error));
@@ -308,12 +334,52 @@ export class OfflineSyncService {
     if (afterMergeUploads.length) await this.flushAttachmentUploads(afterMergeUploads);
   }
 
-  private async flushMutations(entries: OutboxEntry[]) {
-    if (!this.currentPartition || !entries.length) return;
-    const sendEntries = await this.store.claimOutboxForSend(entries.map(entry => entry.key));
+  /** Negotiated once per profile: older servers keep last-writer-wins full-document saves. */
+  private async supportsGuardedNotes() {
+    if (this.guardedNotes?.partition === this.currentPartition) return this.guardedNotes.supported;
+    let supported = false;
+    try {
+      const capabilities = await this.withTimeout(
+        firstValueFrom(this.http.get<{ noteRevisions?: boolean }>(`${this.apiUrl}/client/capabilities`, { headers: this.auth.authHeaders() })),
+        this.syncRequestTimeoutMs
+      );
+      supported = capabilities?.noteRevisions === true;
+    } catch (error) {
+      if (!(error instanceof HttpErrorResponse) || ![404, 405].includes(error.status)) throw error;
+    }
+    this.guardedNotes = { partition: this.currentPartition, supported };
+    return supported;
+  }
+
+  private async flushMutations(entries: OutboxEntry[], depth = 0): Promise<void> {
+    const partition = this.currentPartition;
+    if (!partition || !entries.length) return;
+    const guardedServer = entries.some(entry => entry.guard) ? await this.supportsGuardedNotes() : false;
+    const outboxIds = guardedServer
+      ? new Set((await this.store.listOutbox(partition)).map(entry => entry.operationId))
+      : new Set<string>();
+    // A save that follows a possibly-applied operation waits for its acknowledgement
+    // so its base revision is the accepted one rather than a guess.
+    const isDeferred = (entry: OutboxEntry) => guardedServer && !!entry.guard?.after && outboxIds.has(entry.guard.after);
+    const candidates = entries.filter(entry => !entry.blocked);
+    const deferred = candidates.filter(isDeferred);
+    const sendable = candidates.filter(entry => !isDeferred(entry));
+    if (!sendable.length) return;
+    if (guardedServer) {
+      // A chained save normally inherits its predecessor's acknowledged revision. If that
+      // acknowledgement carried none, the cached revision is the best available base. Either
+      // way the base is fixed before the first send so a lost-response replay is byte-identical.
+      for (const entry of sendable) {
+        if (entry.guard && entry.guard.baseRevision == null && entry.deliveryState !== 'sent') {
+          const cached = await this.store.getNoteBySyncId(partition, entry.syncId);
+          if (cached?.revision != null) await this.store.setGuardBaseRevision(entry.key, cached.revision);
+        }
+      }
+    }
+    const sendEntries = await this.store.claimOutboxForSend(sendable.map(entry => entry.key));
     if (!sendEntries.length) return;
     const response = await this.withTimeout(firstValueFrom(this.http.post<{
-      results: Array<{ ok: boolean; syncId?: string; id?: number; skipped?: boolean; error?: string; payload?: NoteI | ReminderI | NoteAttachmentI }>;
+      results: MutationResult[];
       serverTime: number;
       snapshot?: SyncSnapshot;
     }>(`${this.apiUrl}/sync/mutations`, {
@@ -323,15 +389,36 @@ export class OfflineSyncService {
         syncId: entry.syncId,
         operationId: entry.operationId,
         payload: entry.payload,
-        lww: entry.lww
+        lww: entry.lww,
+        ...(guardedServer && entry.guard?.baseRevision != null ? { baseRevision: entry.guard.baseRevision } : {})
       }))
     }, { headers: this.auth.authHeaders() })), this.syncRequestTimeoutMs);
+    const handled = new Set<number>();
+    const rebased: OutboxEntry[] = [];
+    for (let index = 0; index < sendEntries.length; index++) {
+      const entry = sendEntries[index];
+      const result = response.results?.[index];
+      if (!result || result.ok) continue;
+      const outcome = await this.handleRejectedNoteSave(entry, result);
+      if (!outcome) continue;
+      handled.add(index);
+      if (outcome !== 'blocked') rebased.push(outcome);
+    }
     const completed = sendEntries.filter((entry, index) => response.results?.[index]?.ok);
-    await this.store.removeOutbox(completed.map(entry => entry.key));
-    const failed = response.results?.find(result => !result.ok);
+    const acknowledged = guardedServer
+      ? sendEntries.flatMap((entry, index) => {
+        const result = response.results?.[index];
+        const revision = (result?.payload as NoteI | undefined)?.revision ?? result?.revision;
+        return result?.ok && revision != null ? [{ operationId: entry.operationId, revision }] : [];
+      })
+      : [];
+    await (acknowledged.length
+      ? this.store.removeOutbox(completed.map(entry => entry.key), acknowledged)
+      : this.store.removeOutbox(completed.map(entry => entry.key)));
+    const failed = response.results?.find((result, index) => !result.ok && !handled.has(index));
     if (!failed && response.snapshot) {
       await this.store.replaceSnapshot(
-        this.currentPartition,
+        partition,
         response.snapshot.notes || [],
         response.snapshot.reminders || [],
         response.snapshot.attachments || [],
@@ -341,10 +428,113 @@ export class OfflineSyncService {
       await this.cacheSnapshotMedia(response.snapshot.notes || []);
       if (completed.length) this.cacheChanged$.next({ notesChanged: true, remindersChanged: true, attachmentsChanged: true, fullSnapshot: true });
     } else if (response.serverTime) {
-      const state = await this.store.getSyncState(this.currentPartition);
-      await this.store.setSyncState(this.currentPartition, state.cursor, response.serverTime);
+      const state = await this.store.getSyncState(partition);
+      await this.store.setSyncState(partition, state.cursor, response.serverTime);
     }
     if (failed) throw new Error(failed.error || 'A queued change could not be synchronized.');
+    if (handled.size) this.cacheChanged$.next({ notesChanged: true, remindersChanged: false, attachmentsChanged: false, noteSyncIds: sendEntries.filter((_, index) => handled.has(index)).map(entry => entry.syncId) });
+    // Continue chains: rebased saves resend at once; deferred ones now carry their
+    // predecessor's acknowledged revision as their base.
+    if (depth >= 4 || (!rebased.length && !(deferred.length && completed.length))) return;
+    const next: OutboxEntry[] = [...rebased];
+    for (const entry of deferred) {
+      const fresh = await this.store.getOutboxEntry(entry.key);
+      if (fresh) next.push(fresh);
+    }
+    await this.flushMutations(next, depth + 1);
+  }
+
+  /**
+   * A guarded save the server rejected is not an error to retry: concurrent edits to other
+   * fields are merged and resent; true conflicts and revoked access are parked for the user.
+   * Returns the rebased entry, 'blocked', or undefined when the rejection is not of that kind.
+   */
+  private async handleRejectedNoteSave(entry: OutboxEntry, result: MutationResult): Promise<OutboxEntry | 'blocked' | undefined> {
+    const partition = this.currentPartition;
+    if (entry.type !== 'note.upsert' && entry.type !== 'note.patch') return undefined;
+    if (result.status === 403 || result.status === 404) {
+      await this.store.blockOutboxEntry(entry.key, {
+        reason: 'access-revoked',
+        message: result.status === 404 ? 'This note is no longer available.' : 'You no longer have access to this note.',
+        at: Date.now()
+      });
+      return 'blocked';
+    }
+    if (result.status !== 409 || entry.type !== 'note.upsert' || !entry.guard || result.resourceType !== 'note') return undefined;
+    const local = entry.payload as NoteI;
+    const latest = result.latest ?? null;
+    if (!latest) {
+      await this.store.blockOutboxEntry(entry.key, {
+        reason: 'conflict', message: 'This note was deleted on another device.', at: Date.now(), latest: null, conflictFields: []
+      });
+      return 'blocked';
+    }
+    const { merged, conflicts } = mergeGuardedNote(entry.guard.baseFields, local, latest);
+    if (conflicts.length) {
+      await this.store.blockOutboxEntry(entry.key, {
+        reason: 'conflict',
+        message: 'This note was changed on another device.',
+        at: Date.now(),
+        latest,
+        conflictFields: conflicts
+      });
+      return 'blocked';
+    }
+    const state = await this.store.getSyncState(partition);
+    const { entry: rebased } = await this.store.replaceRejectedNoteUpsert(
+      partition, entry.key, merged,
+      { baseRevision: latest.revision, baseFields: pickGuardFields(latest) },
+      this.store.nextStamp(state.serverOffsetMs)
+    );
+    return rebased;
+  }
+
+  async refreshAttention() {
+    const partition = this.currentPartition;
+    if (!partition) return;
+    const blocked = await this.store.listBlockedOutbox(partition);
+    if (this.currentPartition !== partition) return;
+    this.attention$.next(blocked.map(entry => ({
+      key: entry.key,
+      syncId: entry.syncId,
+      reason: entry.blocked!.reason,
+      message: entry.blocked!.message,
+      conflictFields: entry.blocked!.conflictFields || [],
+      noteTitle: String((entry.payload as NoteI | undefined)?.noteTitle || '').replace(/<[^>]*>/g, '').trim(),
+      canKeepMine: entry.blocked!.reason === 'conflict'
+    })));
+  }
+
+  /** The document the user saved locally for a parked change, for recovery (e.g. saving a copy). */
+  async blockedLocalNote(key: string) {
+    const entry = await this.store.getOutboxEntry(key);
+    return entry?.blocked ? entry.payload as NoteI : undefined;
+  }
+
+  async resolveBlockedNote(key: string, choice: SyncResolution) {
+    const partition = this.currentPartition;
+    const entry = partition ? await this.store.getOutboxEntry(key) : undefined;
+    if (!partition || !entry?.blocked) return;
+    const { latest, reason } = entry.blocked;
+    if (choice === 'theirs') {
+      await this.store.discardPendingNoteUpserts(partition, entry.syncId, latest || undefined);
+      if (!latest) await this.store.deleteNote(partition, entry.syncId);
+    } else {
+      if (reason !== 'conflict') return;
+      const local = entry.payload as NoteI;
+      const state = await this.store.getSyncState(partition);
+      const stamp = this.store.nextStamp(state.serverOffsetMs);
+      if (latest && entry.guard) {
+        const mine = overlayNoteFields(latest, local, changedNoteFields(entry.guard.baseFields, local));
+        await this.store.replaceRejectedNoteUpsert(partition, key, mine, { baseRevision: latest.revision, baseFields: pickGuardFields(latest) }, stamp);
+      } else {
+        // Deleted elsewhere: recreate it from the local document.
+        await this.store.replaceRejectedNoteUpsert(partition, key, { ...local, revision: undefined }, { baseRevision: 0, baseFields: {} }, stamp);
+      }
+    }
+    this.cacheChanged$.next({ notesChanged: true, remindersChanged: false, attachmentsChanged: false, noteSyncIds: [entry.syncId] });
+    await this.refreshAttention();
+    if (navigator.onLine) this.syncNow().catch(console.error);
   }
 
   private async flushAttachmentUploads(entries: OutboxEntry[]) {

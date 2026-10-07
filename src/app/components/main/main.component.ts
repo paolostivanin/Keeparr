@@ -1,3 +1,4 @@
+import { NoteI } from '../../interfaces/notes';
 import { Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { TimepickerUI, type ConfirmEventData } from 'timepicker-ui';
 import { Capacitor, registerPlugin } from '@capacitor/core';
@@ -176,6 +177,24 @@ export class MainComponent implements OnInit, OnDestroy {
 
   openMobileComposer() {
     this.Shared.openMobileComposer.next(true)
+  }
+
+  async resolveSyncAttention(key: string, choice: 'mine' | 'theirs' | 'both') {
+    try {
+      if (choice === 'both') {
+        // Preserve the local version as a new note before adopting the other one.
+        const local = await this.offlineSync.blockedLocalNote(key)
+        if (local) {
+          const { id, syncId, revision, lwwPhysicalMs, lwwLogical, lwwDeviceId, lwwOperationId, ownerUserId, ownerDisplayName, ownerUsername, ownerAvatarDataUrl, ownerAvatarPreset, collaborators, sortOrder, ...copy } = local
+          await this.notes.add({ ...copy, noteTitle: copy.noteTitle ? `${copy.noteTitle} (my version)` : 'My version', attachments: [], isCardPreview: false } as NoteI)
+        }
+        await this.offlineSync.resolveBlockedNote(key, 'theirs')
+        return
+      }
+      await this.offlineSync.resolveBlockedNote(key, choice)
+    } catch (error) {
+      console.error('Could not resolve the sync conflict', error)
+    }
   }
 
   async startSmartCapture() {

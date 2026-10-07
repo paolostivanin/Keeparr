@@ -5,10 +5,27 @@
     @if ((offlineSync.state$ | async); as syncState) {
       @if (syncState !== 'saved') {
         <div class="offline-sync-state" [class.is-error]="syncState === 'error'" role="status">
-          <span class="material-symbols-outlined">{{ syncState === 'offline' ? 'cloud_off' : syncState === 'error' ? 'sync_problem' : 'sync' }}</span>
-          <span>{{ syncState === 'offline' ? 'Saved offline' : syncState === 'error' ? 'Sync needs attention' : 'Syncing' }}</span>
+          <span class="material-symbols-outlined">{{ syncState === 'offline' ? 'cloud_off' : (syncState === 'error' || syncState === 'auth-required') ? 'sync_problem' : 'sync' }}</span>
+          <span>{{ syncState === 'offline' ? 'Saved offline' : syncState === 'auth-required' ? 'Sign in again to sync. Your changes are saved on this device.' : syncState === 'error' ? 'Sync needs attention' : 'Syncing' }}</span>
         </div>
       }
+    }
+    @for (item of (offlineSync.attention$ | async) ?? []; track item.key) {
+      <div class="sync-attention" role="alert">
+        <div class="sync-attention-text">
+          <strong>{{ item.noteTitle || 'Untitled note' }}</strong>
+          <span>{{ item.message }}
+            @if (item.conflictFields.length) { Both versions changed: {{ item.conflictFields.join(', ') }}. }
+            Your edits are kept on this device.</span>
+        </div>
+        <div class="sync-attention-actions">
+          @if (item.canKeepMine) {
+            <button type="button" (click)="resolveSyncAttention(item.key, 'mine')">Keep my version</button>
+          }
+          <button type="button" (click)="resolveSyncAttention(item.key, 'both')">Keep both</button>
+          <button type="button" (click)="resolveSyncAttention(item.key, 'theirs')">{{ item.canKeepMine ? 'Use other version' : 'Discard my changes' }}</button>
+        </div>
+      </div>
     }
     <div class="d-flex">
         <div class="sidenav-sticky">

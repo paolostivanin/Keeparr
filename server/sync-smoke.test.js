@@ -178,12 +178,15 @@ async function main() {
     assert.strictEqual(patchedNote.noteBody, 'Updated by another client after the local note was read.',
       'a field patch must retain unrelated content changed by another client');
     const patchedRevision = patchedNote.revision;
+    assert.strictEqual(patchReply.results[0].revision, patchedRevision,
+      'a patch acknowledgement carries the revision a chained guarded save must be based on');
     const replayReply = await request('/sync/mutations', {
       method: 'POST',
       headers,
       body: JSON.stringify({ includeSnapshot: false, mutations: [patchMutation] })
     });
     assert.strictEqual(replayReply.results[0].ok, true, 'a lost-response retry should replay its accepted receipt');
+    assert.strictEqual(replayReply.results[0].revision, patchedRevision, 'a replayed patch acknowledges the original revision');
     assert.strictEqual((await request(`/notes/${note.id}`, { headers })).revision, patchedRevision,
       'replaying a patch operation must not apply it twice');
     const invalidPatch = await request('/sync/mutations', {

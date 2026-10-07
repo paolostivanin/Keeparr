@@ -4,6 +4,7 @@ import { NoteAttachmentI, NoteI } from '../interfaces/notes';
 import { ReminderI } from '../interfaces/reminder';
 import type { LocationSavedPlace } from './location-saved-places.service';
 import type { EditorSessionRecord } from '../utils/editor-session';
+import { pickGuardFields, type GuardFields } from '../utils/note-merge';
 
 export type SyncResourceType = 'note' | 'reminder' | 'attachment';
 export type SyncMutationType =
@@ -36,6 +37,27 @@ export interface OutboxEntry {
   deliveryState?: 'unsent' | 'sent';
   sentAt?: number;
   attempts: number;
+  /** Optimistic-concurrency context for a full-document note save. */
+  guard?: NoteGuard;
+  /** Set once the server definitively rejected the operation; it is not resent until resolved. */
+  blocked?: BlockedOperation;
+}
+
+export interface NoteGuard {
+  /** Server revision the edit started from. Chained operations resolve it from the cache when sent. */
+  baseRevision?: number;
+  /** Server-side field values the edit started from: the base of the three-way merge. */
+  baseFields: GuardFields;
+  /** Earlier operation for the same note that may still be applied; this one waits for its acknowledgement. */
+  after?: string;
+}
+
+export interface BlockedOperation {
+  reason: 'conflict' | 'access-revoked';
+  message: string;
+  at: number;
+  latest?: NoteI | null;
+  conflictFields?: string[];
 }
 
 type StoredResource<T> = {
@@ -763,31 +785,68 @@ export class OfflineStoreService {
       const transaction = db.transaction(['notes', 'outbox'], 'readwrite');
       const notes = transaction.objectStore('notes');
       const outbox = transaction.objectStore('outbox');
-      const cursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
-      cursor.onerror = () => transaction.abort();
-      cursor.onsuccess = () => {
-        const queued = cursor.result;
-        if (queued) {
-          const previous = queued.value as OutboxEntry;
-          if (previous.type === 'note.upsert' && previous.syncId === syncId && previous.deliveryState === 'unsent') {
-            outbox.delete(queued.primaryKey);
+      let cachedNote: NoteI | undefined;
+      const cachedRequest = notes.get(this.resourceKey(partition, syncId));
+      cachedRequest.onerror = () => transaction.abort();
+      cachedRequest.onsuccess = () => {
+        cachedNote = (cachedRequest.result as StoredResource<NoteI> | undefined)?.value;
+        scan();
+      };
+      const scan = () => {
+        const pending: OutboxEntry[] = [];
+        let coalescedGuard: NoteGuard | undefined;
+        let coalesced = false;
+        const cursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
+        cursor.onerror = () => transaction.abort();
+        cursor.onsuccess = () => {
+          const queued = cursor.result;
+          if (queued) {
+            const previous = queued.value as OutboxEntry;
+            if (previous.type === 'note.upsert' && previous.syncId === syncId && previous.deliveryState === 'unsent' && !previous.blocked) {
+              coalescedGuard = previous.guard;
+              coalesced = true;
+              outbox.delete(queued.primaryKey);
+            } else if ((previous.type === 'note.upsert' || previous.type === 'note.patch') && previous.syncId === syncId) {
+              pending.push(previous);
+            }
+            queued.continue();
+            return;
           }
-          queued.continue();
-          return;
-        }
-        notes.put({
-          key: this.resourceKey(partition, syncId),
-          partition,
-          syncId,
-          value: persisted
-        });
-        outbox.put(entry);
+          const guard = this.noteGuardFor(cachedNote, pending, coalesced, coalescedGuard);
+          if (guard) entry.guard = guard;
+          notes.put({
+            key: this.resourceKey(partition, syncId),
+            partition,
+            syncId,
+            value: persisted
+          });
+          outbox.put(entry);
+        };
       };
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error || new Error('Could not persist the note and outbox entry.'));
       transaction.onabort = () => reject(transaction.error || new Error('Note persistence was aborted.'));
     });
     return { note: persisted, entry };
+  }
+
+  /**
+   * Guard for a full-document save of an existing server note. A coalesced
+   * unsent save keeps the original base; otherwise a save behind a possibly
+   * applied operation chains after it; otherwise it is based on the accepted
+   * cached note. Notes that do not exist on the server yet are unguarded.
+   */
+  private noteGuardFor(cached: NoteI | undefined, pending: OutboxEntry[], coalesced: boolean, coalescedGuard?: NoteGuard): NoteGuard | undefined {
+    const last = [...pending].sort((left, right) => this.compareLwwStamp(left.lww, right.lww)).pop();
+    if (coalesced) {
+      // The cache already holds the replaced save's edits, so only its own base is a valid merge base.
+      if (!coalescedGuard) return undefined;
+      return last ? { ...coalescedGuard, after: coalescedGuard.after ?? last.operationId } : coalescedGuard;
+    }
+    if (!cached || cached.id == null || cached.id <= 0 || cached.revision == null) return undefined;
+    const baseFields = pickGuardFields(cached);
+    if (last) return { baseFields, after: last.operationId };
+    return { baseRevision: cached.revision, baseFields };
   }
 
   async persistNotePatchMutation(partition: string, note: NoteI, patch: Partial<NoteI>, stamp: LwwStamp) {
@@ -812,14 +871,16 @@ export class OfflineStoreService {
       const notes = transaction.objectStore('notes');
       const outbox = transaction.objectStore('outbox');
       let replacedUnsentUpsert = false;
+      let replacedGuard: NoteGuard | undefined;
       const cursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
       cursor.onerror = () => transaction.abort();
       cursor.onsuccess = () => {
         const queued = cursor.result;
         if (queued) {
           const previous = queued.value as OutboxEntry;
-          if (previous.type === 'note.upsert' && previous.syncId === syncId && previous.deliveryState === 'unsent') {
+          if (previous.type === 'note.upsert' && previous.syncId === syncId && previous.deliveryState === 'unsent' && !previous.blocked) {
             replacedUnsentUpsert = true;
+            replacedGuard = previous.guard;
             outbox.delete(queued.primaryKey);
           }
           queued.continue();
@@ -833,7 +894,7 @@ export class OfflineStoreService {
             lwwDeviceId: stamp.deviceId,
             lwwOperationId: stamp.operationId
           };
-          entry = { ...patchEntry, type: 'note.upsert', payload: persisted };
+          entry = { ...patchEntry, type: 'note.upsert', payload: persisted, ...(replacedGuard ? { guard: replacedGuard } : {}) };
         }
         notes.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: persisted });
         outbox.put(entry);
@@ -1058,15 +1119,177 @@ export class OfflineStoreService {
     return (await this.listByPartition<OutboxEntry>('outbox', partition)).sort((left, right) =>
       left.createdAt - right.createdAt ||
       priority[left.type] - priority[right.type] ||
+      // Same-millisecond writes keep their creation order (hybrid logical clock).
+      left.lww.physicalMs - right.lww.physicalMs ||
+      left.lww.logical - right.lww.logical ||
       left.operationId.localeCompare(right.operationId)
     );
   }
 
-  async removeOutbox(keys: string[]) {
+  async getOutboxEntry(key: string) {
+    const db = await this.open();
+    return this.request<OutboxEntry | undefined>(db.transaction('outbox').objectStore('outbox').get(key));
+  }
+
+  /** Park a definitively rejected operation: it stays durable but is not resent until resolved. */
+  async blockOutboxEntry(key: string, blocked: BlockedOperation) {
+    const db = await this.open();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction('outbox', 'readwrite');
+      const outbox = transaction.objectStore('outbox');
+      const request = outbox.get(key);
+      request.onsuccess = () => {
+        const entry = request.result as OutboxEntry | undefined;
+        if (entry) outbox.put({ ...entry, blocked });
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  }
+
+  /** Pin the base revision of a chained save so replays send an identical mutation. */
+  async setGuardBaseRevision(key: string, baseRevision: number) {
+    const db = await this.open();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction('outbox', 'readwrite');
+      const outbox = transaction.objectStore('outbox');
+      const request = outbox.get(key);
+      request.onsuccess = () => {
+        const entry = request.result as OutboxEntry | undefined;
+        if (entry?.guard && entry.deliveryState !== 'sent' && entry.guard.baseRevision == null) {
+          outbox.put({ ...entry, guard: { ...entry.guard, baseRevision } });
+        }
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  }
+
+  async listBlockedOutbox(partition: string) {
+    return (await this.listOutbox(partition)).filter(entry => !!entry.blocked);
+  }
+
+  /**
+   * Replace a rejected save with a rebased one (new operation, new base) and
+   * the cached note with the merged document, in one transaction. Operations
+   * chained behind the replaced one now wait for its replacement.
+   */
+  async replaceRejectedNoteUpsert(partition: string, rejectedKey: string, note: NoteI, guard: NoteGuard, stamp: LwwStamp) {
+    const syncId = this.ensureNoteIdentity(note);
+    const persisted: NoteI = {
+      ...note, syncId,
+      lwwPhysicalMs: stamp.physicalMs, lwwLogical: stamp.logical, lwwDeviceId: stamp.deviceId, lwwOperationId: stamp.operationId
+    };
+    const entry: OutboxEntry = {
+      key: `${partition}|${stamp.operationId}`,
+      partition,
+      operationId: stamp.operationId,
+      type: 'note.upsert',
+      syncId,
+      payload: persisted,
+      lww: stamp,
+      createdAt: Date.now(),
+      deliveryState: 'unsent',
+      attempts: 0,
+      guard
+    };
+    const db = await this.open();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(['notes', 'outbox'], 'readwrite');
+      const notes = transaction.objectStore('notes');
+      const outbox = transaction.objectStore('outbox');
+      const rejectedRequest = outbox.get(rejectedKey);
+      rejectedRequest.onerror = () => transaction.abort();
+      rejectedRequest.onsuccess = () => {
+        const rejected = rejectedRequest.result as OutboxEntry | undefined;
+        if (!rejected) return; // resolved elsewhere (another tab); nothing to replace
+        outbox.delete(rejectedKey);
+        const cursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
+        cursor.onerror = () => transaction.abort();
+        cursor.onsuccess = () => {
+          const queued = cursor.result;
+          if (queued) {
+            const other = queued.value as OutboxEntry;
+            if (other.guard?.after === rejected.operationId) {
+              queued.update({ ...other, guard: { ...other.guard, after: entry.operationId } });
+            }
+            queued.continue();
+            return;
+          }
+          notes.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: persisted });
+          outbox.put(entry);
+        };
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    return { note: persisted, entry };
+  }
+
+  /**
+   * Drop every not-yet-delivered or rejected full-document save for a note
+   * (the user chose the server version) and cache the given note instead.
+   */
+  async discardPendingNoteUpserts(partition: string, syncId: string, replacement?: NoteI) {
+    const db = await this.open();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(['notes', 'outbox'], 'readwrite');
+      const notes = transaction.objectStore('notes');
+      const outbox = transaction.objectStore('outbox');
+      const cursor = outbox.index('partition').openCursor(IDBKeyRange.only(partition));
+      cursor.onerror = () => transaction.abort();
+      cursor.onsuccess = () => {
+        const queued = cursor.result;
+        if (queued) {
+          const entry = queued.value as OutboxEntry;
+          if (entry.syncId === syncId && (entry.type === 'note.upsert' || entry.type === 'note.patch') && (entry.blocked || (entry.type === 'note.upsert' && entry.deliveryState === 'unsent'))) {
+            queued.delete();
+          }
+          queued.continue();
+          return;
+        }
+        if (replacement) notes.put({ key: this.resourceKey(partition, syncId), partition, syncId, value: replacement });
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  }
+
+  async removeOutbox(keys: string[], acknowledged: ReadonlyArray<{ operationId: string; revision: number }> = []) {
     if (!keys.length) return;
     const db = await this.open();
-    await this.transaction(db, ['outbox'], 'readwrite', stores => {
-      keys.forEach(key => stores['outbox'].delete(key));
+    if (!acknowledged.length) {
+      await this.transaction(db, ['outbox'], 'readwrite', stores => {
+        keys.forEach(key => stores['outbox'].delete(key));
+      });
+      return;
+    }
+    // Completing an operation and advancing the accepted base of the saves chained
+    // behind it is one step, so a successor never keeps a stale base.
+    const revisions = new Map(acknowledged.map(item => [item.operationId, item.revision]));
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction('outbox', 'readwrite');
+      const outbox = transaction.objectStore('outbox');
+      keys.forEach(key => outbox.delete(key));
+      const cursor = outbox.openCursor();
+      cursor.onerror = () => transaction.abort();
+      cursor.onsuccess = () => {
+        const queued = cursor.result;
+        if (!queued) return;
+        const entry = queued.value as OutboxEntry;
+        const revision = entry.guard?.after ? revisions.get(entry.guard.after) : undefined;
+        if (entry.guard && revision != null && !keys.includes(entry.key) && entry.deliveryState !== 'sent') {
+          queued.update({ ...entry, guard: { ...entry.guard, baseRevision: revision } });
+        }
+        queued.continue();
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
     });
   }
 

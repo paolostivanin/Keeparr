@@ -1238,3 +1238,44 @@
     color: #202124;
   }
 */
+
+.sync-attention {
+  background: #fce8e6;
+  border: 1px solid #f6aea9;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(60,64,67,0.16);
+  color: #3c4043;
+  display: flex;
+  flex-wrap: wrap;
+  font: 400 13px/1.4 "Google Sans", Roboto, Arial, sans-serif;
+  gap: 8px 16px;
+  left: 50%;
+  max-width: min(640px, calc(100vw - 24px));
+  padding: 10px 14px;
+  position: fixed;
+  top: 150px;
+  transform: translateX(-50%);
+  z-index: 1500;
+
+  .sync-attention-text {
+    display: flex;
+    flex: 1 1 260px;
+    flex-direction: column;
+  }
+
+  .sync-attention-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+
+    button {
+      background: #fff;
+      border: 1px solid #dadce0;
+      border-radius: 999px;
+      cursor: pointer;
+      font: 600 12px/1 inherit;
+      padding: 7px 12px;
+    }
+  }
+}
