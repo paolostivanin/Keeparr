@@ -157,7 +157,7 @@ class ConnectionSettings(
                 dataStore.data.first()
             } catch (error: Exception) {
                 Log.e("KeptSettings", "Could not initialize saved connection settings.", error)
-                messageValue = "Saved connection settings could not be loaded. Cached notes were retained."
+                messageValue = "Saved connection settings could not be loaded. Sign in again to continue; cached notes were retained."
                 _ready.value = true
                 return@withLock
             }

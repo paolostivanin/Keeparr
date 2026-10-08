@@ -54,26 +54,24 @@ fun KeptScreen(activity: MainActivity, app: KeptApplication) {
     val scope = rememberCoroutineScope()
     val settingsReady by app.settings.ready.collectAsStateWithLifecycle()
     val settingsWriteError by app.settings.writeError.collectAsStateWithLifecycle()
-    var signedIn by remember { mutableStateOf(false) }
-    var dark by remember { mutableStateOf(false) }
+    // Derived from the settings once they are ready, in the same composition: seeding these from a LaunchedEffect
+    // painted one login/light-theme frame before the stored session and theme were applied.
+    var signedInOverride by remember { mutableStateOf<Boolean?>(null) }
+    var darkOverride by remember { mutableStateOf<Boolean?>(null) }
+    val signedIn = settingsReady && StartupGate.signedIn(signedInOverride, app.settings.token)
+    val dark = settingsReady && StartupGate.dark(darkOverride, app.settings.darkMode)
     var error by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<Note?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     val incoming by activity.incoming.collectAsStateWithLifecycle()
-    LaunchedEffect(settingsReady) {
-        if (settingsReady) {
-            signedIn = app.settings.token.isNotBlank()
-            dark = app.settings.darkMode
-        }
-    }
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { error = problem.message ?: "Could not complete this action" } } }
     MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = Color(0xFFFFCF45)) else lightColorScheme(primary = Color(0xFF765900))) {
         Surface(Modifier.fillMaxSize()) {
             if (!settingsReady) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             } else if (!signedIn) LoginScreen(activity, app,
-                onLogin = { signedIn = true; repo.authenticated(); action { SyncWorker.schedule(app); repo.sync(); repo.foreground(true) } },
-                onCancel = { signedIn = true }, onError = { error = it })
+                onLogin = { signedInOverride = true; repo.authenticated(); action { SyncWorker.schedule(app); repo.sync(); repo.foreground(true) } },
+                onCancel = { signedInOverride = true }, onError = { error = it })
             else {
                 val notes by remember(app.settings.profile) { repo.notes() }.collectAsStateWithLifecycle(emptyList())
                 val reminders by remember(app.settings.profile) { repo.reminders() }.collectAsStateWithLifecycle(emptyList())
@@ -105,9 +103,9 @@ fun KeptScreen(activity: MainActivity, app: KeptApplication) {
                     NoteEditor(activity, app, editing!!, reminders, onClose = { editing = null }, onError = { error = it })
                 } else HomeScreen(app, notes, reminders, conflicts, onEdit = { editing = it }, onCreate = { checklist ->
                     action { val note = Note.create(app.settings.userId, checklist); repo.save(note); editing = note }
-                }, onSettings = { showSettings = true }, onReauthenticate = { signedIn = false }, onError = { error = it })
-                if (showSettings) SettingsDialog(activity, app, reminders, occurrences, dark, onDark = { dark = it; app.settings.darkMode = it },
-                    onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedIn = false; showSettings = false } }, onError = { error = it })
+                }, onSettings = { showSettings = true }, onReauthenticate = { signedInOverride = false }, onError = { error = it })
+                if (showSettings) SettingsDialog(activity, app, reminders, occurrences, dark, onDark = { darkOverride = it; app.settings.darkMode = it },
+                    onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedInOverride = false; showSettings = false } }, onError = { error = it })
             }
             val visibleError = settingsWriteError ?: error
             visibleError?.let { message ->

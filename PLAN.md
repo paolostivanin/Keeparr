@@ -100,7 +100,7 @@ Primary owners: `InputComponent`, `NotesComponent`, focused feature/domain adapt
 
 Primary owners: `Connection`, `MainActivity`, `NoteEditorViewModel`, rich-text AndroidView adapter, home projections, `KeptRepository`, `Media`.
 
-- [ ] **M4.1 — Nonblocking initialized startup.** Verify settings/credential/certificate/client creation stays off main, cached active-profile content appears promptly, settings failures are actionable, and login does not flash before readiness. Preserve immutable snapshots and nondestructive reauthentication/profile transitions.
+- [x] **M4.1 — Nonblocking initialized startup.** Audited the startup path. Off main (verified, now covered by a test that the DataStore read runs on another thread): settings read and Keystore decryption (`ConnectionSettings.initialize` on `Dispatchers.IO`), persistence writes, and TLS client creation including `KeyChain` certificate access (`KeptApi.client` is only reached from IO callers: `call`, `foreground`, media upload/download). Room opens lazily on its first query, which the notes `Flow`s run off main (`flowOn(Default)`). Fixed: the signed-in state and dark theme were seeded from a `LaunchedEffect` after the first ready composition, so a user with a stored session saw one login-screen (and light-theme) frame before home; they are now derived in the same composition (`ui/StartupGate.kt`, explicit sign-in/sign-out/theme overrides still win). An unreadable settings store already completed startup with cached notes retained; its message now also says what to do ("Sign in again to continue") and is shown on the login screen that follows. Immutable `ConnectionSnapshot`s, profile-switch confirmation and nondestructive reauthentication are unchanged.
 - [ ] **M4.2 — Lifecycle and session disposal.** Consolidate required startup/resume recovery without duplicate sockets/jobs/alarms; scope collectors/ViewModels by profile and syncId, release closed editors, and verify process-restoration and draft safety. Keep existing `finish()` local durability and recovery mechanisms.
 - [ ] **M4.3 — Editor hot paths.** Reduce whole-JSON copying/comparison/serialization during text/checklist typing with field/generation-aware, serially owned updates. Keep local durability separate from accepted-server dirty state; avoid redundant queue writes and flush with bounded unsaved time.
 - [ ] **M4.4 — Narrow home projection work.** Give query/filter/selection/home state a cohesive owner and reuse unchanged card/search projections. Keep raw JSON authoritative and complete, parsing off composition/main; retain the lazy staggered grid, stable keys, and meaningful content types. Change Room observation/query structures only if profiling still shows material cost.
@@ -529,4 +529,18 @@ Reference build/device/fixture: Node 24 production build; headless Chromium 154.
 Before / after performance evidence: stroke end now performs one PNG encode instead of two, and undo/redo none; no timings were collected. Memory growth over ten edit cycles (M6.5) was not measured.
 Remaining acceptance or blocker: ten-cycle retained-session/listener/bitmap measurement, large-drawing stroke timing, and native-shell/Smart Capture device behavior remain M6.2/M6.5/M6.4 items. M3 is complete at the automated/headless level.
 Next dependency: M4 (Android) and M6 acceptance; no M3 follow-up blocks them.
+```
+
+### 2026-10-08 nonblocking initialized startup
+
+```text
+Package / date: M4.1 nonblocking initialized startup / 2026-10-08
+Status: implemented and verified by JVM/Robolectric tests, assembleDebug and lint; no device, so no real startup trace
+Files / responsibilities changed: `ui/StartupGate.kt` (new); `KeptScreen` derives signed-in/dark state from ready settings in composition; `Connection.kt` settings-load-failure message; `StartupLifecycleTest` (new).
+Contract / storage / lifecycle decisions: no stored-data change. Stored token/theme are read through the existing ready gate; user actions in the session override them explicitly.
+Checks executed and outcomes: `./gradlew testDebugUnitTest assembleDebug lintDebug` passed (4 new tests: gate precedence, settings read off the caller thread, unreadable store becomes ready with an actionable message, awaitReady); no other Android code path changed.
+Reference build/device/fixture: Robolectric on JVM, debug build. No device or emulator; no cold-start timing or StrictMode run.
+Before / after performance evidence: none collected; the change removes one composed login/light frame by construction.
+Remaining acceptance or blocker: physical cold/warm start timing, StrictMode on a device, and keystore behaviour on real hardware (M6.2/M6.4).
+Next dependency: M4.2 lifecycle and session disposal.
 ```
