@@ -33,7 +33,7 @@
       <form (ngSubmit)="submit()" #setupForm="ngForm" class="auth-form">
         <label>
           <span>Username</span>
-          <input name="username" [ngModel]="username" (ngModelChange)="onUsernameChange($event)" autocomplete="username" minlength="3" required>
+          <input name="username" [ngModel]="username" (ngModelChange)="onUsernameChange($event)" autocomplete="username" minlength="3" required autofocus>
           <small class="hint">Minimum 3 characters</small>
         </label>
         <label>

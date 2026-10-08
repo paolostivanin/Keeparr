@@ -123,6 +123,8 @@ const server = http.createServer((request, response) => {
       value = { enabled: false, hasCredentials: false, clientId: '' };
     } else if (url.pathname === '/api/caldav/settings') {
       value = null;
+    } else if (url.pathname === '/api/settings/registration') {
+      value = { selfRegistrationEnabled: true, requireApproval: false };
     } else if (url.pathname === '/api/setup/status') {
       value = { hasUsers: true };
     }
@@ -245,7 +247,7 @@ async function run() {
     await cdp('HeapProfiler.enable');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await cdp('Page.addScriptToEvaluateOnNewDocument', {
-      source: `localStorage.setItem('gk_session', JSON.stringify({id:1,username:'fixture',displayName:'Fixture',role:'admin',theme:'light',token:'fixture-token',demoNotesCreatedAt:'2026-01-01'}));localStorage.setItem('kept_user_preferences', JSON.stringify({richLinkPreviews:true}));`
+      source: `if (!sessionStorage.getItem('kept-harness-logged-out')) localStorage.setItem('gk_session', JSON.stringify({id:1,username:'fixture',displayName:'Fixture',role:'admin',theme:'light',token:'fixture-token',demoNotesCreatedAt:'2026-01-01'}));localStorage.setItem('kept_user_preferences', JSON.stringify({richLinkPreviews:true}));`
     });
     if (profileMode) {
       // Diagnostic journey: cold and warm browsing, search, and scroll paging, each split into the
@@ -517,6 +519,37 @@ async function run() {
     const scriptsAfterSettingsNavigation = await evaluate(`performance.getEntriesByType('resource').filter(entry => /\\.js(?:$|\\?)/.test(entry.name)).map(entry => entry.name)`);
     assert(scriptsAfterSettingsNavigation.some(script => !scriptsBeforeSettingsNavigation.includes(script)), 'Settings lazy chunk was not loaded on navigation.');
     smoke.push('lazy settings route');
+    // Lazy auth/admin routes: each loads its own chunk on first navigation and the first field is focused.
+    const navigateInApp = async route => {
+      await evaluate(`(() => { history.pushState({}, '', ${JSON.stringify(route)}); window.dispatchEvent(new PopStateEvent('popstate')); })()`);
+    };
+    const waitForRoute = async (selector, label) => {
+      for (let attempt = 0; attempt < 80; attempt++) {
+        if (await evaluate(`!!document.querySelector(${JSON.stringify(selector)})`)) return;
+        await sleep(50);
+      }
+      assert.fail(`${label} did not render.`);
+    };
+    const loadedScripts = () => evaluate(`performance.getEntriesByType('resource').filter(entry => /\\.js(?:$|\\?)/.test(entry.name)).map(entry => entry.name)`);
+    let knownScripts = await loadedScripts();
+    await navigateInApp('/users');
+    await waitForRoute('app-user-management h1', 'Lazy user-management route');
+    const afterUsers = await loadedScripts();
+    assert(afterUsers.some(script => !knownScripts.includes(script)), 'User-management lazy chunk was not loaded on navigation.');
+    smoke.push('lazy admin route');
+    knownScripts = afterUsers;
+    // Signed-out entry points need a fresh document, as a user opening the shipped app would get.
+    await evaluate(`sessionStorage.setItem('kept-harness-logged-out', '1'); localStorage.removeItem('gk_session')`);
+    for (const route of ['/login', '/register']) {
+      await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${route}` });
+      await waitForRoute(`app-${route.slice(1)} input[name="username"]`, `Lazy ${route} route`);
+      await sleep(100);
+      assert.equal(await evaluate(`document.activeElement?.getAttribute('name')`), 'username', `${route} did not focus its first field.`);
+      const scripts = await loadedScripts();
+      assert(scripts.some(script => /chunk-/.test(script)), `${route} did not load a lazy chunk.`);
+    }
+    await evaluate(`sessionStorage.removeItem('kept-harness-logged-out')`);
+    smoke.push('lazy login/register routes with first-field focus');
     await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${appPath}` });
     await sleep(700);
 

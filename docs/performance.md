@@ -101,6 +101,14 @@ Server (`npm run benchmark:server`, 10,000 notes, 25 iterations): card page p50 
 
 Target adjustments from this evidence: none needed for browser input (p95 ≈ 13 ms against 100 ms) or open/close. The 150 ms local save/close target can only be judged separately from the animation (not measured in isolation here; ≈85 ms by subtraction). The 10,000-note scroll-through (765 ms scripting) and warm background work remain the known browser cost. Native startup/FrameTiming/Perfetto, widget and background-sync traces need a device; with one attached the intended journey is: release-like `assembleRelease`-equivalent install, `adb shell am start -W` for cold/warm start (repeat ≥10, report median/p95), `adb shell dumpsys gfxinfo <package> framestats` after a scripted scroll for janky-frame percentage, and a Perfetto capture for outliers. These commands are documented, not executed here.
 
+## Deployment acceptance (M6.3)
+
+Run against the production Docker image (`docker build -t kept-plan-verify .`, `docker run -p 16767:6767`) on 2026-10-08: the index, SPA routes (`/settings`), `kept-push-sw.js` and the manifest are `Cache-Control: no-cache`; hashed bundles are `public, max-age=31536000, immutable`; JS/HTML are gzip- (or, when requested, brotli-) encoded; the app runs as root in the entrypoint and drops to the `node` user. Initial JavaScript is 352 KB gzipped on the wire (main 174, vendor chunks 110/32/23, polyfills 12.5), above Angular's 300 KB estimate (which assumes brotli); the 1.52 MB raw initial total is inside the 1.6 MB warning budget. A headless Chromium loaded `/setup` from the container and rendered the lazy setup chunk.
+
+Two defects fixed: a stale tab asking for a chunk that a newer deployment replaced, and any unknown `/api/...` path, received the app shell as HTTP 200 HTML (so a failed `import()` surfaced as a MIME/parse error); both are now 404 JSON (`server/static-assets.test.js`). The auth screens had no initial focus (only the 2FA field did); the first field of sign-in, registration and setup now has `autofocus`.
+
+`web-ui-check.mjs` now also exercises the lazy admin route (`/users`) and fresh signed-out loads of `/login` and `/register` (the latter with the mock enabling self-registration), asserting a new chunk loads and the first field is focused. The service worker (`kept-push-sw.js`) only handles push and an offline navigation fallback, so no precache upgrade path exists to test; the Capacitor/native shell was not exercised (no device).
+
 ## Reference environment and supported Android floor
 
 - The current Android minimum is **API 34**, matching `android-native/app/build.gradle.kts` (`minSdk = 34`). The build targets/compiles against API 35. API 34 is the software support floor pending explicit product-policy review.

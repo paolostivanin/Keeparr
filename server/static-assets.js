@@ -17,7 +17,16 @@ function mountStaticAssets(app, staticDir) {
       }
     }
   }));
-  app.get('*', (_request, response) => response.sendFile(path.join(staticDir, 'index.html')));
+  // Only client-side routes fall back to the app shell. A missing asset (a stale tab asking for a chunk that a newer
+  // deployment replaced) or an unknown API path must be a real 404, not HTML the script loader or API client would
+  // choke on with a confusing MIME/parse error.
+  app.get('*', (request, response) => {
+    if (request.path.startsWith('/api/') || path.extname(request.path)) {
+      return response.status(404).json({ error: 'Not found.' });
+    }
+    response.setHeader('Cache-Control', 'no-cache');
+    response.sendFile(path.join(staticDir, 'index.html'));
+  });
   return true;
 }
 
