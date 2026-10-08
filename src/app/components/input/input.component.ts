@@ -21,8 +21,10 @@ import { isNativePhonePlatform, shouldUseFullscreenNoteEditor } from 'src/app/ut
 import { NoteLockService } from 'src/app/services/note-lock.service';
 import { UserPreferencesService } from 'src/app/services/user-preferences.service';
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
-import { MAX_INDENT_LEVEL, descendantIndexes, maxIndentLevelAt, normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
+import { MAX_INDENT_LEVEL, descendantIndexes, normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
 import { canHideCheckboxes, checkBoxesToBodyHtml, linesToCheckBoxes, splitBodyIntoLines } from 'src/app/utils/checklist-conversion';
+import { ChecklistHistory, normalizeChecklist, setChecklistIndent, toggleChecklistDone } from 'src/app/utils/checklist-model';
+import { decorateLinks, extractUrlsFromHtml, stripEditorChrome } from 'src/app/utils/editor-body';
 import { noteColorToHex } from 'src/app/utils/note-color';
 import { environment } from 'src/environments/environment';
 import {
@@ -100,11 +102,7 @@ export class InputComponent implements OnInit {
   private textSelectionFrame?: number
   private readonly textSelectionChangeHandler = () => this.scheduleSelectionFormattingUpdate()
   private readonly textSelectionRepositionHandler = () => this.scheduleSelectionFormattingUpdate()
-  private cboxHistory: CheckboxI[][] = []
-  private cboxHistoryIndex = -1
-  private lastCboxStructuralChangeAt = 0
-  private lastCboxTextInputAt = 0
-  private cboxHistoryRedoMode = false
+  private cboxHistory = new ChecklistHistory()
   private cboxSuggestionEligibleIds = new Set<number>()
   private cboxSuggestionDraftValues = new Map<number, string>()
   private dismissedCboxSuggestionIds = new Set<number>()
@@ -951,31 +949,7 @@ export class InputComponent implements OnInit {
   }
 
   private normalizeCheckBoxes(checkBoxes: CheckboxI[] = []) {
-    const numericIds = checkBoxes
-      .map(item => Number((item as any)?.id))
-      .filter(id => Number.isSafeInteger(id) && id >= 0)
-    let nextId = numericIds.length ? Math.max(...numericIds) + 1 : 0
-    const usedIds = new Set<number>()
-    const nextAvailableId = () => {
-      while (usedIds.has(nextId)) nextId++
-      return nextId++
-    }
-
-    return checkBoxes.map(item => ({
-      id: (() => {
-        const numericId = Number((item as any)?.id)
-        if (Number.isSafeInteger(numericId) && numericId >= 0 && !usedIds.has(numericId)) {
-          usedIds.add(numericId)
-          return numericId
-        }
-        const id = nextAvailableId()
-        usedIds.add(id)
-        return id
-      })(),
-      done: !!item.done,
-      data: item.data || '',
-      indentLevel: this.normalizedCboxIndentLevel(item.indentLevel)
-    }))
+    return normalizeChecklist(checkBoxes)
   }
 
   checkboxIndentLevel(cb?: CheckboxI) {
@@ -1059,23 +1033,10 @@ export class InputComponent implements OnInit {
 
   private setCboxIndentLevel(id: number, indentLevel: number, options: { commit?: boolean } = {}) {
     this.syncCboxDomIntoModel()
-    const index = this.checkBoxes.findIndex(cb => cb.id === id)
-    if (index < 0) return false
-
-    const currentIndent = this.checkboxIndentLevel(this.checkBoxes[index])
-    const nextIndent = Math.min(normalizeIndentLevel(indentLevel), maxIndentLevelAt(this.checkBoxes, index))
-    if (currentIndent === nextIndent) return false
-
     // Nested rows keep their relative depth when their parent moves.
-    const delta = nextIndent - currentIndent
-    for (const childIndex of descendantIndexes(this.checkBoxes, index)) {
-      this.checkBoxes[childIndex] = {
-        ...this.checkBoxes[childIndex],
-        indentLevel: normalizeIndentLevel(this.checkboxIndentLevel(this.checkBoxes[childIndex]) + delta)
-      }
-    }
-    this.checkBoxes[index] = { ...this.checkBoxes[index], indentLevel: nextIndent }
-    this.checkBoxes = [...this.checkBoxes]
+    const next = setChecklistIndent(this.checkBoxes, id, indentLevel)
+    if (!next) return false
+    this.checkBoxes = next
     this.noteToEdit.checkBoxes = this.checkBoxes
     this.cd.detectChanges()
 
@@ -1092,15 +1053,9 @@ export class InputComponent implements OnInit {
 
   private toggleCboxDoneWithChildren(id: number) {
     this.syncCboxDomIntoModel()
-    const index = this.checkBoxes.findIndex(x => x.id === id)
-    if (index < 0) return false
-
-    const done = !this.checkBoxes[index].done
-    this.checkBoxes[index].done = done
-    for (const childIndex of this.childIndexesForParent(index)) {
-      this.checkBoxes[childIndex].done = done
-    }
-    this.checkBoxes = [...this.checkBoxes]
+    const next = toggleChecklistDone(this.checkBoxes, id)
+    if (!next) return false
+    this.checkBoxes = next
     return true
   }
 
@@ -1128,16 +1083,8 @@ export class InputComponent implements OnInit {
     return true
   }
 
-  private cloneCheckBoxes(checkBoxes: CheckboxI[] = []) {
-    return this.normalizeCheckBoxes(checkBoxes)
-  }
-
   private resetCboxHistory() {
-    this.cboxHistory = [this.cloneCheckBoxes(this.checkBoxes)]
-    this.cboxHistoryIndex = 0
-    this.lastCboxStructuralChangeAt = 0
-    this.lastCboxTextInputAt = 0
-    this.cboxHistoryRedoMode = false
+    this.cboxHistory.reset(this.checkBoxes)
   }
 
   private syncCboxDomIntoModel() {
@@ -1145,37 +1092,19 @@ export class InputComponent implements OnInit {
   }
 
   private pushCboxHistorySnapshot() {
-    const snapshot = this.cloneCheckBoxes(this.currentCheckBoxesForSave(false))
-    const previous = this.cboxHistory[this.cboxHistoryIndex]
-    if (previous && JSON.stringify(previous) === JSON.stringify(snapshot)) return
-    this.cboxHistory = this.cboxHistory.slice(0, this.cboxHistoryIndex + 1)
-    this.cboxHistory.push(snapshot)
-    if (this.cboxHistory.length > 80) this.cboxHistory.shift()
-    this.cboxHistoryIndex = this.cboxHistory.length - 1
-    this.lastCboxStructuralChangeAt = Date.now()
-    this.cboxHistoryRedoMode = true
-  }
-
-  private canStepCboxHistory(command: 'undo' | 'redo') {
-    return command === 'undo'
-      ? this.cboxHistoryIndex > 0
-      : this.cboxHistoryIndex >= 0 && this.cboxHistoryIndex < this.cboxHistory.length - 1
+    this.cboxHistory.push(this.currentCheckBoxesForSave(false))
   }
 
   private shouldUseCboxHistory(command: 'undo' | 'redo') {
-    if (!this.isCbox.value) return false
-    if (!this.canStepCboxHistory(command)) return false
-    if (command === 'redo') return this.cboxHistoryRedoMode
-    return this.lastCboxStructuralChangeAt >= this.lastCboxTextInputAt
+    return this.isCbox.value && this.cboxHistory.shouldHandle(command)
   }
 
   private stepCboxHistory(command: 'undo' | 'redo') {
-    if (!this.canStepCboxHistory(command)) return
-    this.cboxHistoryIndex += command === 'undo' ? -1 : 1
-    this.checkBoxes = this.cloneCheckBoxes(this.cboxHistory[this.cboxHistoryIndex])
+    const items = this.cboxHistory.step(command)
+    if (!items) return
+    this.checkBoxes = items
     this.noteToEdit.checkBoxes = this.checkBoxes
     this.inputLength.next({ ...this.inputLength.value, cb: this.checkBoxes.length })
-    this.cboxHistoryRedoMode = this.canStepCboxHistory('redo')
     this.cd.detectChanges()
     this.queueCoEditAutosave()
   }
@@ -1937,8 +1866,7 @@ export class InputComponent implements OnInit {
     if (!this.checkBoxes.some(candidate => candidate.id === id)) return
     if (el) this.cboxSuggestionDraftValues.set(id, el.innerHTML)
     this.dismissedCboxSuggestionIds.delete(id)
-    this.lastCboxTextInputAt = Date.now()
-    this.cboxHistoryRedoMode = false
+    this.cboxHistory.textInput()
     this.queueCoEditAutosave()
   }
 
@@ -2151,95 +2079,16 @@ export class InputComponent implements OnInit {
   }
 
   private extractUrlsFromHtml(html: string) {
-    const urls = new Set<string>()
-    const div = document.createElement('div')
-    div.innerHTML = html || ''
-
-    div.querySelectorAll<HTMLAnchorElement>('a[href]').forEach(anchor => {
-      const href = anchor.href || anchor.getAttribute('href') || ''
-      if (/^https?:\/\//i.test(href)) urls.add(href)
-    })
-
-    const text = div.textContent || ''
-    const matches = text.match(/https?:\/\/[^\s"'<>]+/g) || []
-    matches.forEach(url => urls.add(url.replace(/[),.;:!?]+$/, '')))
-
-    return [...urls].slice(0, 3)
+    return extractUrlsFromHtml(html)
   }
 
   private decorateLinksForEditor(html: string) {
-    if (!this.preferences.value.richLinkPreviews) return this.auth.authenticatedImageHtml(html || '')
-    const div = document.createElement('div')
-    div.innerHTML = this.auth.authenticatedImageHtml(html || '')
-    this.removePreviewMarkup(div)
-
-    div.querySelectorAll<HTMLAnchorElement>('a[href]').forEach(anchor => {
-      const href = anchor.href || anchor.getAttribute('href') || ''
-      if (!/^https?:\/\//i.test(href)) return
-      const marker = document.createElement('span')
-      marker.className = 'editor-link-preview-slot'
-      marker.contentEditable = 'false'
-      marker.dataset['url'] = href
-      marker.dataset['originalHtml'] = anchor.outerHTML
-      anchor.replaceWith(marker)
-    })
-
-    const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT, {
-      acceptNode: node => {
-        const parent = node.parentElement
-        if (!parent || parent.closest('.editor-hidden-link')) return NodeFilter.FILTER_REJECT
-        return /https?:\/\/[^\s"'<>]+/.test(node.textContent || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
-      }
-    })
-    const textNodes: Text[] = []
-    while (walker.nextNode()) textNodes.push(walker.currentNode as Text)
-
-    textNodes.forEach(node => {
-      const text = node.textContent || ''
-      const fragment = document.createDocumentFragment()
-      let lastIndex = 0
-      for (const match of text.matchAll(/https?:\/\/[^\s"'<>]+/g)) {
-        const rawUrl = match[0]
-        const start = match.index || 0
-        const visibleUrl = rawUrl.replace(/[),.;:!?]+$/, '')
-        const trailing = rawUrl.slice(visibleUrl.length)
-        if (start > lastIndex) fragment.append(document.createTextNode(text.slice(lastIndex, start)))
-        const marker = document.createElement('span')
-        marker.className = 'editor-link-preview-slot'
-        marker.contentEditable = 'false'
-        marker.dataset['url'] = visibleUrl
-        marker.dataset['originalHtml'] = visibleUrl
-        fragment.append(marker)
-        if (trailing) fragment.append(document.createTextNode(trailing))
-        lastIndex = start + rawUrl.length
-      }
-      if (lastIndex < text.length) fragment.append(document.createTextNode(text.slice(lastIndex)))
-      node.replaceWith(fragment)
-    })
-
-    return div.innerHTML
+    const displayHtml = this.auth.authenticatedImageHtml(html || '')
+    return this.preferences.value.richLinkPreviews ? decorateLinks(displayHtml) : displayHtml
   }
 
   private cleanEditorBodyForSave(html: string) {
-    const div = document.createElement('div')
-    div.innerHTML = this.auth.canonicalImageHtml(html || '')
-    this.removePreviewMarkup(div)
-    // Strip editor-only chrome (e.g. the inline image delete button) that lives
-    // inside the editable body but has no business being persisted.
-    div.querySelectorAll('[data-inline-image-tool]').forEach(el => el.remove())
-    div.querySelectorAll<HTMLElement>('.editor-link-preview-slot').forEach(marker => {
-      const template = document.createElement('template')
-      template.innerHTML = marker.dataset['originalHtml'] || marker.dataset['url'] || ''
-      marker.replaceWith(template.content)
-    })
-    return div.innerHTML
-  }
-
-  private removePreviewMarkup(root: HTMLElement) {
-    root.querySelectorAll<HTMLElement>('.editor-link-preview-slot').forEach(marker => {
-      marker.querySelectorAll('.editor-link-preview-card').forEach(el => el.remove())
-    })
-    root.querySelectorAll<HTMLElement>('app-link-preview, .editor-link-previews, .lp-card, .editor-link-preview-card').forEach(el => el.remove())
+    return stripEditorChrome(this.auth.canonicalImageHtml(html || ''))
   }
 
   private decorateCurrentBodyLinks() {

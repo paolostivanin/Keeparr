@@ -91,7 +91,7 @@ Primary owners: `NotesStoreService`, `SharedService` facades, `NotesToolsPipe`, 
 
 Primary owners: `InputComponent`, `NotesComponent`, focused feature/domain adapters.
 
-- [ ] **M3.1 — Editor/persistence boundary.** Separate session/commands from text/checklist DOM editing while retaining complete source content, rich formatting, nesting/reorder/conversion, caret/IME, paste, inline objects, and undo/redo. Extract only cohesive responsibilities supported by characterization tests.
+- [x] **M3.1 — Editor/persistence boundary.** Session/save state already lives in `utils/editor-session.ts` (M1.2); the remaining non-DOM editing logic that was embedded in `InputComponent` is now framework-free and characterized: `utils/checklist-model.ts` (row normalization/id repair, depth change that carries children, done-toggle that carries children, and `ChecklistHistory` structural undo/redo with the 80-step bound and the "text typed after the last structural change belongs to the browser undo" rule) and `utils/editor-body.ts` (stored body ⇄ editor HTML: link/URL preview slots, stripping editor-only chrome on save, URL extraction). The component keeps DOM, caret/IME, paste, drag and focus ownership and delegates to these; behavior is unchanged (round trip of rich formatting, links, inline-image wrappers is asserted). Drawing, reminders, places and collaborator panels were not moved (no cohesion gain demonstrated).
 - [ ] **M3.2 — Layout/gesture boundary.** Give measurements, ResizeObserver, packing/window state, sentinels, responsive/foldable rules, selection, and drag lifecycles explicit ownership. Drive layout from changed state/elements rather than repeated application checks.
 - [ ] **M3.3 — Overlay state and callbacks.** Replace business-state decisions based on `style.display` with explicit state; keep dialogs outside transformed cards and preserve focus. Make async timer/socket/observer/timepicker/plugin/clipboard results notify the intended view under the current Angular mode.
 - [ ] **M3.4 — Bounded resource lifecycle.** Dispose subscriptions, timers, requests, observers, listeners, object URLs, and closed sessions; bound drawing undo memory and avoid expensive synchronous encoding in typing/close paths. Retain drawing serialization and native-shell/Smart Capture behavior; address leaks/stalls with targeted changes rather than mandatory panel-by-panel extraction.
@@ -473,4 +473,18 @@ Reference build/device/fixture: Node 24, production Angular build, headless Chro
 Before / after performance evidence: none for this item.
 Remaining acceptance or blocker: physical touch-drag/autoscroll feel, desktop drag across unmounted rows (native browser autoscroll is relied on), delayed real media, and screen-reader behavior.
 Next dependency: M3 (editor/layout ownership), M6 acceptance.
+```
+
+### 2026-10-08 editor/persistence boundary
+
+```text
+Package / date: M3.1 editor/persistence boundary / 2026-10-08
+Status: implemented and verified by unit/build checks; no device or browser-interaction run
+Files / responsibilities changed: new `utils/checklist-model.ts` and `utils/editor-body.ts` (+ specs); `InputComponent` delegates checklist normalization, indent/toggle with children, structural history, and body decorate/strip/URL extraction to them (about 150 fewer lines in the component).
+Contract / storage / lifecycle decisions: no stored-format change. Checklist operations are now immutable (the component reassigns `checkBoxes`); the component still decides when to commit, autosave and re-render. Editor chrome is removed on every save path through one function.
+Checks executed and outcomes: Chrome Headless 178/178 (13 new: id repair, nesting, history bounds/ownership, body round trip, chrome stripping, URL extraction); `npm run build` passed (1.52 MB initial, ~299 kB estimated transfer); node util tests 16/16.
+Reference build/device/fixture: Node 24 production build; headless Chromium 154. No device.
+Before / after performance evidence: none.
+Remaining acceptance or blocker: caret/IME and paste are unchanged DOM code without automated interaction coverage (M6.5).
+Next dependency: M3.2 layout/gesture ownership.
 ```
