@@ -971,6 +971,16 @@ export class NotesService {
   }
 
   /**
+   * Labels of the locally stored copy of a note, or undefined when this device has none. Sync keeps that copy current,
+   * so callers on the save path can use it instead of waiting for a network round trip.
+   */
+  async cachedLabels(id: number): Promise<NoteI['labels'] | undefined> {
+    const partition = this.offlineSync.partition;
+    if (!partition || id === -1) return undefined;
+    return (await this.offlineStore.getNote(partition, id))?.labels;
+  }
+
+  /**
    * The complete document behind a card. Commands that derive a full field
    * (checklist, images, body) from the note must use this: a preview carries
    * truncated content, and writing it back would silently drop the rest.

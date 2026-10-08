@@ -79,6 +79,28 @@ Reading the table: the first-card wait no longer grows with the collection (warm
 
 Grid prototype versus the Bricks fallback at 10,000 notes (`--virtual-grid=on`, median of 3): first card 645 versus 673 ms cold and 318 versus 324 ms warm; cold background scripting 1,876 versus 1,255 ms; warm background 2,011 versus 2,022 ms; scroll-through scripting 788 versus 780 ms; mounted cards 15 versus 70; JS heap about 54 versus 46 MB. Fewer mounted cards did not buy lower scripting, and cold background work is worse, so the grid stays opt-in and Bricks remains the default.
 
+## Editor journey (`--profile`, `--cycles=N`)
+
+The profile journey ends with N open → type 20 characters → close cycles (default 10) on one text note, alternating scroll positions. It reports, per run: time to the editor, keystroke-to-next-frame (median/p95/max), close-and-save (median/p95/per cycle; this includes the 200 ms close animation), and what each cycle leaves behind after a forced GC (heap, DOM nodes, `Memory.getDOMCounters` listeners, plus listeners on document/window/body/visualViewport by type). `web-scale-report.mjs` aggregates these as median/worst of N runs. Before the cycles the harness waits `max(1500, 1.2 × notes)` ms (`--settle=ms`) because warm-start background work at 10,000 notes otherwise lands in the first closes (1.2–1.3 s then, 0.28 s once settled).
+
+### M6.2 measurements (headless Chromium 154, Node 24, production build 1.52 MB / ~300 KB initial, median/worst of 5, 100 / 1,000 / 10,000 notes, mock API with 500 ms detail latency)
+
+| Measurement | 100 | 1,000 | 10,000 |
+| --- | ---: | ---: | ---: |
+| Cold / warm time to first card (ms) | 633 / 324 | 632 / 345 | 653 / 343 |
+| Search to results / clear (ms) | 50 / 46 | 52 / 48 | 27 / 38 |
+| Open editor (ms) | 70 | 70 | 71 |
+| Keystroke to next frame, p95 (ms) | 13.2 | 13.3 | 13.2 |
+| Close and save, median / p95 (ms, incl. 200 ms animation) | 289 / 298 | 283 / 297 | 287 / 297 |
+| Heap growth cycles 3–10 (MB) / DOM nodes / listener counter | 0.9 / 0 / +16 | 0.6 / 0 / +16 | 0.8 / 0 / +8 |
+| Scroll-through scripting (ms) | 72 | 110 | 765 |
+
+Finding fixed: closing a changed note online first fetched the note from the server (and re-cached it) only to refresh its labels, so close-and-save tracked network latency (790 ms with the mock's 500 ms, unbounded on a slow link). It now reads labels from the local copy and fetches only when the device has none; closes measure 285 ms, of which about 200 ms is the animation. Not resolved: the `jsEventListeners` counter creeps by about one per cycle (also without typing, and by a smaller amount even with no editor open, so part is the harness); none of it is on document/window/body/visualViewport or any DOM element, heap plateaus (11.2 → 12.2 MB over 30 cycles, +0.1 MB over the last 17) and DOM nodes are flat, so it is recorded rather than attributed.
+
+Server (`npm run benchmark:server`, 10,000 notes, 25 iterations): card page p50 52 ms / p95 59 ms; search 60 ms; detail 4.7 ms; bootstrap 763 ms; changes at head 5.2 ms; note.upsert 24 ms; one-position reorder 25 ms (9,350 ids) writing one change; web full update 18 ms.
+
+Target adjustments from this evidence: none needed for browser input (p95 ≈ 13 ms against 100 ms) or open/close. The 150 ms local save/close target can only be judged separately from the animation (not measured in isolation here; ≈85 ms by subtraction). The 10,000-note scroll-through (765 ms scripting) and warm background work remain the known browser cost. Native startup/FrameTiming/Perfetto, widget and background-sync traces need a device; with one attached the intended journey is: release-like `assembleRelease`-equivalent install, `adb shell am start -W` for cold/warm start (repeat ≥10, report median/p95), `adb shell dumpsys gfxinfo <package> framestats` after a scripted scroll for janky-frame percentage, and a Perfetto capture for outliers. These commands are documented, not executed here.
+
 ## Reference environment and supported Android floor
 
 - The current Android minimum is **API 34**, matching `android-native/app/build.gradle.kts` (`minSdk = 34`). The build targets/compiles against API 35. API 34 is the software support floor pending explicit product-policy review.

@@ -122,7 +122,7 @@ Primary owners: `KeptRepository`, workers, reminder scheduler, `widgets/`, serve
 The release gates below are executed here, not duplicated as 25 separate definition-of-done tasks.
 
 - [x] **M6.1 — Close automated coverage gaps.** Audited existing coverage against G2/G3: unsent/sent/legacy outbox cases (`offline-store`, `offline-sync-guarded` specs), incremental-vs-snapshot and `positions` negotiation (`native-client`, `large-account`), lost-response replay and fault points, shared-fixture content fidelity were already covered. Gaps closed: unknown `note.*` mutation types were run as upserts (a newer client's unknown operation created a junk note) — now a per-entry 400; new `server/client-negotiation.test.js` (capabilities, legacy full-order reorder with full snapshot, operation-ID replay not re-applying over newer work, unknown type isolated from neighbours); web test that unknown extension fields survive snapshot/edit/queued upsert; CI now also runs `test:server` and `test:scale` (it ran neither). Hosted CI: last pushed head `28ff1c0` passed on the fork (run 37747929639); the commits for this item are unpushed, so their hosted run is pending.
-- [ ] **M6.2 — Repeatable release measurements.** Extend the current harness with missing typing/save/media/memory journeys and a repeatable native journey; collect startup/scroll/search/editor/widget/background-sync traces with release-like builds. Separate cold/warm/cache/network conditions, report repeated median/p95/frame outliers, and document evidence-based target adjustments.
+- [x] **M6.2 — Repeatable release measurements.** The web harness now has an editor journey (`--profile --cycles=N`: open, 20 keystrokes, close/save, with forced-GC retained heap/DOM/listener samples and a settle wait) aggregated as median/worst-of-5 at 100/1,000/10,000 notes against the production build, plus the server query report; results and target discussion are in `docs/performance.md`. The measurement exposed that closing a changed note waited on a server fetch (790 ms → 285 ms after reading labels locally). A native repeatable journey and API 34/35/36 traces cannot be collected without a device: the intended `adb` procedure is documented, not executed (blocked on hardware, tracked under M6.4).
 - [ ] **M6.3 — Deployment and shipped clients.** Exercise lazy auth/setup/admin/settings navigation, assets/fonts/styles, Docker/proxy gzip/cache policy, PWA/service-worker/lazy-chunk upgrades, and supported web/native shells. Confirm initial transfer budgets and first-use focus/loading remain acceptable.
 - [ ] **M6.4 — Supported Android acceptance.** Confirm device policy and target/compile SDK requirements, then execute API 34 minimum, API 35, and Android 16/API 36 OnePlus journeys, including gateway/mTLS/certificate replacement, permissions, reboot/timezone/clock changes, insets/orientation/large fonts, and two launchers for widgets. Record unavailable hardware separately from implementation gaps.
 - [ ] **M6.5 — Accessibility and lifecycle acceptance.** Run the consolidated keyboard/screen-reader/TalkBack/contrast/reduced-motion/focus/touch checks and ten scroll/open/edit/close cycles with media/sync. Investigate retained sessions/listeners/bitmaps/undo growth and visual/frame regressions.
@@ -685,4 +685,18 @@ Reference build/device/fixture: Node 24 child-process server on a temp SQLite DB
 Before / after performance evidence: none.
 Remaining acceptance or blocker: Android coverage was audited, not extended (no Android gap found that a JVM test can close); device-only journeys stay in M6.4/M6.5.
 Next dependency: M6.2.
+```
+
+### 2026-10-08 release measurements
+
+```text
+Package / date: M6.2 repeatable release measurements / 2026-10-08
+Status: web and server parts implemented and measured; native journey blocked on hardware
+Files / responsibilities changed: `test-fixtures/performance/web-ui-check.mjs` (editor cycles, retained-state sampling, settle wait), `docs/performance.md`, `NotesService.cachedLabels`, `InputComponent.labelsForSave` (local labels first, network only without a local copy), +1 spec in `notes.service.spec.ts`.
+Contract / storage / lifecycle decisions: no storage or wire change. Behavior change: the save path no longer refreshes labels from the server before committing; it uses the sync-maintained local copy. A label changed by another user and not yet synced to this device is therefore not merged into this save (the same exposure as editing offline).
+Checks executed and outcomes: `npm run build` ok (1.52 MB initial, ~300 KB transfer); `notes.service.spec.ts` Karma 31/31; scale report runs 5x at 100/1,000/10,000; `benchmark:server`.
+Reference build/device/fixture: headless Chromium 154, Linux, Node 24, production build, mock API (500 ms detail latency), 10,000-note seeded SQLite server; no device, no real network latency.
+Before / after performance evidence: close-and-save median 790 ms -> 285 ms (about 200 ms is the close animation); keystroke-to-frame p95 13 ms; open 70 ms; first closes at 10,000 notes (1.2 s) were warm-start contention and vanish once settled.
+Remaining acceptance or blocker: unattributed ~1/cycle listener-counter creep (heap and DOM plateau); no native traces, 60/120 Hz, Firefox/Safari or network-condition (500 ms/loss) matrix; save time without the animation is inferred, not measured.
+Next dependency: M6.3.
 ```

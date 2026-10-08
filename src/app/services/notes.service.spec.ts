@@ -40,6 +40,22 @@ describe('NotesService local persistence errors', () => {
     expect(merged.isCardPreview).toBeFalse();
   });
 
+  it('reads labels for the save path from the local copy without a network request', async () => {
+    const labels = [{ id: 3, name: 'Local', added: true }];
+    const get = jasmine.createSpy('get');
+    const getNote = jasmine.createSpy('getNote').and.resolveTo({ ...note, labels });
+    const service = Object.create(NotesService.prototype) as NotesService;
+    Object.assign(service, { http: { get }, offlineSync: { partition: 'fixture-partition' }, offlineStore: { getNote } });
+
+    expect(await service.cachedLabels(1)).toBe(labels);
+    expect(getNote).toHaveBeenCalledWith('fixture-partition', 1);
+    expect(get).not.toHaveBeenCalled();
+    getNote.and.resolveTo(undefined);
+    expect(await service.cachedLabels(2)).toBeUndefined();
+    (service as any).offlineSync = { partition: null };
+    expect(await service.cachedLabels(1)).toBeUndefined();
+  });
+
   it('retains the server pagination cursor when refreshing only the local projection', async () => {
     const service = Object.create(NotesService.prototype) as NotesService;
     Object.assign(service, {

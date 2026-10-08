@@ -944,6 +944,10 @@ export class InputComponent implements OnInit {
     if (!this.isEditing || !this.noteToEdit?.id || this.labelsDirty) return selectedLabels
 
     try {
+      // The locally stored copy is kept current by sync; waiting on a server round trip here would put network latency
+      // (or a timeout) on the save/close path. Fetch only when this device has no copy of the note.
+      const cached = await this.notesService.cachedLabels(this.noteToEdit.id)
+      if (cached) return this.normalizeLabels(cached)
       const fresh = await this.notesService.get(this.noteToEdit.id, { merge: false })
       return this.normalizeLabels(fresh?.labels || [])
     } catch {

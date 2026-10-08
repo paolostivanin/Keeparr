@@ -242,6 +242,7 @@ async function run() {
     await cdp('Page.enable');
     await cdp('Runtime.enable');
     await cdp('Performance.enable');
+    await cdp('HeapProfiler.enable');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await cdp('Page.addScriptToEvaluateOnNewDocument', {
       source: `localStorage.setItem('gk_session', JSON.stringify({id:1,username:'fixture',displayName:'Fixture',role:'admin',theme:'light',token:'fixture-token',demoNotesCreatedAt:'2026-01-01'}));localStorage.setItem('kept_user_preferences', JSON.stringify({richLinkPreviews:true}));`
@@ -353,6 +354,72 @@ async function run() {
         pageRequests: apiRequests.slice(requestsBefore).filter(request => request.startsWith('GET /api/notes')).length,
         ...delta(before, await read()),
         mountedAtEnd: await evaluate(cards)
+      };
+      // Editor cycles: open a note, type, close (saving locally), repeated. Reports what the user waits for (open, per
+      // keystroke to the next frame, close/save) and what each cycle leaves behind after a forced GC, so retained
+      // DOM nodes, event listeners or heap show up as growth after warm-up. Duration is `--cycles=N` (default 10).
+      const cycleCount = Math.max(2, Number(process.argv.find(argument => argument.startsWith('--cycles='))?.split('=')[1]) || 10);
+      await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${appPath}` });
+      await waitFor(`${cards} > 0`);
+      // Background settling after a warm start outlasts the 3 s window at large sizes (docs/performance.md), and editor
+      // timings taken while it runs measure that contention; wait it out (override with --settle=ms).
+      const settleMs = Number(process.argv.find(argument => argument.startsWith('--settle='))?.split('=')[1]) || Math.max(1500, fixtureCount * 1.2);
+      await sleep(settleMs);
+      const p95 = values => [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.ceil(values.length * 0.95) - 1)];
+      const median = values => [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) / 2)];
+      const closeEditor = async () => {
+        await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+        await waitFor(`document.querySelector('app-notes .modal-container').style.display === 'none'`);
+      };
+      const retained = async () => {
+        await cdp('HeapProfiler.collectGarbage');
+        await sleep(100);
+        const counters = await cdp('Memory.getDOMCounters');
+        const heap = await cdp('Runtime.getHeapUsage');
+        // Listeners on the long-lived targets, by type, so growth can be attributed rather than only counted.
+        const byType = {};
+        for (const target of ['document', 'window', 'document.body', 'window.visualViewport']) {
+          const { result } = await cdp('Runtime.evaluate', { expression: target });
+          for (const listener of (await cdp('DOMDebugger.getEventListeners', { objectId: result.objectId })).listeners) {
+            byType[`${target}:${listener.type}`] = (byType[`${target}:${listener.type}`] || 0) + 1;
+          }
+        }
+        return { heapMb: +(heap.usedSize / 1048576).toFixed(2), domNodes: counters.nodes, listeners: counters.jsEventListeners, byType };
+      };
+      const openMs = [], keystrokeMs = [], closeMs = [], afterCycle = [];
+      let scriptBeforeCycles = (await read()).ScriptDuration;
+      for (let cycle = 0; cycle < cycleCount; cycle++) {
+        await evaluate(`window.scrollTo(0, ${cycle % 2 ? 600 : 0})`);
+        await sleep(150);
+        const openStarted = Date.now();
+        await evaluate(`document.querySelector('app-notes .note-container[data-note-id="2"] .title').click()`);
+        await waitFor(`!!document.querySelector('app-notes .modal .note-body')`);
+        openMs.push(Date.now() - openStarted);
+        await sleep(200);
+        await evaluate(`document.querySelector('app-notes .modal .note-body').focus()`);
+        for (let key = 0; key < 20; key++) {
+          keystrokeMs.push(await evaluate(`new Promise(resolve => { const started = performance.now(); document.execCommand('insertText', false, 'x'); requestAnimationFrame(() => resolve(performance.now() - started)); })`));
+        }
+        const closeStarted = Date.now();
+        await closeEditor();
+        closeMs.push(Date.now() - closeStarted);
+        await sleep(300);
+        afterCycle.push(await retained());
+      }
+      const scriptMs = +(((await read()).ScriptDuration - scriptBeforeCycles) * 1000).toFixed(1);
+      const warm = afterCycle.slice(2);
+      journey.editorCycles = {
+        cycles: cycleCount,
+        openMs: { median: median(openMs), p95: p95(openMs) },
+        keystrokeToFrameMs: { median: +median(keystrokeMs).toFixed(1), p95: +p95(keystrokeMs).toFixed(1), max: +Math.max(...keystrokeMs).toFixed(1) },
+        closeAndSaveMs: { median: median(closeMs), p95: p95(closeMs), perCycle: closeMs },
+        scriptMsTotal: scriptMs,
+        retainedAfterWarmup: warm.length > 1 ? {
+          heapMbGrowth: +(warm[warm.length - 1].heapMb - warm[0].heapMb).toFixed(2),
+          domNodeGrowth: warm[warm.length - 1].domNodes - warm[0].domNodes,
+          listenerGrowth: warm[warm.length - 1].listeners - warm[0].listeners
+        } : null,
+        afterEachCycle: afterCycle
       };
       assert.equal(errors.length, 0, `Browser runtime errors: ${errors.map(error => error.text).join('; ')}`);
       console.log('PROFILE ' + JSON.stringify({ noteCount: fixtureCount, virtualGrid: virtualGridEnabled ? 'on' : 'off', journey }));
