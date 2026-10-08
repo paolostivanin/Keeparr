@@ -793,6 +793,12 @@ app-navbar .user-pic-container:hover::after {
   display: block;
 }
 
+// Toolbar icons stay in flow; the pin keeps its absolute card positioning.
+.icons-container .icons>div,
+.icons-container .icons>button.undo {
+  position: relative;
+}
+
 .icons-container .icons>div,
 .icons-container .icons>button.undo,
 .pin-icon {
@@ -803,7 +809,6 @@ app-navbar .user-pic-container:hover::after {
   filter: none;
   opacity: 0.71 !important;
   padding: 0;
-  position: relative;
 }
 
 .icons-container .icons>div::after,
