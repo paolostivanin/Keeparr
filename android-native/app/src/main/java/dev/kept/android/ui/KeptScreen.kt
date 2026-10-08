@@ -219,34 +219,33 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
     val scope = rememberCoroutineScope()
     val status by app.repository.status.collectAsStateWithLifecycle()
     val connectionState by app.repository.connectionState.collectAsStateWithLifecycle()
-    var search by remember { mutableStateOf("") }
-    var filter by remember { mutableStateOf("home") }
-    var grid by remember { mutableStateOf(true) }
-    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val home = remember { HomeState() }
+    val projector = remember { HomeProjector() }
+    var search by home::search
+    var filter by home::filter
+    var grid by home::grid
+    val selectedIds = home.selectedIds
     var confirmBulkTrash by remember { mutableStateOf(false) }
     var conflict by remember { mutableStateOf<Outbox?>(null) }
     val noteBounds = remember { mutableStateMapOf<String, Rect>() }
     val drawer = rememberDrawerState(DrawerValue.Closed)
-    val reorderEnabled = canReorderNotes(filter, search)
+    val reorderEnabled = home.reorderEnabled
     var projection by remember { mutableStateOf(EmptyHomeProjection, referentialEqualityPolicy()) }
     LaunchedEffect(notes, filter, search, reminders) {
-        projection = withContext(Dispatchers.Default) { buildHomeProjection(notes, filter, search, reminders) }
+        projection = withContext(Dispatchers.Default) { projector.project(notes, filter, search, reminders) }
     }
     val visible = projection.visibleNotes
     val selectedNotes = selectedIds.mapNotNull(projection.notesBySyncId::get)
     val canTrashSelected = selectedNotes.isNotEmpty() && selectedNotes.all { it.owner == app.settings.userId }
     val allSelectedTrashed = selectedNotes.isNotEmpty() && selectedNotes.all { it.trashed }
-    LaunchedEffect(search, filter) { selectedIds = emptySet() }
-    fun selectNote(id: String) { selectedIds = selectedIds + id }
-    fun toggleSelected(id: String) {
-        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
-    }
+    fun selectNote(id: String) = home.select(id)
+    fun toggleSelected(id: String) = home.toggle(id)
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
         ModalDrawerSheet(Modifier.verticalScroll(rememberScrollState())) {
             Text("Kept", Modifier.padding(24.dp), style = MaterialTheme.typography.headlineMedium)
             projection.filterChoices.forEach { (value, label) -> NavigationDrawerItem(label = { Text(label) }, selected = filter == value,
-                onClick = { filter = value; selectedIds = emptySet(); scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp)) }
+                onClick = { filter = value; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp)) }
         }
     }) {
         Scaffold(topBar = {
@@ -288,11 +287,11 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
                             }, enabled = index >= 0 && index + 1 < ids.size && visible[index].pinned == visible[index + 1].pinned) { Icon(Icons.Outlined.ArrowDownward, "Move later") }
                         }
                         if (canTrashSelected) IconButton(onClick = {
-                            if (allSelectedTrashed) action { app.repository.setTrashed(selection.toList(), false); selectedIds = emptySet() }
+                            if (allSelectedTrashed) action { app.repository.setTrashed(selection.toList(), false); home.clearSelection() }
                             else confirmBulkTrash = true
                         }) { Icon(if (allSelectedTrashed) Icons.Outlined.RestoreFromTrash else Icons.Outlined.DeleteOutline,
                             if (allSelectedTrashed) "Restore selected notes" else "Move selected notes to Trash") }
-                        IconButton(onClick = { selectedIds = emptySet() }) { Icon(Icons.Outlined.Close, "Clear selection") }
+                        IconButton(onClick = { home.clearSelection() }) { Icon(Icons.Outlined.Close, "Clear selection") }
                     }
                     if (!canTrashSelected) Text("Only notes you own can be moved to Trash.", style = MaterialTheme.typography.labelSmall)
                 }
@@ -312,15 +311,15 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
             } else LazyVerticalStaggeredGrid(columns = if (grid) StaggeredGridCells.Adaptive(170.dp) else StaggeredGridCells.Fixed(1), modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp) {
                 val pinned = projection.pinnedCards; val other = projection.otherCards
-                if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(pinned, key = { it.syncId }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, noteBounds,
+                if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
+                items(pinned, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, noteBounds,
                     onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
                     onLongClick = { selectNote(card.syncId) }, onDrop = { target ->
                         val source = projection.notesBySyncId[card.syncId]
                         if (source != null && reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, source, target)?.let { ids -> action { app.repository.reorder(ids) } }
                     }) }
-                if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine) { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(other, key = { it.syncId }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, noteBounds,
+                if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
+                items(other, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, noteBounds,
                     onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
                     onLongClick = { selectNote(card.syncId) }, onDrop = { target ->
                         val source = projection.notesBySyncId[card.syncId]
@@ -401,7 +400,7 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
         text = { Text("${selectedIds.size} selected note(s) will move to Trash. You can restore them later.") },
         confirmButton = { TextButton(onClick = { action {
             app.repository.setTrashed(selectedIds.toList(), true)
-            selectedIds = emptySet()
+            home.clearSelection()
             confirmBulkTrash = false
         } }) { Text("Move to Trash") } },
         dismissButton = { TextButton(onClick = { confirmBulkTrash = false }) { Text("Cancel") } })
