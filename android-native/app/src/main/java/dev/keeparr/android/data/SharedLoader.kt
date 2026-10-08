@@ -19,12 +19,14 @@ internal class SharedLoader<T : Any>(
     private class Request<T>(val deferred: Deferred<T?>, var consumers: Int)
     private val inFlight = mutableMapOf<String, Request<T>>()
 
-    val activeLoads: Int get() = synchronized(this) { inFlight.size }
+    // A deferred is completed before its completion handlers run, so the entry can briefly outlive the work; such an
+    // entry is neither active nor joinable.
+    val activeLoads: Int get() = synchronized(this) { inFlight.values.count { !it.deferred.isCompleted } }
 
     suspend fun load(key: String, cached: () -> T? = { null }, work: suspend () -> T?): T? {
         val pending = synchronized(this) {
             cached()?.let { return it }
-            inFlight[key]?.also { it.consumers++ } ?: run {
+            inFlight[key]?.takeIf { !it.deferred.isCompleted }?.also { it.consumers++ } ?: run {
                 lateinit var request: Request<T>
                 val deferred = scope.async(start = CoroutineStart.LAZY) {
                     work()?.also { result -> synchronized(this@SharedLoader) { onResult(key, result) } }
