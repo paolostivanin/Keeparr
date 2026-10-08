@@ -40,7 +40,6 @@ import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
-import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
@@ -122,7 +121,7 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
                 } else HomeScreen(app, notes, reminders, conflicts, onEdit = { openEditor(it) }, onCreate = { checklist ->
                     action { val note = Note.create(app.settings.userId, checklist); repo.save(note); openEditor(note) }
                 }, onSettings = { showSettings = true }, onReauthenticate = { signedInOverride = false }, onError = { error = it })
-                if (showSettings) SettingsDialog(activity, app, reminders, occurrences, dark, onDark = { darkOverride = it; app.settings.darkMode = it },
+                if (showSettings) SettingsScreen(activity, app, reminders, occurrences, dark, onDark = { darkOverride = it; app.settings.darkMode = it },
                     onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedInOverride = false; showSettings = false } }, onError = { error = it })
             }
             val visibleError = settingsWriteError ?: error
@@ -556,58 +555,4 @@ internal fun MediaImage(app: KeeparrApplication, path: String, maxHeight: androi
             }
         }
     }
-}
-
-@Composable
-private fun SettingsDialog(activity: MainActivity, app: KeeparrApplication, reminders: List<JSONObject>, occurrences: List<JSONObject>, dark: Boolean, onDark: (Boolean) -> Unit,
-    onClose: () -> Unit, onLogout: () -> Unit, onError: (String) -> Unit) {
-    val scope = rememberCoroutineScope()
-    val scheduler = app.reminders
-    var alias by remember { mutableStateOf(app.settings.alias) }
-    var confirmLogout by remember { mutableStateOf(false) }
-    var pendingCount by remember { mutableIntStateOf(0) }
-    LaunchedEffect(app.settings.profile) { pendingCount = app.repository.store.pending(app.settings.profile).size }
-    AlertDialog(onDismissRequest = onClose, title = { Text("Keeparr settings") }, text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-        Text(app.settings.origin, style = MaterialTheme.typography.bodySmall)
-        Row(verticalAlignment = Alignment.CenterVertically) { Text("Dark theme", Modifier.weight(1f)); Switch(dark, onDark) }
-        Text("Time reminders", style = MaterialTheme.typography.titleMedium)
-        Text(if (scheduler.notificationsAllowed()) "Notifications and reminder channel enabled" else "Notifications or the reminder channel are disabled")
-        TextButton(onClick = { activity.requestNotifications(); activity.notificationSettings() }) { Text("Notification settings") }
-        Text(if (scheduler.precise()) "Precise reminders enabled" else "Reminder delivery may be delayed without alarm access")
-        if (!scheduler.precise()) TextButton(onClick = { activity.requestPreciseAlarms() }) { Text("Allow precise reminders") }
-        val nextDelivery = ReminderPlanner.nextDelivery(reminders, occurrences, Instant.now())
-        Text(nextDelivery?.let { "Next reminder: ${ReminderFormat.dateTime(it.toString())}" }
-            ?: "No upcoming reminders", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall)
-        TextButton(onClick = { if (scheduler.notificationsAllowed()) scheduler.testNotification() else activity.requestNotifications() }) { Text("Send test notification") }
-        Text("Client certificate: ${alias.ifBlank { "none" }}", Modifier.padding(top = 12.dp))
-        TextButton(onClick = { activity.chooseCertificate(app.settings.origin) { alias = it; SyncWorker.enqueue(app) } }) { Text("Replace client certificate") }
-        Text("Widgets follow your note order and show cached notes offline.", style = MaterialTheme.typography.bodySmall)
-        TextButton(onClick = { scope.launch {
-            try {
-                val report = withContext(Dispatchers.IO) {
-                    val store = app.database.store()
-                    val connection = app.settings.snapshot()
-                    val profile = connection.profile
-                    val pending = store.pending(profile)
-                    val payload = RedactedDiagnostics.build(
-                        app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: "unknown",
-                        android.os.Build.VERSION.SDK_INT, android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL,
-                        connection, app.repository.connectionState.value::class.simpleName ?: "Unknown",
-                        store.list(profile, "note").size, reminders.size, pending, scheduler.notificationsAllowed(),
-                        scheduler.precise(), app.settings.message.isNotBlank())
-                    val folder = java.io.File(app.cacheDir, "diagnostics").apply { mkdirs() }
-                    java.io.File(folder, "keeparr-diagnostics.txt").apply { writeText(payload.toString(2)) }
-                }
-                val uri = FileProvider.getUriForFile(app, "dev.keeparr.android.files", report)
-                activity.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
-                    .putExtra(Intent.EXTRA_SUBJECT, "Redacted Keeparr diagnostics").putExtra(Intent.EXTRA_STREAM, uri)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Share diagnostics"))
-            } catch (problem: Exception) { onError(problem.message ?: "Could not create diagnostics") }
-        } }) { Text("Export redacted diagnostics") }
-        TextButton(onClick = { confirmLogout = true }) { Text("Sign out and clear local data") }
-    } }, confirmButton = { TextButton(onClick = onClose) { Text("Done") } })
-    if (confirmLogout) AlertDialog(onDismissRequest = { confirmLogout = false }, title = { Text("Sign out?") },
-        text = { Text(if (pendingCount > 0) "This clears cached notes, attachments, and $pendingCount unsynchronized change(s), including recovered drafts and pending uploads, from this device." else "This clears cached notes and attachments from this device.") },
-        confirmButton = { TextButton(onClick = { confirmLogout = false; onLogout() }) { Text("Clear and sign out") } },
-        dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text("Cancel") } })
 }
