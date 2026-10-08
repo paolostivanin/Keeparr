@@ -102,7 +102,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
     val syncStatus by app.repository.status.collectAsStateWithLifecycle()
     val selectedReminder = reminders.find { it.text("status") == "pending" && it.text("dueAtUtc").isNotBlank() &&
         (it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId) }
-    fun change(block: (JSONObject) -> Unit) { draftViewModel.change(block) }
+    fun change(vararg touched: String, block: (JSONObject) -> Unit) { draftViewModel.change(*touched, block = block) }
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
     fun close() { action { draftViewModel.finish(); onClose() } }
     val bodyHandle = remember { BodyEditorHandle() }
@@ -112,7 +112,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
     fun checklistItemId(item: JSONObject, index: Int) = item.optLong("id", index.toLong())
     fun addChecklistItem() {
         val id = System.currentTimeMillis()
-        change {
+        change("checkBoxes") {
             val all = it.optJSONArray("checkBoxes") ?: JSONArray()
             all.put(JSONObject().put("id", id).put("done", false).put("data", "").put("indentLevel", 0))
             it.put("checkBoxes", all)
@@ -142,6 +142,15 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
         if (runCatching { requester.requestFocus() }.isSuccess) { keyboard?.show(); pendingFocusItemId = null }
     }
     LaunchedEffect(draftViewModel) { draftViewModel.errors.collect(onError) }
+    // The debounce window must not be lost when the editor leaves the foreground.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, draftViewModel) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) app.scope.launch { runCatching { draftViewModel.flushLocal() } }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     BackHandler { if (inaccessible) onClose() else close() }
     LaunchedEffect(cachedNote) {
         if (original.id > 0 && cachedNote == null && !inaccessible) {
@@ -187,7 +196,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
     Scaffold(topBar = {
         TopAppBar(title = {},
             navigationIcon = { IconButton(onClick = ::close) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Save and go back") } }, actions = {
-                IconButton(onClick = { change { it.put("pinned", !note.pinned) } }) {
+                IconButton(onClick = { change("pinned") { it.put("pinned", !note.pinned) } }) {
                     Icon(Icons.Outlined.PushPin, if (note.pinned) "Unpin" else "Pin",
                         tint = if (note.pinned) MaterialTheme.colorScheme.primary else LocalContentColor.current)
                 }
@@ -276,7 +285,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
             editors[note.id].orEmpty().takeIf { it.isNotEmpty() }?.let { active ->
                 Text("Editing with ${active.joinToString()}", style = MaterialTheme.typography.labelSmall, color = foreground.copy(alpha = .7f))
             }
-            BasicTextField(value = note.title, onValueChange = { title -> change { it.put("noteTitle", title) } },
+            BasicTextField(value = note.title, onValueChange = { title -> change("noteTitle") { it.put("noteTitle", title) } },
                 modifier = Modifier.fillMaxWidth(), singleLine = true,
                 textStyle = MaterialTheme.typography.headlineSmall.copy(color = foreground), cursorBrush = SolidColor(foreground),
                 decorationBox = { inner -> Box {
@@ -295,12 +304,12 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
                         var itemMenuExpanded by remember { mutableStateOf(false) }
                         val requester = itemFocus.getOrPut(checklistItemId(item, index)) { FocusRequester() }
                         Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                            Checkbox(item.optBoolean("done"), onCheckedChange = { done -> change {
+                            Checkbox(item.optBoolean("done"), onCheckedChange = { done -> change("checkBoxes") {
                                 it.put("checkBoxes", ChecklistAdapter.setDone(it.getJSONArray("checkBoxes"), index, done))
                             } })
                             if (NoteFormat.checklistItemEditable(item.opt("data"))) BasicTextField(
                                 value = NoteFormat.displayText(item.text("data")),
-                                onValueChange = { text -> change {
+                                onValueChange = { text -> change("checkBoxes") {
                                     it.getJSONArray("checkBoxes").getJSONObject(index).put("data", NoteFormat.editedChecklistItem(item.opt("data"), text))
                                 } }, modifier = Modifier.weight(1f).padding(start = (item.optInt("indentLevel") * 12).dp).focusRequester(requester),
                                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = foreground), cursorBrush = SolidColor(foreground),
@@ -315,17 +324,17 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
                             Box {
                                 IconButton(onClick = { itemMenuExpanded = true }) { Icon(Icons.Outlined.MoreVert, "Checklist item actions") }
                                 DropdownMenu(expanded = itemMenuExpanded, onDismissRequest = { itemMenuExpanded = false }) {
-                                    if (index > 0) DropdownMenuItem(text = { Text("Move up") }, onClick = { itemMenuExpanded = false; change {
+                                    if (index > 0) DropdownMenuItem(text = { Text("Move up") }, onClick = { itemMenuExpanded = false; change("checkBoxes") {
                                         it.put("checkBoxes", ChecklistAdapter.move(it.getJSONArray("checkBoxes"), index, index - 1))
                                     } })
-                                    DropdownMenuItem(text = { Text("Indent") }, onClick = { itemMenuExpanded = false; change {
+                                    DropdownMenuItem(text = { Text("Indent") }, onClick = { itemMenuExpanded = false; change("checkBoxes") {
                                         it.put("checkBoxes", ChecklistAdapter.indent(it.getJSONArray("checkBoxes"), index, 1))
                                     } })
-                                    if (item.optInt("indentLevel") > 0) DropdownMenuItem(text = { Text("Outdent") }, onClick = { itemMenuExpanded = false; change {
+                                    if (item.optInt("indentLevel") > 0) DropdownMenuItem(text = { Text("Outdent") }, onClick = { itemMenuExpanded = false; change("checkBoxes") {
                                         it.put("checkBoxes", ChecklistAdapter.indent(it.getJSONArray("checkBoxes"), index, -1))
                                     } })
                                     DropdownMenuItem(text = { Text("Remove item") }, leadingIcon = { Icon(Icons.Outlined.Close, null) },
-                                        onClick = { itemMenuExpanded = false; change { json ->
+                                        onClick = { itemMenuExpanded = false; change("checkBoxes") { json ->
                                             val all = json.getJSONArray("checkBoxes").objects().toMutableList()
                                             all.removeAt(index)
                                             json.put("checkBoxes", JSONArray(all))
@@ -337,7 +346,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: 
                 }
                 TextButton(onClick = ::addChecklistItem) { Icon(Icons.Outlined.Add, null); Text("List item") }
             } else if (NoteFormat.editable(note.body)) {
-                StyledEditor(note.body, reset = note.body, textColor = foreground, handle = bodyHandle, onChange = { html -> change { it.put("noteBody", html) } })
+                StyledEditor(note.body, reset = note.body, textColor = foreground, handle = bodyHandle, onChange = { html -> change("noteBody") { it.put("noteBody", html) } })
             } else {
                 Text(NoteFormat.displayText(note.body))
                 Text("This note contains formatting the native editor does not support yet. Its body is preserved; other fields remain editable.", style = MaterialTheme.typography.bodySmall)

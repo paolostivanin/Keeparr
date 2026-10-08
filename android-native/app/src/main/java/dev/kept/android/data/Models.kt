@@ -15,6 +15,25 @@ import java.time.ZonedDateTime
 import java.util.UUID
 
 fun JSONObject.copyJson() = JSONObject(toString())
+
+/** Copies the top-level keys only; nested objects and arrays are shared with the original. */
+fun JSONObject.shallowCopy(): JSONObject = JSONObject().also { copy -> keys().forEach { key -> copy.put(key, opt(key)) } }
+
+/**
+ * A copy that is safe to mutate in the named top-level fields (their values are deep-copied) while everything else is
+ * shared with the original, so typing in one field does not re-serialize large inline images or the whole checklist.
+ */
+fun JSONObject.copyForEdit(touched: Array<out String>): JSONObject {
+    if (touched.isEmpty()) return copyJson()
+    val copy = shallowCopy()
+    for (key in touched) {
+        when (val value = opt(key)) {
+            is JSONObject -> copy.put(key, value.copyJson())
+            is org.json.JSONArray -> copy.put(key, org.json.JSONArray(value.toString()))
+        }
+    }
+    return copy
+}
 fun JSONObject.text(key: String, fallback: String = ""): String = if (isNull(key)) fallback else optString(key, fallback)
 fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull { optJSONObject(it) }
 
@@ -68,15 +87,11 @@ object EditorSnapshotPolicy {
         "completedChecklistCollapsed", "attachments"
     )
 
-    fun sameEditableContent(first: Note, second: Note): Boolean {
-        val left = first.raw.copyJson()
-        val right = second.raw.copyJson()
-        serverManagedFields.forEach { key -> left.remove(key); right.remove(key) }
-        return canonicalJson(left) == canonicalJson(right)
-    }
+    fun sameEditableContent(first: Note, second: Note): Boolean =
+        canonicalJson(first.raw, serverManagedFields) == canonicalJson(second.raw, serverManagedFields)
 
-    private fun canonicalJson(value: Any?): String = when (value) {
-        is JSONObject -> value.keys().asSequence().sorted().joinToString(prefix = "{", postfix = "}") { key ->
+    private fun canonicalJson(value: Any?, skipTopLevel: Set<String> = emptySet()): String = when (value) {
+        is JSONObject -> value.keys().asSequence().filter { it !in skipTopLevel }.sorted().joinToString(prefix = "{", postfix = "}") { key ->
             "${JSONObject.quote(key)}:${canonicalJson(value.opt(key))}"
         }
         is JSONArray -> (0 until value.length()).joinToString(prefix = "[", postfix = "]") { index -> canonicalJson(value.opt(index)) }

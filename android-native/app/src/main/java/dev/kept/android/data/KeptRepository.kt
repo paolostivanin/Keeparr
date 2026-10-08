@@ -106,9 +106,11 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         // Outbox reads must share the write transaction: a sync acknowledgement landing between them would leave the new
         // entry depending on a deleted operation, and it would never be sent.
         database.withTransaction {
-            val raw = note.raw.copyJson().put("revision", knownRevision(profile, note))
-            store.put(Record(profile, "note", note.syncId, raw.toString()))
-            store.enqueue(noteUpsertEntry(profile, note.syncId, raw))
+            // Shallow: the copy is only serialized (once), so untouched nested fields need no deep copy.
+            val raw = note.raw.shallowCopy().put("revision", knownRevision(profile, note))
+            val payload = raw.toString()
+            store.put(Record(profile, "note", note.syncId, payload))
+            store.enqueue(noteUpsertEntry(profile, note.syncId, raw, payload))
         }
         if (profile == settings.profile) changed(synchronize, reconcile = true)
     }
@@ -137,17 +139,17 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     }
 
     // Only call inside a transaction.
-    private suspend fun noteUpsertEntry(profile: String, syncId: String, raw: JSONObject): Outbox {
+    private suspend fun noteUpsertEntry(profile: String, syncId: String, raw: JSONObject, payload: String = raw.toString()): Outbox {
         val conflicted = store.conflicted(profile, "note.upsert", syncId)
-        if (conflicted != null) return conflicted.copy(payload = raw.toString())
+        if (conflicted != null) return conflicted.copy(payload = payload)
         val queued = store.queued(profile, "note.upsert", syncId)
-        if (queued != null && !queued.attempted) return queued.copy(payload = raw.toString())
+        if (queued != null && !queued.attempted) return queued.copy(payload = payload)
         val pendingMedia = store.pending(profile).lastOrNull { entry ->
             entry.type == "media.upload" && entry.conflict == null &&
                 runCatching { JSONObject(entry.payload).text("noteSyncId") == syncId }.getOrDefault(false)
         }
         val predecessor = queued ?: store.inFlight(profile, "note.upsert", syncId)
-        return Outbox(UUID.randomUUID().toString(), profile, "note.upsert", syncId, raw.toString(),
+        return Outbox(UUID.randomUUID().toString(), profile, "note.upsert", syncId, payload,
             baseRevision = raw.optLong("revision"), dependsOnOperationId = pendingMedia?.operationId ?: predecessor?.operationId)
     }
 
@@ -295,6 +297,9 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         }
         if (synchronize) app.enqueueSync(app)
     }
+
+    /** Hands already-committed outbox work to the sync worker without rewriting or reconciling anything. */
+    fun queueSync() = app.enqueueSync(app)
 
     fun requestSync() {
         app.scope.launch { reconcile() }

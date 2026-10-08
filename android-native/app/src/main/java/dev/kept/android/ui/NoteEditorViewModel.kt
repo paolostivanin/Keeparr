@@ -8,10 +8,12 @@ import dev.kept.android.data.Discard
 import dev.kept.android.data.EditorSnapshotPolicy
 import dev.kept.android.data.Note
 import dev.kept.android.data.copyJson
+import dev.kept.android.data.copyForEdit
 import dev.kept.android.data.KeptRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -44,6 +46,11 @@ class NoteEditorViewModel(
     val errors = _errors.asSharedFlow()
     private val persistenceMutex = Mutex()
     @Volatile private var saveGeneration = 0
+    @Volatile private var persistedGeneration = 0
+    @Volatile private var pendingSince = 0L
+    private val localWrites = java.util.concurrent.atomic.AtomicInteger()
+    /** Number of local draft commits made by this session (a measure of write amplification while typing). */
+    internal val localWriteCount get() = localWrites.get()
     private var persistenceJob: Job? = null
 
     init {
@@ -61,16 +68,20 @@ class NoteEditorViewModel(
         }
     }
 
-    @Synchronized fun change(block: (JSONObject) -> Unit) {
-        val next = _draft.value.copyJson().also(block)
-        _draft.value = next
-        _draftGeneration.value += 1
-        _dirty.value = true
-        persistLocally(next)
+    /**
+     * Applies an edit to a new draft. Name the top-level fields the block mutates in place (`"checkBoxes"`, `"labels"`)
+     * so only those are deep-copied and the rest of the note (inline images, drawings, unknown fields) is shared with
+     * the previous draft instead of being re-serialized on every keystroke. With no names the whole note is copied.
+     */
+    @Synchronized fun change(vararg touched: String, block: (JSONObject) -> Unit) {
+        publish(_draft.value.copyForEdit(touched).also(block))
     }
 
     @Synchronized fun replace(value: JSONObject) {
-        val next = value.copyJson()
+        publish(value.copyJson())
+    }
+
+    private fun publish(next: JSONObject) {
         _draft.value = next
         _draftGeneration.value += 1
         _dirty.value = true
@@ -122,10 +133,16 @@ class NoteEditorViewModel(
         persistenceMutex.withLock {
             while (true) {
                 val generation = saveGeneration
-                val snapshot = Note(_draft.value.copyJson())
                 if (_dirty.value) {
-                    repository.save(snapshot, synchronize = true, profile = profile)
+                    if (persistedGeneration == generation && profile == repository.settings.profile) {
+                        // Already committed locally by the debounced write: only hand the queue to the sync worker.
+                        repository.queueSync()
+                    } else {
+                        repository.save(Note(_draft.value), synchronize = true, profile = profile)
+                        markPersisted(generation)
+                    }
                     _localSaveFailed.value = false
+                    if (generation == saveGeneration) _localSaving.value = false
                 }
                 else if (profile == repository.settings.profile) repository.requestSync()
                 if (generation == saveGeneration) {
@@ -135,12 +152,36 @@ class NoteEditorViewModel(
         }
     }
 
+    /** Commits an edit still waiting in the debounce window (called when the editor leaves the foreground). */
+    suspend fun flushLocal() {
+        persistenceMutex.withLock {
+            val generation = saveGeneration
+            if (_dirty.value && persistedGeneration < generation) {
+                repository.save(Note(_draft.value), synchronize = false, profile = profile)
+                markPersisted(generation)
+                _localSaveFailed.value = false
+                if (generation == saveGeneration) _localSaving.value = false
+            }
+        }
+    }
+
+    private fun markPersisted(generation: Int) {
+        persistedGeneration = generation
+        pendingSince = 0
+        localWrites.incrementAndGet()
+    }
+
     // Closing a note created in this session without content discards it instead of saving a blank note.
     suspend fun finish() {
         val draft = Note(_draft.value.copyJson())
         if (!startedAsNew || draft.hasContent) return flushAndQueueSync()
         persistenceMutex.withLock {
             persistenceJob?.cancel()
+            // The emptied draft may still be waiting in the debounce window; the discard decision reads stored state.
+            if (_dirty.value && persistedGeneration < saveGeneration) {
+                repository.save(draft, synchronize = false, profile = profile)
+                markPersisted(saveGeneration)
+            }
             saveGeneration++
             if (repository.discardIfEmpty(draft.syncId, profile) == Discard.SYNCED && draft.owner == repository.settings.userId &&
                 profile == repository.settings.profile) {
@@ -169,24 +210,37 @@ class NoteEditorViewModel(
         val generation = ++saveGeneration
         _localSaving.value = true
         _localSaveFailed.value = false
+        // Coalesce keystrokes into one write, but never leave an edit uncommitted for longer than MAX_UNSAVED_MS.
+        val now = System.nanoTime() / 1_000_000
+        if (pendingSince == 0L) pendingSince = now
+        val wait = LOCAL_SAVE_DEBOUNCE_MS.coerceAtMost((pendingSince + MAX_UNSAVED_MS - now).coerceAtLeast(0))
         persistenceJob?.cancel()
         persistenceJob = viewModelScope.launch(Dispatchers.IO) {
+            var failed = false
             try {
+                delay(wait)
                 persistenceMutex.withLock {
-                    if (generation == saveGeneration) {
+                    if (generation == saveGeneration && persistedGeneration < generation) {
                         repository.save(Note(snapshot), synchronize = false, profile = profile)
+                        markPersisted(generation)
                         _localSaveFailed.value = false
                     }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                failed = true
                 if (generation == saveGeneration) _localSaveFailed.value = true
                 _errors.emit(error.message ?: "Could not save draft on this device")
             } finally {
-                if (generation == saveGeneration) _localSaving.value = false
+                if (generation == saveGeneration && (failed || persistedGeneration >= generation)) _localSaving.value = false
             }
         }
+    }
+
+    companion object {
+        internal const val LOCAL_SAVE_DEBOUNCE_MS = 250L
+        internal const val MAX_UNSAVED_MS = 1_000L
     }
 
     class Factory(private val app: KeptApplication, private val initial: Note) : ViewModelProvider.Factory {
