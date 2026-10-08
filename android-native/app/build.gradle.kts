@@ -16,7 +16,27 @@ android {
         versionName = "2.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-    buildTypes { release { signingConfig = signingConfigs.getByName("debug") } }
+    // Production signing comes from the environment (or -P properties) and never from the repository. Without it the
+    // release build is signed with the debug key so it stays installable locally and for benchmarks; such an APK must
+    // not be distributed. Shrinking is opt-in (-Pkept.minify=true) until it has been exercised on a device.
+    val releaseKeystore = (findProperty("kept.release.keystore") as String?) ?: System.getenv("KEPT_RELEASE_KEYSTORE")
+    if (releaseKeystore != null) {
+        signingConfigs.create("production") {
+            storeFile = file(releaseKeystore)
+            storePassword = (findProperty("kept.release.storePassword") as String?) ?: System.getenv("KEPT_RELEASE_STORE_PASSWORD")
+            keyAlias = (findProperty("kept.release.keyAlias") as String?) ?: System.getenv("KEPT_RELEASE_KEY_ALIAS")
+            keyPassword = (findProperty("kept.release.keyPassword") as String?) ?: System.getenv("KEPT_RELEASE_KEY_PASSWORD")
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "production" else "debug")
+            val shrink = findProperty("kept.minify") == "true"
+            isMinifyEnabled = shrink
+            isShrinkResources = shrink
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
