@@ -22,6 +22,7 @@ import { NoteLockService } from 'src/app/services/note-lock.service';
 import { CARD_LAYOUT_PREFERENCES, changedPreferences, UserPreferencesService, type UserPreferences } from 'src/app/services/user-preferences.service';
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
 import { descendantIndexes } from 'src/app/utils/checkbox-indent';
+import { LayoutScheduler, browserLayoutClock } from 'src/app/utils/layout-scheduler';
 import { NoteBodySegment, NotePreviewMeta } from './note-card-preview.component';
 import { NoteListWindow, NoteListWindowModel } from './note-list-window';
 import { MasonryWindowResult, NoteMasonryWindowModel } from './note-masonry-window';
@@ -173,9 +174,8 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private customTimePickerInput?: HTMLInputElement
   private timePickerNote?: NoteI
   private timePickerDateInput?: HTMLInputElement
-  private lastMasonrySignature = ''
   private masonrySignatureToken = 0
-  private masonryFrame?: number
+  private readonly layout = new LayoutScheduler(() => this.buildMasonry(), browserLayoutClock, fn => this.zone.runOutsideAngular(fn))
   private masonryPackFrame?: number
   private containerResizeObserver?: ResizeObserver
   private destroyed = false
@@ -221,6 +221,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private readonly initialNoteRenderChunk = 24
   private didInitialExpand = false
   private lastRenderContext = ''
+  // The render context only changes through page/search/scope/view events, so it is
+  // recomputed when one of them fires instead of on every change-detection pass.
+  private renderContextDirty = true
   private loadMoreObserver?: IntersectionObserver
   private isBackfillingFilteredPage = false
   private lastBackfillContext = ''
@@ -240,7 +243,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private keptAppReadyQueued = false
   private keptAppReadySent = false
   private keptAppReadyRetry?: ReturnType<typeof setTimeout>
-  private viewportMasonryTimers: ReturnType<typeof setTimeout>[] = []
   private noteCardResizeObserver?: ResizeObserver
   private observedNoteCards = new Set<HTMLElement>()
   private widgetAppUrlOpenHandle?: PluginListenerHandle
@@ -516,6 +518,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   private updateCurrentPageName() {
+    this.renderContextDirty = true
     this.currentPageName = this.currentPage.binder ? `binder:${this.currentPage.binder}` : this.currentPage.label ? this.currentPage.label : this.currentPage.archive ? 'archived' : (this.currentPage.trash ? 'trashed' : this.currentPage.reminders ? 'reminders' : this.currentPage.attachments ? 'attachments' : this.currentPage.shared ? 'shared' : 'home')
   }
 
@@ -657,18 +660,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   scheduleBuildMasonry(force = false) {
-    if (this.destroyed) return
-    const signature = this.masonrySignature()
-    if (!force && signature === this.lastMasonrySignature) return
-    this.lastMasonrySignature = signature
-    if (this.masonryFrame != null) return
-    // Layout-only work must not start another application-wide Angular check.
-    this.zone.runOutsideAngular(() => {
-      this.masonryFrame = requestAnimationFrame(() => {
-        this.masonryFrame = undefined
-        this.buildMasonry()
-      })
-    })
+    this.layout.request(this.masonrySignature(), force)
   }
 
   private masonrySignature() {
@@ -2862,7 +2854,10 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   // ?--------------------------------------------------------------
 
   ngAfterViewChecked() {
-    const renderContext = `${this.currentPageName}:${this.Shared.searchQuery}:${this.Shared.searchScope.value}:${this.Shared.noteViewType.value}`
+    const renderContext = this.renderContextDirty
+      ? `${this.currentPageName}:${this.Shared.searchQuery}:${this.Shared.searchScope.value}:${this.Shared.noteViewType.value}`
+      : this.lastRenderContext
+    this.renderContextDirty = false
     if (renderContext !== this.lastRenderContext) {
       this.lastRenderContext = renderContext
       if (this.isSearchActive()) {
@@ -2965,17 +2960,10 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   private scheduleViewportMasonrySettle() {
-    this.viewportMasonryTimers.forEach(timer => clearTimeout(timer))
-    this.viewportMasonryTimers = []
-    this.scheduleBuildMasonry(true)
-
     // Native WebViews report rotation before their final layout viewport and
-    // safe-area dimensions have settled. Repack after paint and twice more as
-    // those measurements stabilize so cards never retain portrait transforms.
-    requestAnimationFrame(() => requestAnimationFrame(() => this.scheduleBuildMasonry(true)))
-    for (const delay of [80, 220]) {
-      this.viewportMasonryTimers.push(setTimeout(() => this.scheduleBuildMasonry(true), delay))
-    }
+    // safe-area dimensions have settled; the scheduler repacks immediately,
+    // after paint and twice more as those measurements stabilize.
+    this.layout.settle(() => this.masonrySignature(), [80, 220])
   }
 
   private observeRenderedNoteCards() {
@@ -3010,7 +2998,10 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
         if (x && (this.editorLoading || this.editorLoadError)) this.closeModal()
       }),
       this.Shared.openSelectedReminder.subscribe(() => this.openReminderForSelectedNote()),
+      this.Shared.searchQueryChanged$.subscribe(() => { this.renderContextDirty = true }),
+      this.Shared.searchScope.subscribe(() => { this.renderContextDirty = true }),
       this.Shared.noteViewType.subscribe(() => {
+        this.renderContextDirty = true
         setTimeout(() => this.scheduleBuildMasonry(true), 300);
         this.scheduleIPadMasonrySettle()
       }),
@@ -3238,7 +3229,11 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (this.scrollExpansionFallback) clearTimeout(this.scrollExpansionFallback)
     if (this.gridResizeFrame != null) cancelAnimationFrame(this.gridResizeFrame)
     this.pendingGridResizeEntries = []
-    if (this.masonryFrame != null) cancelAnimationFrame(this.masonryFrame)
+    this.layout.dispose()
+    // A drag in progress owns a document listener, a ghost clone, page touch-action and a frame loop.
+    if (this.touchDragNote) this.endTouchDrag(false)
+    if (this.longPressTimer) clearTimeout(this.longPressTimer)
+    this.clearPullRefreshSettleTimer()
     if (this.masonryPackFrame != null) cancelAnimationFrame(this.masonryPackFrame)
     this.containerResizeObserver?.disconnect()
     window.removeEventListener('kept-smart-capture-notes-added', this.smartCaptureNotesAddedHandler)
@@ -3251,8 +3246,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.observedNoteCards.clear()
     if (this.keptAppReadyRetry) clearTimeout(this.keptAppReadyRetry)
     if (this.pendingWidgetOpenTimer) clearTimeout(this.pendingWidgetOpenTimer)
-    this.viewportMasonryTimers.forEach(timer => clearTimeout(timer))
-    this.viewportMasonryTimers = []
     this.clearModalScrollRestoreTimers()
     this.closeReminderPicker()
     this.subscriptions.forEach(s => s.unsubscribe())

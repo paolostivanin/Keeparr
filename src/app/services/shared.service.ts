@@ -99,6 +99,8 @@ export class SharedService {
   selectedNoteIds = new BehaviorSubject<number[]>([])
   searchScope = new BehaviorSubject<'all' | 'current'>(this.initialSearchScope())
   searchQuery = ''
+  /** Fires after every search-text change so views need not poll `searchQuery`. */
+  readonly searchQueryChanged$ = new Subject<string>()
 
   initPwa() {
     const ua = navigator.userAgent;
@@ -138,6 +140,7 @@ export class SharedService {
 
   setSearchQuery(query: string) {
     this.searchQuery = query
+    this.searchQueryChanged$.next(query)
     this.Notes.setSearchQuery(query)
   }
 

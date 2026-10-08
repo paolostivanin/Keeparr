@@ -6,7 +6,7 @@ describe('editor body transformations', () => {
   it('round-trips rich formatting, links, bare URLs and inline objects unchanged', () => {
     const html = '<h1>Title</h1><p><b>bold</b> <i>it</i> <u>u</u></p>'
       + '<a href="https://example.com/a" target="_blank">label</a> and https://example.org/path, then text'
-      + '<div class="inline-image-wrap" data-x="1"><img src="/api/x.png" alt="a"></div><ul><li>one</li></ul>';
+      + '<div class="inline-image-wrap" data-x="1"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="a"></div><ul><li>one</li></ul>';
     expect(roundTrip(html)).toBe(html);
   });
 

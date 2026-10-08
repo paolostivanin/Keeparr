@@ -119,7 +119,7 @@ describe('NotesComponent responsiveness', () => {
     const container = document.createElement('div');
     Object.defineProperty(container, 'clientWidth', { get: () => { throw new Error('Forced layout read'); } });
     component.mainContainer = new ElementRef(container);
-    (component as any).lastMasonrySignature = (component as any).masonrySignature();
+    (component as any).layout.lastSignature = (component as any).masonrySignature();
     expect(() => component.scheduleBuildMasonry()).not.toThrow();
   });
 
@@ -147,4 +147,50 @@ describe('NotesComponent responsiveness', () => {
     }
   }));
 
+  it('releases an in-progress touch drag when the view is destroyed', () => {
+    const moved = jasmine.createSpy('touchmove');
+    const ghost = document.createElement('div');
+    document.body.appendChild(ghost);
+    document.body.style.touchAction = 'none';
+    document.addEventListener('touchmove', moved);
+    const card = document.createElement('div');
+    card.style.opacity = '0.35';
+    Object.assign(component as any, { touchDragNote: preview, touchDragEl: card, touchDragGhost: ghost, touchDragMoveListener: moved });
+
+    component.ngOnDestroy();
+
+    document.dispatchEvent(new Event('touchmove'));
+    expect(moved).not.toHaveBeenCalled();
+    expect(ghost.isConnected).toBeFalse();
+    expect(card.style.opacity).toBe('');
+    expect(document.body.style.touchAction).toBe('');
+    expect((component as any).touchDragNote).toBeNull();
+    expect(component.noteOrderChanged).toBeFalse();
+  });
+
+  it('stops scheduling layout after destroy', () => {
+    component.ngOnDestroy();
+    const frame = spyOn(window, 'requestAnimationFrame');
+    component.scheduleBuildMasonry(true);
+    (component as any).scheduleViewportMasonrySettle();
+    expect(frame).not.toHaveBeenCalled();
+  });
+
+  it('recomputes the render context only after a page/search/scope/view event', () => {
+    let reads = 0;
+    Object.defineProperty(shared, 'searchQuery', { get: () => { reads++; return ''; } });
+    for (const name of ['maybeBackfillFilteredPage', 'observeLoadMoreSentinelIfNeeded', 'queueKeptAppReadySignal']) spyOn<any>(component, name);
+    spyOn(component, 'scheduleBuildMasonry');
+
+    component.ngAfterViewChecked();
+    const afterFirst = reads;
+    expect(afterFirst).toBeGreaterThan(0);
+    component.ngAfterViewChecked();
+    component.ngAfterViewChecked();
+    expect(reads).toBe(afterFirst);
+
+    (component as any).updateCurrentPageName();
+    component.ngAfterViewChecked();
+    expect(reads).toBeGreaterThan(afterFirst);
+  });
 });

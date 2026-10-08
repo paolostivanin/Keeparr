@@ -92,7 +92,7 @@ Primary owners: `NotesStoreService`, `SharedService` facades, `NotesToolsPipe`, 
 Primary owners: `InputComponent`, `NotesComponent`, focused feature/domain adapters.
 
 - [x] **M3.1 — Editor/persistence boundary.** Session/save state already lives in `utils/editor-session.ts` (M1.2); the remaining non-DOM editing logic that was embedded in `InputComponent` is now framework-free and characterized: `utils/checklist-model.ts` (row normalization/id repair, depth change that carries children, done-toggle that carries children, and `ChecklistHistory` structural undo/redo with the 80-step bound and the "text typed after the last structural change belongs to the browser undo" rule) and `utils/editor-body.ts` (stored body ⇄ editor HTML: link/URL preview slots, stripping editor-only chrome on save, URL extraction). The component keeps DOM, caret/IME, paste, drag and focus ownership and delegates to these; behavior is unchanged (round trip of rich formatting, links, inline-image wrappers is asserted). Drawing, reminders, places and collaborator panels were not moved (no cohesion gain demonstrated).
-- [ ] **M3.2 — Layout/gesture boundary.** Give measurements, ResizeObserver, packing/window state, sentinels, responsive/foldable rules, selection, and drag lifecycles explicit ownership. Drive layout from changed state/elements rather than repeated application checks.
+- [x] **M3.2 — Layout/gesture boundary.** `utils/layout-scheduler.ts` (`LayoutScheduler`) is now the single owner of repack timing: one pending frame, signature de-duplication, a single cancellable viewport/rotation settle sequence (immediately, after paint, +80 ms, +220 ms) and disposal; `NotesComponent` no longer keeps its own frame/timer/signature fields. Element-driven inputs already existed and are unchanged (container and per-card `ResizeObserver`, load-more `IntersectionObserver`, window/list/grid models). The per-pass work in `ngAfterViewChecked` was the remaining polling: the page/search/scope/view context string is now rebuilt only after an event (`SharedService.searchQueryChanged$`, scope/view subjects, page-name update) instead of on every change-detection pass. Gesture lifecycle: destroying the view mid-touch-drag used to leave the document `touchmove` listener, the ghost clone, page `touch-action`, the autoscroll frame loop, the long-press timer and the pull-to-refresh settle timer alive; `ngOnDestroy` now ends the drag (uncommitted) and clears both timers. Selection is ID-based (M2.5) and unchanged.
 - [ ] **M3.3 — Overlay state and callbacks.** Replace business-state decisions based on `style.display` with explicit state; keep dialogs outside transformed cards and preserve focus. Make async timer/socket/observer/timepicker/plugin/clipboard results notify the intended view under the current Angular mode.
 - [ ] **M3.4 — Bounded resource lifecycle.** Dispose subscriptions, timers, requests, observers, listeners, object URLs, and closed sessions; bound drawing undo memory and avoid expensive synchronous encoding in typing/close paths. Retain drawing serialization and native-shell/Smart Capture behavior; address leaks/stalls with targeted changes rather than mandatory panel-by-panel extraction.
 
@@ -487,4 +487,18 @@ Reference build/device/fixture: Node 24 production build; headless Chromium 154.
 Before / after performance evidence: none.
 Remaining acceptance or blocker: caret/IME and paste are unchanged DOM code without automated interaction coverage (M6.5).
 Next dependency: M3.2 layout/gesture ownership.
+```
+
+### 2026-10-08 layout/gesture ownership
+
+```text
+Package / date: M3.2 layout/gesture boundary / 2026-10-08
+Status: implemented and verified by unit tests and the headless-browser harness; no touch hardware
+Files / responsibilities changed: new `utils/layout-scheduler.ts` (+ spec); `NotesComponent` uses it for repack scheduling and viewport settling, tracks `renderContextDirty` for `ngAfterViewChecked`, and releases drag/long-press/pull-refresh resources on destroy; `SharedService.searchQueryChanged$` added.
+Contract / storage / lifecycle decisions: no data/protocol change. Search text still lives in `SharedService.searchQuery`; its single writer now also emits. Repacks still run outside the Angular zone.
+Checks executed and outcomes: Chrome Headless 187/187 (new: scheduler coalescing/settle/dispose, drag released on destroy, no layout after destroy, render context recomputed only after events); `npm run build` passed (1.52 MB initial, ~299 kB transfer); `npm run benchmark:web -- --notes=240` passed: 0 browser errors, no mobile overlap, resize still 24 layouts / 31 style recalculations, all smoke steps passed.
+Reference build/device/fixture: Node 24 production build; headless Chromium 154; 240 synthetic notes.
+Before / after performance evidence: resize layout/recalc counts unchanged (24/31); per-change-detection string building removed (not separately timed).
+Remaining acceptance or blocker: physical touch drag, orientation/foldable settling and 10,000-note re-run were not repeated (M6.4/M6.5).
+Next dependency: M3.3 overlay state and callbacks.
 ```
