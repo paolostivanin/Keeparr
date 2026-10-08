@@ -24,6 +24,8 @@ jobs:
       - run: npm run test:native
       - run: npm run test:sync
       - run: npm run test:reminders
+      - run: npm run test:server
+      - run: npm run test:scale
       - run: npm run test:mcp
 
   android:

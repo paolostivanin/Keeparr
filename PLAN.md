@@ -121,7 +121,7 @@ Primary owners: `KeptRepository`, workers, reminder scheduler, `widgets/`, serve
 
 The release gates below are executed here, not duplicated as 25 separate definition-of-done tasks.
 
-- [ ] **M6.1 — Close automated coverage gaps.** Audit existing tests before adding new ones; implement missing fault/concurrency/upgrade/content/identity/lifecycle regression scenarios from the release gates, including unsent/sent/legacy queue cases and old/new client negotiation. Run affected suites per slice and confirm hosted CI evidence.
+- [x] **M6.1 — Close automated coverage gaps.** Audited existing coverage against G2/G3: unsent/sent/legacy outbox cases (`offline-store`, `offline-sync-guarded` specs), incremental-vs-snapshot and `positions` negotiation (`native-client`, `large-account`), lost-response replay and fault points, shared-fixture content fidelity were already covered. Gaps closed: unknown `note.*` mutation types were run as upserts (a newer client's unknown operation created a junk note) — now a per-entry 400; new `server/client-negotiation.test.js` (capabilities, legacy full-order reorder with full snapshot, operation-ID replay not re-applying over newer work, unknown type isolated from neighbours); web test that unknown extension fields survive snapshot/edit/queued upsert; CI now also runs `test:server` and `test:scale` (it ran neither). Hosted CI: last pushed head `28ff1c0` passed on the fork (run 37747929639); the commits for this item are unpushed, so their hosted run is pending.
 - [ ] **M6.2 — Repeatable release measurements.** Extend the current harness with missing typing/save/media/memory journeys and a repeatable native journey; collect startup/scroll/search/editor/widget/background-sync traces with release-like builds. Separate cold/warm/cache/network conditions, report repeated median/p95/frame outliers, and document evidence-based target adjustments.
 - [ ] **M6.3 — Deployment and shipped clients.** Exercise lazy auth/setup/admin/settings navigation, assets/fonts/styles, Docker/proxy gzip/cache policy, PWA/service-worker/lazy-chunk upgrades, and supported web/native shells. Confirm initial transfer budgets and first-use focus/loading remain acceptable.
 - [ ] **M6.4 — Supported Android acceptance.** Confirm device policy and target/compile SDK requirements, then execute API 34 minimum, API 35, and Android 16/API 36 OnePlus journeys, including gateway/mTLS/certificate replacement, permissions, reboot/timezone/clock changes, insets/orientation/large fonts, and two launchers for widgets. Record unavailable hardware separately from implementation gaps.
@@ -671,4 +671,18 @@ Reference build/device/fixture: 10,000-note seeded SQLite account on this machin
 Before / after performance evidence: `note.reorder` for a 9,350-note visible list 18,598 ms → 23.6 ms p50 (p95 100 ms → 28.6 ms in the same harness), 9,350 → 1 sync changes per move; bootstrap at 40,000 notes failed → works at 33,000 in 1.8 s (23 MB). Unchanged: card page ≈59 ms p50, bootstrap 0.8 s at 10 k, mutation 22 ms.
 Remaining acceptance or blocker: card-page cost grows linearly with account size (≈3.4 µs/note); revisit with an index or summary table only if a larger real account or p95 target requires it (section 5). Payload bytes for cards (≈1.7 KB each) were not reduced. Production Docker run and cross-client reorder verification between web, Android and a real server are M6.
 Next dependency: M6 cross-client verification and release readiness.
+```
+
+### 2026-10-08 coverage audit
+
+```text
+Package / date: M6.1 automated coverage gaps / 2026-10-08
+Status: implemented and verified locally; hosted CI for the new commit pending push
+Files / responsibilities changed: `server/server.js` (`applySyncNoteMutation` rejects unknown note types), new `server/client-negotiation.test.js`, `package.json` `test:server`, `.github/workflows/ci.yml` (+`test:server`, `test:scale`), `offline-store.service.spec.ts` (+1 extension-field test).
+Contract / storage / lifecycle decisions: no schema or wire change; only a previously accepted-and-misapplied unknown `note.*` type is now rejected with 400 for that entry.
+Checks executed and outcomes: `test:server` 17/17, `test:sync`, `test:native`, `test:scale` passed; offline-store Karma spec 39/39.
+Reference build/device/fixture: Node 24 child-process server on a temp SQLite DB; Chromium 154 headless; no device.
+Before / after performance evidence: none.
+Remaining acceptance or blocker: Android coverage was audited, not extended (no Android gap found that a JVM test can close); device-only journeys stay in M6.4/M6.5.
+Next dependency: M6.2.
 ```

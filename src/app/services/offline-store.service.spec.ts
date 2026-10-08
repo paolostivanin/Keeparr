@@ -47,6 +47,20 @@ describe('OfflineStoreService indexed note access', () => {
     expect(revoke).toHaveBeenCalledWith(theirs);
   });
 
+  it('keeps unknown extension fields through snapshot, edit and queued upsert', async () => {
+    const extension = { schema: 7, flags: ['keep-me'] };
+    const original = { ...note(1, 'sync-ext', 'Extended'), futureMetadata: extension } as NoteI;
+    await store.replaceSnapshot(partition, [original], [], [], 1, Date.now());
+    expect((await store.getNote(partition, 1) as any).futureMetadata).toEqual(extension);
+
+    const edited = { ...(await store.getNote(partition, 1))!, noteTitle: 'Edited' };
+    await store.putNote(partition, edited);
+    await store.enqueue(partition, 'note.upsert', 'sync-ext', edited, store.nextStamp());
+
+    expect(((await store.listNotes(partition))[0] as any).futureMetadata).toEqual(extension);
+    expect(((await store.listOutbox(partition))[0].payload as any).futureMetadata).toEqual(extension);
+  });
+
   it('resolves a note by partition and numeric ID and updates it without listing the partition', async () => {
     await store.replaceSnapshot(partition, [note(1, 'sync-1', 'One'), note(2, 'sync-2', 'Two')], [], [], 1, Date.now());
 

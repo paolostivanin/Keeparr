@@ -4786,6 +4786,8 @@ async function applySyncNoteMutation(userId, mutation) {
     const updated = await applyNoteOrder(userId, positions ? { positions, by: 'syncId' } : { syncIds });
     return { ok: true, resourceType: 'note-order', updated };
   }
+  // Only these types reach the upsert/delete path; an unknown `note.*` type from a newer client must not create a note.
+  if (type !== 'note.upsert' && type !== 'note.delete') return { ok: false, status: 400, error: 'Unsupported mutation type.', type };
   const syncId = String(mutation.syncId || payload.syncId || payload.clientId || `note-${crypto.randomUUID()}`);
   const guarded = Object.prototype.hasOwnProperty.call(mutation, 'baseRevision');
   const incomingStamp = guarded ? serverLwwStamp() : normalizeLwwStamp(mutation.lww || payload);
