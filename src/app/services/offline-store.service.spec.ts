@@ -344,7 +344,8 @@ describe('OfflineStoreService indexed note access', () => {
     );
 
     expect((await store.getNoteBySyncId(partition, sourceA.syncId!))?.trashed).toBeTrue();
-    expect((await store.listOutbox(partition))[0].payload).toEqual(upload.payload);
+    const queuedUpload = (await store.listOutbox(partition)).find(item => item.type === 'attachment.upload');
+    expect(queuedUpload?.payload).toEqual(upload.payload);
     expect((await store.listOutbox(partition)).some(item => item.type === 'note.merge')).toBeTrue();
   });
 
