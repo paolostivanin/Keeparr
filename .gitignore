@@ -1,4 +1,5 @@
 update.sh
+update_v2.sh
 
 # Compiled output
 /dist
