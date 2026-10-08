@@ -68,7 +68,7 @@
     "@angular/cli": "~21.2.26",
     "@angular/compiler-cli": "^21.2.25",
     "@types/jasmine": "~4.0.0",
-    "concurrently": "^10.0.6",
+    "concurrently": "^9.2.5",
     "jasmine-core": "~4.1.0",
     "karma": "^6.4.4",
     "karma-chrome-launcher": "~3.1.0",
