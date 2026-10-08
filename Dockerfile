@@ -1,12 +1,17 @@
 FROM node:24-alpine AS builder
 WORKDIR /app
+
+# Keep build logs free of npm's self-update and funding notices.
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false
 COPY package*.json ./
-RUN npm ci --loglevel=error
+RUN npm ci --no-audit --loglevel=error
 COPY . .
 RUN npm run build
 
 FROM node:24-alpine
 WORKDIR /app
+
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false
 
 # su-exec is a small (~30 KB) replacement for gosu used to drop privileges
 # from root to the unprivileged "node" user after the entrypoint has fixed
@@ -14,7 +19,7 @@ WORKDIR /app
 RUN apk add --no-cache su-exec
 
 COPY --from=builder /app/package*.json ./
-RUN npm ci --omit=dev --loglevel=error
+RUN npm ci --omit=dev --no-audit --loglevel=error
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/mcp ./mcp
 COPY --from=builder /app/dist ./dist
