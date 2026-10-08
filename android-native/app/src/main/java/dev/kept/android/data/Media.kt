@@ -10,10 +10,11 @@ import android.util.LruCache
 import com.caverock.androidsvg.SVG
 import dev.kept.android.KeptApplication
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -32,41 +33,10 @@ internal object DecodedPreviewCache {
     private val bitmaps = object : LruCache<String, Bitmap>(32 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = (value.allocationByteCount / 1024).coerceAtLeast(1)
     }
-    private data class Request(val deferred: Deferred<Bitmap?>, var consumers: Int)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val inFlight = mutableMapOf<String, Request>()
+    private val loader = SharedLoader<Bitmap>(onResult = { key, bitmap -> bitmaps.put(key, bitmap) })
 
-    suspend fun getOrLoad(key: String, load: suspend () -> Bitmap?): Bitmap? {
-        val pending = synchronized(this) {
-            bitmaps.get(key)?.let { return it }
-            inFlight[key]?.also { it.consumers++ } ?: run {
-                lateinit var request: Request
-                val deferred = scope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-                    load()?.also { bitmap -> synchronized(this@DecodedPreviewCache) { bitmaps.put(key, bitmap) } }
-                }
-                request = Request(deferred, 1)
-                inFlight[key] = request
-                deferred.invokeOnCompletion {
-                    synchronized(this@DecodedPreviewCache) {
-                        if (inFlight[key] === request) inFlight.remove(key)
-                    }
-                }
-                deferred.start()
-                request
-            }
-        }
-        try {
-            return pending.deferred.await()
-        } finally {
-            synchronized(this) {
-                pending.consumers--
-                if (pending.consumers == 0 && !pending.deferred.isCompleted) {
-                    if (inFlight[key] === pending) inFlight.remove(key)
-                    pending.deferred.cancel()
-                }
-            }
-        }
-    }
+    suspend fun getOrLoad(key: String, load: suspend () -> Bitmap?): Bitmap? =
+        loader.load(key, cached = { synchronized(this) { bitmaps.get(key) } }, work = load)
 
     @Synchronized fun removeProfile(profileKey: String) {
         bitmaps.snapshot().keys.filter { it.startsWith("$profileKey:") }.forEach(bitmaps::remove)
@@ -78,6 +48,10 @@ interface MediaUploadPort {
 }
 
 class Media(private val app: KeptApplication) : MediaUploadPort {
+    private companion object {
+        val downloads = SharedLoader<File>()
+    }
+
     suspend fun stage(uri: Uri): JSONObject = withContext(Dispatchers.IO) {
         val mime = app.contentResolver.getType(uri) ?: "application/octet-stream"
         var name = "attachment"
@@ -139,30 +113,52 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
         }
     }
 
-    suspend fun download(path: String, connection: ConnectionSnapshot = app.settings.snapshot()): File = withContext(Dispatchers.IO) {
+    /**
+     * Downloads authenticated media into the profile's disk cache. The profile comes from the [connection] snapshot the
+     * request is made with, never from live settings, so a profile switch mid-download cannot file one account's
+     * media under another's cache. Concurrent requests for the same file share one transfer, and the transfer stops
+     * (the call is cancelled, not just awaited) when its last consumer leaves.
+     */
+    suspend fun download(path: String, connection: ConnectionSnapshot = app.settings.snapshot()): File {
         val base = connection.origin.toHttpUrl()
         val url = base.resolve(path) ?: error("Invalid media address")
         require(url.scheme == base.scheme && url.host == base.host && url.port == base.port) { "External media is not downloaded with Kept credentials." }
         val folder = File(app.cacheDir, "media").apply { mkdirs() }
-        val profileKey = profileKey(app.settings.profile)
-        val hash = java.security.MessageDigest.getInstance("SHA-256").digest((app.settings.profile + url).toByteArray()).joinToString("") { "%02x".format(it) }
+        val profileKey = profileKey(connection.profile)
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest((connection.profile + url).toByteArray()).joinToString("") { "%02x".format(it) }
         val file = File(folder, "${profileKey}_$hash")
-        if (file.exists()) return@withContext file
-        val requestPath = url.encodedPath + (url.encodedQuery?.let { "?$it" } ?: "")
-        val temporary = File(folder, "${profileKey}_$hash.pending-${UUID.randomUUID()}")
-        try {
-            app.repository.api.client(connection).newCall(app.repository.api.request(requestPath, connection).build()).awaitResponse().use { response ->
-                if (!response.isSuccessful) throw ApiException(response.code, "Media download failed (${response.code})")
-                response.body?.byteStream()?.use { input -> temporary.outputStream().use { output ->
-                    val buffer = ByteArray(8192); var total = 0
-                    while (true) { val length = input.read(buffer); if (length < 0) break; total += length
-                        require(total <= 25 * 1024 * 1024) { "Media exceeds the download limit." }; output.write(buffer, 0, length) }
-                } } ?: error("Empty media response")
-            }
-            require(temporary.renameTo(file)) { "Could not save downloaded media" }
-            evictProfileCache(folder, profileKey, file)
-            file
-        } finally { temporary.delete() }
+        return downloads.load(file.name, cached = {
+            // A hit refreshes the file's age so eviction removes what was used least recently, not what was fetched first.
+            file.takeIf { it.exists() }?.also { it.setLastModified(System.currentTimeMillis()) }
+        }) {
+            val requestPath = url.encodedPath + (url.encodedQuery?.let { "?$it" } ?: "")
+            val temporary = File(folder, "${profileKey}_$hash.pending-${UUID.randomUUID()}")
+            try {
+                val call = app.repository.api.client(connection).newCall(app.repository.api.request(requestPath, connection).build())
+                // Cancelling the coroutine only interrupts the wait for headers; a blocked body read ends only when the
+                // call itself is cancelled, so a watcher child does that when this load is cancelled.
+                coroutineScope {
+                    var finished = false
+                    val watcher = launch { try { awaitCancellation() } finally { if (!finished) call.cancel() } }
+                    try {
+                        call.awaitResponse().use { response ->
+                            if (!response.isSuccessful) throw ApiException(response.code, "Media download failed (${response.code})")
+                            response.body?.byteStream()?.use { input -> temporary.outputStream().use { output ->
+                                val buffer = ByteArray(8192); var total = 0
+                                while (true) {
+                                    ensureActive()
+                                    val length = input.read(buffer); if (length < 0) break; total += length
+                                    require(total <= 25 * 1024 * 1024) { "Media exceeds the download limit." }; output.write(buffer, 0, length)
+                                }
+                            } } ?: error("Empty media response")
+                        }
+                    } finally { finished = true; watcher.cancel() }
+                }
+                require(temporary.renameTo(file)) { "Could not save downloaded media" }
+                evictProfileCache(folder, profileKey, file)
+                file
+            } finally { temporary.delete() }
+        } ?: error("Media download failed")
     }
 
     suspend fun preview(path: String, maxDimension: Int = 1000): Bitmap? = withContext(Dispatchers.IO) {
@@ -174,7 +170,7 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
             .joinToString("") { "%02x".format(it) }
         val cacheKey = "$profileHash:$pathHash:$boundedDimension"
         DecodedPreviewCache.getOrLoad(cacheKey) {
-            runCatching {
+            try {
                 val bytes = if (path.startsWith("data:image/")) {
                     val comma = path.indexOf(',')
                     require(comma >= 0) { "Invalid image data." }
@@ -199,7 +195,11 @@ class Media(private val app: KeptApplication) : MediaUploadPort {
                     val sample = imageSampleSize(bounds.outWidth, bounds.outHeight, boundedDimension)
                     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
                 }
-            }.getOrNull()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 

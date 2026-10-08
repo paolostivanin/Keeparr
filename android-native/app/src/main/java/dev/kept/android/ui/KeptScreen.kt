@@ -36,6 +36,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.kept.android.KeptApplication
@@ -511,12 +513,35 @@ internal fun moveDraggedNote(visible: List<Note>, source: Note, targetId: String
 }
 
 @Composable
-internal fun MediaImage(app: KeptApplication, path: String) {
-    var bitmap by remember(app.settings.profile, path) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(app.settings.profile, path) {
-        bitmap = Media(app).preview(path, maxDimension = 768)
+internal fun MediaImage(app: KeptApplication, path: String, maxHeight: androidx.compose.ui.unit.Dp = 240.dp) {
+    val profile = app.settings.profile
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val maxHeightPx = with(density) { maxHeight.roundToPx() }
+        val widthPx = constraints.maxWidth
+        // Decode for the space this slot can actually fill, not a fixed size.
+        val decodeSize = previewDecodeSize(widthPx, maxHeightPx)
+        var bitmap by remember(profile, path) { mutableStateOf<Bitmap?>(null) }
+        var failed by remember(profile, path) { mutableStateOf(false) }
+        var attempt by remember(profile, path) { mutableIntStateOf(0) }
+        LaunchedEffect(profile, path, decodeSize, attempt) {
+            val loaded = Media(app).preview(path, maxDimension = decodeSize)
+            if (loaded != null) { PreviewGeometry.remember(path, loaded.width, loaded.height); bitmap = loaded; failed = false }
+            else if (bitmap == null) failed = true
+        }
+        val current = bitmap
+        if (current != null) Image(current.asImageBitmap(), "Note image", Modifier.fillMaxWidth().heightIn(max = maxHeight))
+        else {
+            // Loading and failure keep the height the loaded image will take, so the card does not jump.
+            val reserved = with(density) { PreviewGeometry.reservedHeightPx(path, widthPx, maxHeightPx).toDp() }
+            Box(Modifier.fillMaxWidth().height(reserved), contentAlignment = Alignment.Center) {
+                if (failed) TextButton(onClick = { failed = false; attempt++ }, modifier = Modifier.semantics {
+                    contentDescription = "Image could not be loaded. Tap to retry."
+                }) { Icon(Icons.Outlined.BrokenImage, null); Text("Retry", Modifier.padding(start = 6.dp)) }
+                else CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+            }
+        }
     }
-    bitmap?.let { Image(it.asImageBitmap(), "Note image", Modifier.fillMaxWidth().heightIn(max = 240.dp)) }
 }
 
 @Composable
