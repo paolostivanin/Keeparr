@@ -10,6 +10,7 @@ import { OfflineStoreService } from './offline-store.service';
 import { OfflineSyncService } from './offline-sync.service';
 import { NoteI } from '../interfaces/notes';
 import { UserPreferencesService } from './user-preferences.service';
+import { planNoteOrder } from '../utils/note-order';
 
 type ReminderCreateData = {
   noteId?: number;
@@ -637,18 +638,22 @@ export class ReminderService {
       .filter(item => item.id && item.syncId && item.id !== noteId)
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(b.sortOrder || 0) - Number(a.sortOrder || 0));
     const ids = [noteId, ...sorted.map(item => item.id!)];
-    const base = Date.now();
-    for (let index = 0; index < ids.length; index += 1) {
-      const current = notes.find(item => item.id === ids[index]);
+    const byId = new Map(notes.map(item => [item.id!, item]));
+    // Only the floated note (and anything it must be reordered against) gets a new position.
+    const plan = planNoteOrder({
+      desired: ids,
+      current: new Map(ids.map(id => [id, Number(byId.get(id)?.sortOrder || 0)])),
+      pinned: new Set(ids.filter(id => byId.get(id)?.pinned))
+    });
+    if (!plan.length) return;
+    for (const [id, sortOrder] of plan) {
+      const current = byId.get(id);
       if (!current?.syncId) continue;
-      await this.offlineStore.putNote(this.offlineSync.partition, {
-        ...current,
-        sortOrder: base + ids.length - index,
-        updatedAt: new Date().toISOString()
-      });
+      await this.offlineStore.putNote(this.offlineSync.partition, { ...current, sortOrder, updatedAt: new Date().toISOString() });
     }
     await this.offlineSync.enqueue('note.reorder', `order-${this.auth.currentUser?.id || 0}`, {
-      syncIds: ids.map(id => notes.find(item => item.id === id)?.syncId).filter(Boolean)
+      syncIds: ids.map(id => byId.get(id)?.syncId).filter(Boolean),
+      positions: plan.filter(([id]) => byId.get(id)?.syncId).map(([id, sortOrder]) => ({ syncId: byId.get(id)!.syncId!, sortOrder }))
     });
   }
 

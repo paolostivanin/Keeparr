@@ -641,4 +641,73 @@ describe('NotesService cold-start projection', () => {
     await pending;
     expect(published).toEqual([]);
   });
+
+  describe('reordering notes', () => {
+    const ordered = (id: number, sortOrder: number, extra: Partial<NoteI> = {}): NoteI => ({ ...note, id, syncId: `note-${id}`, sortOrder, ...extra });
+
+    function serviceWith(notes: NoteI[], online: boolean) {
+      const service = Object.create(NotesService.prototype) as NotesService;
+      const patch = jasmine.createSpy('patch').and.returnValue(of(null));
+      const putNote = jasmine.createSpy('putNote').and.resolveTo(undefined);
+      const enqueue = jasmine.createSpy('enqueue').and.resolveTo(undefined);
+      const publishNotes = jasmine.createSpy('publishNotes');
+      Object.assign(service, {
+        notesList$: { value: notes },
+        apiUrl: '/api/notes',
+        noteWriteTimeoutMs: 1000,
+        suppressNextReorderReloadUntil: 0,
+        http: { patch },
+        auth: { authHeaders: () => ({}), currentUser: { id: 7 } },
+        offlineStore: { putNote },
+        offlineSync: { partition: 'fixture', enqueue, clearConnectionDegraded: jasmine.createSpy('clear'), markConnectionDegraded: jasmine.createSpy('mark') },
+        publishNotes
+      });
+      spyOnProperty(navigator, 'onLine').and.returnValue(online);
+      spyOn(service as any, 'withTimeout').and.callFake((promise: Promise<unknown>) => promise);
+      return { service, patch, putNote, enqueue, publishNotes };
+    }
+
+    it('stores and sends only the note that moved', async () => {
+      const notes = [ordered(1, 5000), ordered(2, 4000), ordered(3, 3000), ordered(4, 2000)];
+      const { service, patch, putNote, publishNotes } = serviceWith(notes, true);
+
+      await service.reorder([1, 3, 2, 4]);
+
+      expect(putNote).toHaveBeenCalledTimes(1);
+      const stored = putNote.calls.mostRecent().args[1] as NoteI;
+      expect(stored.id).toBe(3);
+      expect(stored.sortOrder).toBeGreaterThan(4000);
+      expect(stored.sortOrder).toBeLessThan(5000);
+      const body = patch.calls.mostRecent().args[1] as { ids: number[]; positions: Array<{ id: number; sortOrder: number }> };
+      expect(body.ids).toEqual([1, 3, 2, 4]);
+      expect(body.positions).toEqual([{ id: 3, sortOrder: stored.sortOrder! }]);
+      expect((publishNotes.calls.mostRecent().args[0] as NoteI[]).map(item => item.id)).toEqual([1, 3, 2, 4]);
+    });
+
+    it('does nothing when the requested order already holds', async () => {
+      const notes = [ordered(1, 5000), ordered(2, 4000), ordered(3, 3000)];
+      const { service, patch, putNote, enqueue } = serviceWith(notes, true);
+
+      await service.reorder([1, 2, 3]);
+
+      expect(patch).not.toHaveBeenCalled();
+      expect(putNote).not.toHaveBeenCalled();
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it('queues the whole order for older servers together with the moved positions while offline', async () => {
+      const notes = [ordered(1, 5000), ordered(2, 4000), ordered(3, 3000, { pinned: true }), ordered(4, 2000, { pinned: true })];
+      const { service, patch, enqueue } = serviceWith(notes, false);
+
+      await service.reorder([3, 4, 2, 1]);
+
+      expect(patch).not.toHaveBeenCalled();
+      const [type, syncId, payload] = enqueue.calls.mostRecent().args as [string, string, { syncIds: string[]; positions: Array<{ syncId: string; sortOrder: number }> }];
+      expect(type).toBe('note.reorder');
+      expect(syncId).toBe('order-7');
+      expect(payload.syncIds).toEqual(['note-3', 'note-4', 'note-2', 'note-1']);
+      // Pinned notes were already in order; of the other two, note 2 moves above note 1.
+      expect(payload.positions).toEqual([{ syncId: 'note-2', sortOrder: 5001 }]);
+    });
+  });
 });

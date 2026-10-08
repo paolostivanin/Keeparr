@@ -167,18 +167,24 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     suspend fun reorder(ids: List<String>) = editMutex.withLock {
         val profile = settings.profile
         val reordered = database.withTransaction {
-            // Dropping a note where it already was leaves the relative order, and so every stored row, unchanged.
-            val current = ids.map { store.record(profile, "note", it)?.let { row -> Note(JSONObject(row.payload)).raw.optDouble("sortOrder", 0.0) } }
-            if (current.none { it == null } && current.zipWithNext().all { (a, b) -> a!! > b!! }) return@withTransaction false
-            val base = System.currentTimeMillis().toDouble()
-            ids.forEachIndexed { index, id ->
-                note(id)?.let { note -> store.put(Record(profile, "note", id, note.raw.copyJson().put("sortOrder", base + ids.size - index).toString())) }
-            }
+            val rows = ids.distinct().mapNotNull { id -> store.record(profile, "note", id)?.let { id to Note(JSONObject(it.payload)) } }
+            // Only notes whose stored position must change are rewritten and sent; the rest keep theirs.
+            val plan = NoteOrderPlan.plan(rows.map { it.first }, rows.associate { (id, note) -> id to note.order },
+                rows.filter { it.second.pinned }.map { it.first }.toSet())
+            if (plan.isEmpty()) return@withTransaction false
+            val byId = rows.toMap()
+            plan.forEach { (id, position) -> store.put(Record(profile, "note", id, byId.getValue(id).raw.copyJson().put("sortOrder", position).toString())) }
             val queued = store.queued(profile, "note.reorder", "order")
             val predecessor = store.inFlight(profile, "note.reorder", "order")
-            val previous = queued?.let { q -> JSONObject(q.payload).optJSONArray("syncIds")?.let { a -> List(a.length()) { a.getString(it) } } }.orEmpty()
+            val queuedPayload = queued?.let { JSONObject(it.payload) }
+            // `syncIds` is the whole order for servers that predate `positions`; newer servers store just the moved positions.
+            val previous = queuedPayload?.optJSONArray("syncIds")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty()
             val merged = ids + previous.filter { it !in ids.toSet() }
-            val payload = JSONObject().put("syncIds", JSONArray(merged)).toString()
+            val positions = LinkedHashMap<String, Double>()
+            queuedPayload?.optJSONArray("positions")?.objects()?.forEach { positions[it.text("syncId")] = it.getDouble("sortOrder") }
+            plan.forEach { (id, position) -> positions[id] = position }
+            val payload = JSONObject().put("syncIds", JSONArray(merged))
+                .put("positions", JSONArray(positions.map { (id, position) -> JSONObject().put("syncId", id).put("sortOrder", position) })).toString()
             store.enqueue(queued?.copy(payload = payload) ?: Outbox(UUID.randomUUID().toString(), profile, "note.reorder", "order", payload,
                 dependsOnOperationId = predecessor?.operationId))
             true

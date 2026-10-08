@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { editorSessionKey, type EditorSessionRecord, type EditorSessionStorage } from '../utils/editor-session';
+import { planNoteOrder } from '../utils/note-order';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { BehaviorSubject, firstValueFrom, Subscription, takeUntil } from 'rxjs';
@@ -698,16 +699,23 @@ export class NotesService {
 
   async reorder(ids: number[]) {
     if (!ids.length) return;
+    // Only the notes whose stored position must change are written, sent and published; the rest keep theirs.
+    const plan = this.planOrder(ids);
     try {
       this.suppressNextReorderReloadUntil = Date.now() + 5000;
-      this.reorderLoadedNotes(ids);
-      await this.persistLocalOrder(ids);
+      this.reorderLoadedNotes(ids, plan);
+      if (!plan.length) {
+        this.suppressNextReorderReloadUntil = 0;
+        return;
+      }
+      await this.persistLocalOrder(plan);
       if (!navigator.onLine || ids.some(id => id < 0)) {
-        await this.queueReorder(ids);
+        await this.queueReorder(ids, plan);
         return;
       }
       await this.withTimeout(
-        firstValueFrom(this.http.patch(`${this.apiUrl}/reorder`, { ids }, { headers: this.auth.authHeaders() })),
+        firstValueFrom(this.http.patch(`${this.apiUrl}/reorder`,
+          { ids, positions: plan.map(([id, sortOrder]) => ({ id, sortOrder })) }, { headers: this.auth.authHeaders() })),
         this.noteWriteTimeoutMs
       );
       this.offlineSync.clearConnectionDegraded();
@@ -715,17 +723,29 @@ export class NotesService {
       this.suppressNextReorderReloadUntil = 0;
       if (this.isOfflineError(error)) {
         this.offlineSync.markConnectionDegraded();
-        await this.queueReorder(ids);
+        await this.queueReorder(ids, plan);
       }
       else console.log(error)
       await this.load();
     }
   }
 
-  private reorderLoadedNotes(ids: number[]) {
+  private planOrder(ids: number[]) {
+    const current = this.notesList$.value || [];
+    const byId = new Map(current.map(note => [note.id, note]));
+    const desired = [...new Set(ids)].filter(id => byId.has(id));
+    return planNoteOrder({
+      desired,
+      current: new Map(desired.map(id => [id, Number(byId.get(id)!.sortOrder || 0)])),
+      pinned: new Set(desired.filter(id => byId.get(id)!.pinned))
+    });
+  }
+
+  private reorderLoadedNotes(ids: number[], plan: Array<[number, number]> = []) {
     const current = this.notesList$.value;
     if (!current) return;
-    const byId = new Map(current.map(note => [note.id, note]));
+    const positions = new Map(plan);
+    const byId = new Map(current.map(note => [note.id, positions.has(note.id!) ? { ...note, sortOrder: positions.get(note.id!)! } : note]));
     const ordered = ids.map(id => byId.get(id)).filter((note): note is NoteI => !!note);
     const orderedIds = new Set(ids);
     const remaining = current.filter(note => !note.id || !orderedIds.has(note.id));
@@ -1564,26 +1584,23 @@ export class NotesService {
     return loaded;
   }
 
-  private async persistLocalOrder(ids: number[]) {
+  private async persistLocalOrder(plan: Array<[number, number]>) {
     if (!this.offlineSync.partition) return;
-    const current = this.notesList$.value || [];
-    const byId = new Map(current.map(note => [note.id, note]));
-    const base = Date.now();
-    for (let index = 0; index < ids.length; index += 1) {
-      const note = byId.get(ids[index]);
+    const byId = new Map((this.notesList$.value || []).map(note => [note.id, note]));
+    for (const [id, sortOrder] of plan) {
+      const note = byId.get(id);
       if (!note) continue;
-      const updated = { ...note, sortOrder: base + ids.length - index, updatedAt: new Date().toISOString() };
-      await this.offlineStore.putNote(this.offlineSync.partition, updated);
+      await this.offlineStore.putNote(this.offlineSync.partition, { ...note, sortOrder, updatedAt: new Date().toISOString() });
     }
   }
 
-  private async queueReorder(ids: number[]) {
-    const syncIds = (this.notesList$.value || [])
-      .filter(note => ids.includes(note.id || 0) && note.syncId)
-      .sort((a, b) => ids.indexOf(a.id!) - ids.indexOf(b.id!))
-      .map(note => note.syncId!);
+  private async queueReorder(ids: number[], plan: Array<[number, number]>) {
+    const bySyncId = new Map((this.notesList$.value || []).filter(note => note.syncId).map(note => [note.id, note.syncId!]));
+    const syncIds = ids.map(id => bySyncId.get(id)).filter((syncId): syncId is string => !!syncId);
     if (!syncIds.length) return;
-    await this.offlineSync.enqueue('note.reorder', `order-${this.auth.currentUser?.id || 0}`, { syncIds });
+    // `syncIds` is the whole order for servers that predate `positions`; newer servers store only the moved notes' positions.
+    const positions = plan.filter(([id]) => bySyncId.has(id)).map(([id, sortOrder]) => ({ syncId: bySyncId.get(id)!, sortOrder }));
+    await this.offlineSync.enqueue('note.reorder', `order-${this.auth.currentUser?.id || 0}`, { syncIds, positions });
   }
 
   private isOfflineError(error: unknown) {

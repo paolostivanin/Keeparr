@@ -290,4 +290,46 @@ class ScopedEffectsRepositoryTest {
         assertEquals(1, reminders.reconciles.get())
         assertEquals(setOf(note.syncId), scoped.single().notes)
     }
+
+    @Test fun reorderingWritesAndQueuesOnlyTheMovedNoteAndKeepsTheWholeOrderForOlderServers() = runBlocking {
+        val notes = (1..200).map { Note.create(profile.userId).also { n -> n.raw.put("id", it).put("revision", 1).put("sortOrder", 1_700_000_000_000.0 - it * 1000) } }
+        notes.forEach { seed(it) }
+        val ids = notes.map { it.syncId }.toMutableList()
+        ids.add(2, ids.removeAt(50)) // one note dragged 48 places up
+        val before = notes.associate { it.syncId to repository.note(it.syncId)!!.raw.toString() }
+
+        repository.reorder(ids)
+
+        val changedNotes = notes.filter { repository.note(it.syncId)!!.raw.toString() != before.getValue(it.syncId) }
+        assertEquals(listOf(notes[50].syncId), changedNotes.map { it.syncId })
+        val payload = JSONObject(repository.store.pending(profile.profile).single().payload)
+        assertEquals(ids, payload.getJSONArray("syncIds").let { a -> List(a.length()) { a.getString(it) } })
+        val positions = payload.getJSONArray("positions")
+        assertEquals(1, positions.length())
+        assertEquals(notes[50].syncId, positions.getJSONObject(0).getString("syncId"))
+        assertEquals(repository.note(notes[50].syncId)!!.raw.getDouble("sortOrder"), positions.getJSONObject(0).getDouble("sortOrder"), 0.0)
+        val stored = repository.note(notes[50].syncId)!!.order
+        assertTrue(stored < notes[1].order && stored > notes[2].order)
+    }
+
+    @Test fun queuedReordersMergeTheirPositionsLatestWinsAndAnUnchangedOrderQueuesNothing() = runBlocking {
+        val notes = (1..4).map { Note.create(profile.userId).also { n -> n.raw.put("id", it).put("revision", 1).put("sortOrder", 400.0 - it * 100) } }
+        notes.forEach { seed(it) }
+        val (a, b, c, d) = notes.map { it.syncId }
+
+        repository.reorder(listOf(a, b, c, d))
+        assertTrue(repository.store.pending(profile.profile).isEmpty())
+
+        repository.reorder(listOf(a, c, b, d))
+        repository.reorder(listOf(c, a, b, d))
+
+        val payload = JSONObject(repository.store.pending(profile.profile).single().payload)
+        val positions = payload.getJSONArray("positions").let { p -> (0 until p.length()).associate { p.getJSONObject(it).getString("syncId") to p.getJSONObject(it).getDouble("sortOrder") } }
+        assertEquals("c moved twice (once between a and b, then above a): one position, the latest", setOf(c), positions.keys)
+        assertEquals(301.0, positions.getValue(c), 0.0)
+        val orders = listOf(a, b, c, d).associateWith { repository.note(it)!!.order }
+        val order = orders.keys.sortedByDescending { orders.getValue(it) }
+        assertEquals(listOf(c, a, b, d), order)
+        assertEquals("the queued positions are exactly what is stored locally", positions.getValue(c), repository.note(c)!!.order, 0.0)
+    }
 }

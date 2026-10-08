@@ -20,6 +20,7 @@ const { initOAuthTables, mountOAuthAndMcpRoutes, oauthTokenCanCallApi, resolveOA
 const { mountStaticAssets } = require('./static-assets');
 const { mountClientCapabilities } = require('./client-capabilities');
 const { mountSyncMutationRoute } = require('./sync-routes');
+const { orderedAccessibleIds, parseOrderPositions } = require('./note-order');
 const { plainText, parseJson, escapeHtml, notePreviewText, noteLinkCount } = require('./note-text');
 const { searchTextFromQuery, searchTokensFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere } = require('./note-search');
 const {
@@ -2824,6 +2825,42 @@ async function moveNoteToTopForUsers(noteId, userIds) {
   }
 }
 
+// Stores the order a user chose. Clients that moved only part of the list send `positions` (the new stored position of each
+// note that moved, computed with the same planner they apply locally), so only those notes are written and published. Older
+// clients send just the whole ordered list; every listed note then gets a new position, as it always did. Returns how many
+// notes were written.
+async function applyNoteOrder(userId, { ids, syncIds, positions, by = syncIds ? 'syncId' : 'id' }) {
+  const byKey = by;
+  const requested = positions ? positions.map(position => position.key) : (syncIds || ids);
+  const bounded = requested.length <= 500;
+  const rows = await all(
+    `SELECT notes.id, notes.syncId, COALESCE(pos.sortOrder, notes.sortOrder, notes.id) AS effectiveSortOrder
+     FROM notes
+     LEFT JOIN user_note_positions pos ON pos.noteId = notes.id AND pos.userId = ?
+     LEFT JOIN note_collaborators access ON access.noteId = notes.id AND access.userId = ?
+     WHERE (notes.ownerUserId = ? OR access.userId IS NOT NULL)
+       ${bounded ? `AND notes.${byKey} IN (${requested.map(() => '?').join(',')})` : ''}`,
+    [userId, userId, userId, ...(bounded ? requested : [])]
+  );
+  const rowByKey = new Map(rows.map(row => [row[byKey], row]));
+  let writes;
+  if (positions) {
+    writes = positions.filter(position => rowByKey.has(position.key) &&
+      Number(rowByKey.get(position.key).effectiveSortOrder) !== position.sortOrder)
+      .map(position => [rowByKey.get(position.key).id, position.sortOrder]);
+  } else {
+    const ordered = orderedAccessibleIds(requested, rowByKey).map(key => rowByKey.get(key).id);
+    const base = Date.now();
+    writes = ordered.map((id, index) => [id, base + (ordered.length - index)]);
+  }
+  for (const [noteId, sortOrder] of writes) {
+    await run('INSERT OR REPLACE INTO user_note_positions (userId, noteId, sortOrder) VALUES (?, ?, ?)', [userId, noteId, sortOrder]);
+    await recordNoteSyncChange(noteId, 'upsert', [userId]);
+  }
+  if (writes.length) broadcastRealtime([userId], { type: 'notes-changed', action: 'reordered' });
+  return writes.length;
+}
+
 async function broadcastNoteChange(noteId, action, userIds, options = {}) {
   const recipients = userIds || await getNoteRecipientIds(noteId);
   if (action !== 'deleted' && !options.preserveStamp) {
@@ -4609,6 +4646,19 @@ app.delete('/api/notes/:noteId/attachments/:attachmentId', requireAuth, asyncRou
 }));
 
 
+// Attachments of every note the user can access, selected through the access rule itself. An id list of all the user's
+// notes would exceed SQLite's bound-variable limit for large accounts and make bootstrap/export fail.
+function accessibleAttachmentRows(userId) {
+  return all(
+    `SELECT id, syncId, noteId, originalName, fileSize, mimeType, uploadedAt,
+            lwwPhysicalMs, lwwLogical, lwwDeviceId, lwwOperationId
+     FROM note_attachments
+     WHERE noteId IN (SELECT id FROM notes WHERE ownerUserId = ? UNION SELECT noteId FROM note_collaborators WHERE userId = ?)
+     ORDER BY uploadedAt DESC`,
+    [userId, userId]
+  );
+}
+
 async function syncSnapshotForUser(userId) {
   const notes = await all(
     `SELECT notes.*,
@@ -4628,19 +4678,9 @@ async function syncSnapshotForUser(userId) {
     [userId, userId, userId, userId, userId]
   );
   await hydrateNoteUserFields(notes, userId);
-  const noteIds = notes.map(note => note.id);
   const attachmentsByNoteId = new Map();
-  if (noteIds.length) {
-    const placeholders = noteIds.map(() => '?').join(',');
-    const attachments = await all(
-      `SELECT id, syncId, noteId, originalName, fileSize, mimeType, uploadedAt,
-              lwwPhysicalMs, lwwLogical, lwwDeviceId, lwwOperationId
-       FROM note_attachments
-       WHERE noteId IN (${placeholders})
-       ORDER BY uploadedAt DESC`,
-      noteIds
-    );
-    for (const attachment of attachments) {
+  if (notes.length) {
+    for (const attachment of await accessibleAttachmentRows(userId)) {
       if (!attachmentsByNoteId.has(attachment.noteId)) attachmentsByNoteId.set(attachment.noteId, []);
       attachmentsByNoteId.get(attachment.noteId).push(attachmentResponse(attachment));
     }
@@ -4740,29 +4780,11 @@ async function applySyncNoteMutation(userId, mutation) {
   }
   if (type === 'note.reorder') {
     const syncIds = Array.isArray(payload.syncIds) ? payload.syncIds.map(String).filter(Boolean) : [];
-    if (!syncIds.length) return { ok: true, skipped: true, resourceType: 'note-order' };
-    const placeholders = syncIds.map(() => '?').join(',');
-    const rows = await all(
-      `SELECT notes.id, notes.syncId
-       FROM notes
-       LEFT JOIN note_collaborators access ON access.noteId = notes.id AND access.userId = ?
-       WHERE notes.syncId IN (${placeholders})
-         AND (notes.ownerUserId = ? OR access.userId IS NOT NULL)`,
-      [userId, ...syncIds, userId]
-    );
-    const bySyncId = new Map(rows.map(row => [row.syncId, row.id]));
-    const base = Date.now();
-    for (let index = 0; index < syncIds.length; index += 1) {
-      const noteId = bySyncId.get(syncIds[index]);
-      if (!noteId) continue;
-      await run(
-        `INSERT OR REPLACE INTO user_note_positions (userId, noteId, sortOrder) VALUES (?, ?, ?)`,
-        [userId, noteId, base + syncIds.length - index]
-      );
-      await recordNoteSyncChange(noteId, 'upsert', [userId]);
-    }
-    broadcastRealtime([userId], { type: 'notes-changed', action: 'reordered' });
-    return { ok: true, resourceType: 'note-order' };
+    const positions = parseOrderPositions(payload.positions);
+    if (positions === false) return { ok: false, status: 400, error: 'Invalid note positions.', resourceType: 'note-order' };
+    if (!syncIds.length && !positions?.length) return { ok: true, skipped: true, resourceType: 'note-order' };
+    const updated = await applyNoteOrder(userId, positions ? { positions, by: 'syncId' } : { syncIds });
+    return { ok: true, resourceType: 'note-order', updated };
   }
   const syncId = String(mutation.syncId || payload.syncId || payload.clientId || `note-${crypto.randomUUID()}`);
   const guarded = Object.prototype.hasOwnProperty.call(mutation, 'baseRevision');
@@ -5828,17 +5850,9 @@ app.get('/api/notes', requireAuth, asyncRoute(async (req, res) => {
   const me = req.user.id;
 
   // Fetch attachments for all notes
-  const noteIds = rows.map(r => r.id);
   const attachmentsByNoteId = new Map();
-  if (noteIds.length) {
-    const placeholders = noteIds.map(() => '?').join(',');
-    const attachments = await all(
-      `SELECT id, syncId, noteId, originalName, fileSize, mimeType, uploadedAt,
-              lwwPhysicalMs, lwwLogical, lwwDeviceId, lwwOperationId
-       FROM note_attachments WHERE noteId IN (${placeholders}) ORDER BY uploadedAt DESC`,
-      noteIds
-    );
-    for (const att of attachments) {
+  if (rows.length) {
+    for (const att of await accessibleAttachmentRows(req.user.id)) {
       if (!attachmentsByNoteId.has(att.noteId)) {
         attachmentsByNoteId.set(att.noteId, []);
       }
@@ -6175,33 +6189,10 @@ app.post('/api/notes/:id/collaborators/rejoin', requireAuth, asyncRoute(async (r
 
 app.patch('/api/notes/reorder', requireAuth, asyncRoute(async (req, res) => {
   const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
-  if (!ids.length) return res.status(400).json({ error: 'No note ids provided.' });
-
-  const accessibleRows = await all(
-    `SELECT notes.id FROM notes
-     LEFT JOIN note_collaborators access ON access.noteId = notes.id AND access.userId = ?
-     WHERE (notes.ownerUserId = ? OR access.userId IS NOT NULL)
-     AND notes.id IN (${ids.map(() => '?').join(',')})`,
-    [req.user.id, req.user.id, ...ids]
-  );
-  const accessibleIds = new Set(accessibleRows.map(row => row.id));
-  const orderedIds = ids.filter(id => accessibleIds.has(id));
-  if (!orderedIds.length) return res.status(204).end();
-
-  const base = Date.now();
-  for (let index = 0; index < orderedIds.length; index += 1) {
-    const sortOrder = base + (orderedIds.length - index);
-    try {
-      await run(
-        'INSERT OR REPLACE INTO user_note_positions (userId, noteId, sortOrder) VALUES (?, ?, ?)',
-        [req.user.id, orderedIds[index], sortOrder]
-      );
-      await recordNoteSyncChange(orderedIds[index], 'upsert', [req.user.id]);
-    } catch (err) {
-      console.error(`Failed to update position for note ${orderedIds[index]}:`, err);
-    }
-  }
-  broadcastRealtime([req.user.id], { type: 'notes-changed', action: 'reordered' });
+  const positions = parseOrderPositions(req.body.positions, 'id');
+  if (positions === false) return res.status(400).json({ error: 'Invalid note positions.' });
+  if (!ids.length && !positions?.length) return res.status(400).json({ error: 'No note ids provided.' });
+  await applyNoteOrder(req.user.id, positions ? { positions, by: 'id' } : { ids });
   res.status(204).end();
 }));
 
@@ -6701,14 +6692,18 @@ app.delete('/api/notes/:id', requireAuth, asyncRoute(async (req, res) => {
 async function reminderNoteMap(reminders) {
   const noteIds = [...new Set((reminders || []).map(reminder => Number(reminder.noteId || 0)).filter(Boolean))];
   if (!noteIds.length) return new Map();
-  const placeholders = noteIds.map(() => '?').join(',');
-  const notes = await all(
-    `SELECT n.id, n.ownerUserId, n.noteTitle, n.noteBody, n.checkBoxes, n.isCbox, n.locked, n.archived, n.trashed,
-            GROUP_CONCAT(c.userId) AS collaboratorIds
-     FROM notes n LEFT JOIN note_collaborators c ON c.noteId = n.id
-     WHERE n.id IN (${placeholders}) GROUP BY n.id`,
-    noteIds
-  );
+  // Chunked: an account can have more reminders than SQLite allows bound variables in one statement.
+  const notes = [];
+  for (let offset = 0; offset < noteIds.length; offset += 500) {
+    const chunk = noteIds.slice(offset, offset + 500);
+    notes.push(...await all(
+      `SELECT n.id, n.ownerUserId, n.noteTitle, n.noteBody, n.checkBoxes, n.isCbox, n.locked, n.archived, n.trashed,
+              GROUP_CONCAT(c.userId) AS collaboratorIds
+       FROM notes n LEFT JOIN note_collaborators c ON c.noteId = n.id
+       WHERE n.id IN (${chunk.map(() => '?').join(',')}) GROUP BY n.id`,
+      chunk
+    ));
+  }
   const notesById = new Map(notes.map(note => [Number(note.id), note]));
   const visible = new Map();
   for (const reminder of reminders || []) {
