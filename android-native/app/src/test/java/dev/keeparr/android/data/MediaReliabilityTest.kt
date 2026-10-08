@@ -156,8 +156,11 @@ class MediaReliabilityTest {
         val loader = SharedLoader<String>(onResult = { key, value -> stored[key] = value })
         val runs = AtomicInteger()
         val gate = CompletableDeferred<Unit>()
-        val results = (1..4).map { async(Dispatchers.Default) { loader.load("k") { runs.incrementAndGet(); gate.await(); "value" } } }
-        delay(50); gate.complete(Unit)
+        // UNDISPATCHED runs each consumer synchronously up to its first suspension, so all four have joined the shared
+        // load before the gate opens (a timed delay let a slow CI thread start a second load instead).
+        val results = (1..4).map { async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { loader.load("k") { runs.incrementAndGet(); gate.await(); "value" } } }
+        assertEquals(1, loader.activeLoads)
+        gate.complete(Unit)
         assertEquals(listOf("value", "value", "value", "value"), results.awaitAll())
         assertEquals(1, runs.get())
         assertEquals(mapOf("k" to "value"), stored)
