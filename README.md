@@ -36,7 +36,7 @@ Keeparr is a self-hosted notes app built for quick capture: text notes, checklis
 
 **Web / PWA.** Open your server in a browser. Install it as a PWA from a secure `https://` URL for reliable mobile installs and push notifications.
 
-**Android.** The native client in [`android-native/`](android-native) is written in Kotlin with Jetpack Compose (Android 14+, minSdk 34). It syncs through the incremental mutation protocol, works offline with an outbox, has time reminders, share-sheet capture, home screen widgets (notes list and quick create), and supports client certificates for mutual TLS. It is built from source (see [Development](#development)); on-device acceptance testing is still in progress, see [`PLAN.md`](PLAN.md).
+**Android.** The native client in [`android-native/`](android-native) is written in Kotlin with Jetpack Compose (Android 14+, minSdk 34). It syncs through the incremental mutation protocol, works offline with an outbox, has time reminders, share-sheet capture, home screen widgets (notes list and quick create), and supports client certificates for mutual TLS. An APK is attached to each [GitHub release](https://github.com/paolostivanin/Keeparr/releases) with a SHA-256 checksum, a GPG signature and the signing-certificate fingerprint, or you can build it from source (see [Development](#development)). On-device acceptance testing is still in progress, see [`PLAN.md`](PLAN.md).
 
 ## Quick start (Docker)
 
@@ -45,21 +45,23 @@ Requirements: Docker with Compose, and Git.
 ```bash
 git clone https://github.com/paolostivanin/Keeparr.git
 cd Keeparr
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+docker compose up -d
 ```
 
 Open `http://localhost:6767` and create the first admin account.
 
 Keeparr stores its database, uploads, attachments and generated server data in `./data`. Back that folder up, or use the built-in backup tools.
 
-`docker-compose.yml` on its own pulls `ghcr.io/paolostivanin/keeparr:latest`. The `docker-compose.dev.yml` override builds the image from the local source instead. Publish an image with `npm run docker:deploy` (multi-arch, needs `docker buildx` and a GHCR login).
+The compose file pulls the multi-arch (amd64, arm64) image `ghcr.io/paolostivanin/keeparr:latest`. Release tags are also published as `2.0.0`, `2.0` and `2`; pin one of those in `docker-compose.yml` if you do not want to follow `latest`. To build from the local source instead, add the dev override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
 
 ### Updating
 
 ```bash
-git pull
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+docker compose pull
+docker compose up -d
 ```
+
+If you build from source: `git pull`, then rerun the build command above.
 
 Your `./data` folder is not replaced by updates.
 
