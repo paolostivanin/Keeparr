@@ -1,0 +1,26 @@
+Keeparr is a modified derivative of Kept by ericerkz.
+
+Original project:          https://github.com/ericerkz/kept
+Original project license:  GNU Affero General Public License v3.0-only
+Original copyright:        Copyright (c) 2026 ericerkz
+
+This version contains substantial modifications and additional
+copyrightable work by Paolo Stivanin and other contributors.
+
+Unless otherwise stated, the combined work is distributed under
+the GNU Affero General Public License v3.0-only (SPDX: AGPL-3.0-only).
+The full license text is in the LICENSE file.
+
+Network use: if you modify Keeparr and let users interact with it over a
+network, section 13 of the AGPL requires you to offer those users the
+Corresponding Source of your modified version.
+
+
+Earlier lineage
+---------------
+
+Kept's initial UI scaffolding was forked from google-keep-clone by
+aBrihoum (https://github.com/aBrihoum/google-keep-clone), which is
+distributed under the MIT License. That project's copyright and licence
+notice applies to the portions derived from it and is available at
+https://github.com/aBrihoum/google-keep-clone/blob/master/LICENSE.
