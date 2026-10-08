@@ -9,21 +9,21 @@ Implementation review found correctness defects and unfinished flows. Feature pr
 - WP0–WP10 code work is implemented with server/client migration and behavioral coverage: revocation, crash-atomic mutation receipts, schedule-definition versions, durable upload replay, Room outbox migrations, editor/conflict lifecycle, rich-content preservation, offline occurrences, profile/mTLS recovery, and typed conflict/personal-state handling. Protocol v3 and shared timezone/content fixtures are in place. WP11 UI/widget/accessibility implementation is in progress; WP12 remains the final integration and release gate.
 - The Android project now includes offline notes, editing/organization, collaboration/conflict recovery, reminder scheduling and management, mTLS connection setup, ordered collection/single-note/quick-create widgets, and redacted diagnostics.
 - Automated checks pass as of 2026-10-05: `npm run test:native`, `npm run test:sync`, `npm run test:reminders`, `npm run build`, `./gradlew testDebugUnitTest assembleDebug lintDebug`, and `git diff --check`.
-- Still to capture on the target setup: installed Keep/Kept APK references and UI captures. Still to verify on devices: certificate and widget flows through the real Cloudflare policy, notification delivery through process death/reboot/permission changes, two-user web/native collaboration and revocation, accessibility, and release performance across the specified Android versions and launchers.
+- Still to capture on the target setup: installed Keep/Keeparr APK references and UI captures. Still to verify on devices: certificate and widget flows through the real Cloudflare policy, notification delivery through process death/reboot/permission changes, two-user web/native collaboration and revocation, accessibility, and release performance across the specified Android versions and launchers.
 
 ## Product direction
 
-Build a Kotlin Android client for the existing Kept server. Preserve the familiar Kept/Google Keep experience: quick capture, colorful cards, checklists, manual ordering, pinned notes, labels, and uncomplicated editing. Use the installed apps as references for visual behavior and interaction; implement the native client with its own code and appropriate assets.
+Build a Kotlin Android client for the existing Keeparr server. Preserve the familiar Keeparr/Google Keep experience: quick capture, colorful cards, checklists, manual ordering, pinned notes, labels, and uncomplicated editing. Use the installed apps as references for visual behavior and interaction; implement the native client with its own code and appropriate assets.
 
 The first complete release includes time reminders, collaboration with users on the same server, native UI, installed-client-certificate mTLS, and compact widgets that follow the app's ordering. Offline editing is part of the foundation. Location reminders, AI capture, and a drawing editor come later.
 
-Build initially in an independent Gradle project under `android-native/`, with a distinct application ID so it can coexist with the current Kept app. Keep the existing server, accounts, and web client usable during development. Ship backward-compatible server extensions as focused changes.
+Build initially in an independent Gradle project under `android-native/`, with a distinct application ID so it can coexist with the current Keeparr app. Keep the existing server, accounts, and web client usable during development. Ship backward-compatible server extensions as focused changes.
 
 ## What the server already provides
 
 | Area | Existing implementation | Native-client implication |
 | --- | --- | --- |
-| Login | `POST /api/auth/login`, bearer sessions, TOTP and backup-code support | Reuse Kept accounts. Store credentials once for all app entry points. |
+| Login | `POST /api/auth/login`, bearer sessions, TOTP and backup-code support | Reuse Keeparr accounts. Store credentials once for all app entry points. |
 | Notes | Note CRUD, checklists, labels, binders, colors, images, attachments, archive/trash | Most product behavior already has a server model. |
 | Ordering | Per-user pinning and positions; bootstrap sorts by pin, effective order, then ID descending | The app and widgets can share the same ordered local query. |
 | Sharing | User discovery and note collaborator endpoints; server checks owner/editor access | Reuse the current owner/collaborator model. |
@@ -71,7 +71,7 @@ flowchart LR
     Repo <--> DB[(Room: notes, outbox, schedules)]
     Sync[Sync workers] <--> DB
     Sync <--> Connection[Shared connection profile and mTLS]
-    Connection <--> Server[Existing Kept server]
+    Connection <--> Server[Existing Keeparr server]
     DB --> Scheduler[Reminder scheduler]
     Scheduler --> Alarms[Android alarms and notifications]
 ```
@@ -100,7 +100,7 @@ Delivery guarantees cover schedules present on the device. Reminders created els
 
 ## 2. Same-server collaboration
 
-- Add/remove collaborators through Kept's existing user selector and owner-only sharing endpoints. Show who owns a note and who can edit it.
+- Add/remove collaborators through Keeparr's existing user selector and owner-only sharing endpoints. Show who owns a note and who can edit it.
 - Allow collaborators to edit the fields the server permits. Keep user-specific pins and manual ordering separate from shared content.
 - Display current editors while connected. Apply incoming updates without replacing an unsaved draft or jumping the cursor.
 - Base-revision checks prevent the native client from silently overwriting newer content. Save conflicting local drafts and allow explicit comparison, replacement, or saving a copy. Checklist-item merges can follow once stable identities and protocol semantics are defined.
@@ -109,9 +109,9 @@ Delivery guarantees cover schedules present on the device. Reminders created els
 
 **Acceptance:** two users edit a shared note and observe updates; competing edits remain recoverable; a collaborator cannot manage access or perform owner-only actions; revocation is reflected in screens, caches, widgets, and alarms after sync.
 
-## 3. Kept/Keep-style UI
+## 3. Keeparr/Keep-style UI
 
-Use Kept's current web UI and live Android behavior as the primary feature reference, with Google Keep as the density and interaction reference.
+Use Keeparr's current web UI and live Android behavior as the primary feature reference, with Google Keep as the density and interaction reference.
 
 - A quick search bar, navigation drawer, pinned/other sections, colorful rounded cards, grid/list toggle, and a compact quick-create area.
 - An adaptive staggered grid on phones/tablets, plus full-width list mode. Compose supports staggered grids through its [lazy grid APIs](https://developer.android.com/develop/ui/compose/lists).
@@ -132,9 +132,9 @@ The user confirmed this means a client certificate already installed on Android 
 - During connection setup, launch Android's certificate chooser and retain the selected alias for this server profile. [Android KeyChain](https://developer.android.com/reference/android/security/KeyChain) provides selection and access to the private key and certificate chain.
 - Build TLS client authentication using that credential. Preserve normal server-certificate and hostname verification. Scope the client credential and gateway headers to explicitly configured server origins, including redirect handling.
 - Use the same configuration for login, note requests, attachments/images, WebSockets, and background/widget refreshes.
-- Offer connection testing before login, certificate replacement, and actionable errors for unavailable/expired credentials, TLS failures, gateway rejection, and expired Kept sessions. Do not turn all failures into “Couldn't load notes.”
+- Offer connection testing before login, certificate replacement, and actionable errors for unavailable/expired credentials, TLS failures, gateway rejection, and expired Keeparr sessions. Do not turn all failures into “Couldn't load notes.”
 - Background jobs cannot launch a certificate chooser. When a grant is missing, retain cached content and mark that connection setup needs attention. Rebuild clients and retry after foreground certificate selection.
-- Keep custom gateway headers available as a separate setting; they supplement mTLS and Kept login when required.
+- Keep custom gateway headers available as a separate setting; they supplement mTLS and Keeparr login when required.
 
 **Acceptance:** connect through the user's actual Cloudflare mTLS policy, login and synchronize, download/upload an attachment, establish realtime collaboration, then refresh a widget with the app closed. Replace/revoke the certificate and verify recovery without losing cached notes.
 
@@ -181,4 +181,4 @@ Prioritize integration tests for protocol round trips, concurrent editing, permi
 
 First implementation task: create the compatibility fixtures and mTLS read-only prototype in stage 0. Settle content and connection handling before allowing writes to existing notes.
 
-The earlier APK dumps were placed in `/tmp` and are not present in this resumed session. Re-extract the installed Keep and Kept APK sets to a durable, locally ignored reference directory during stage 0; record their versions/checksums and store UI captures alongside them. Keep APKs, personal notes, certificates and credentials out of source control.
+The earlier APK dumps were placed in `/tmp` and are not present in this resumed session. Re-extract the installed Keep and Keeparr APK sets to a durable, locally ignored reference directory during stage 0; record their versions/checksums and store UI captures alongside them. Keep APKs, personal notes, certificates and credentials out of source control.

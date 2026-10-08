@@ -13,7 +13,7 @@ platformBrowserDynamic().bootstrapModule(AppModule, { applicationProviders: [pro
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/kept-push-sw.js')
+    navigator.serviceWorker.register('/keeparr-push-sw.js')
       .then(registration => registration.update())
       .catch(console.error);
   });

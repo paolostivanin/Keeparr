@@ -1,5 +1,5 @@
 #!/bin/sh
-# Kept container entrypoint.
+# Keeparr container entrypoint.
 #
 # Goals (in priority order):
 #   1. The app must be able to write to /app/data, no matter how the bind
@@ -19,7 +19,7 @@
 #   - chown /app/data recursively (cheap unless it's a huge dataset).
 #   - Re-exec the original CMD as that UID via su-exec.
 #
-# Skip ownership fixing entirely with KEPT_SKIP_CHOWN=1 (e.g. on a giant
+# Skip ownership fixing entirely with KEEPARR_SKIP_CHOWN=1 (e.g. on a giant
 # data dir where you've already gotten the ownership right and the recursive
 # chown is slow).
 
@@ -52,7 +52,7 @@ fi
 mkdir -p "$DATA_DIR"
 
 # Fix ownership unless explicitly skipped or unless we'd be a no-op.
-if [ "${KEPT_SKIP_CHOWN:-0}" != "1" ]; then
+if [ "${KEEPARR_SKIP_CHOWN:-0}" != "1" ]; then
   CURRENT_OWNER=$(stat -c '%u:%g' "$DATA_DIR" 2>/dev/null || echo "0:0")
   if [ "$CURRENT_OWNER" != "${TARGET_UID}:${TARGET_GID}" ]; then
     chown -R "${TARGET_UID}:${TARGET_GID}" "$DATA_DIR" || true
@@ -63,8 +63,8 @@ fi
 # and tooling that calls getpwuid() works. If the alpine "node" user (1000)
 # is what we're targeting, it's already there.
 if ! getent passwd "$TARGET_UID" >/dev/null 2>&1; then
-  addgroup -g "$TARGET_GID" -S kept 2>/dev/null || true
-  adduser -u "$TARGET_UID" -G kept -S -D -H kept 2>/dev/null || true
+  addgroup -g "$TARGET_GID" -S keeparr 2>/dev/null || true
+  adduser -u "$TARGET_UID" -G keeparr -S -D -H keeparr 2>/dev/null || true
 fi
 
 exec su-exec "${TARGET_UID}:${TARGET_GID}" "$@"

@@ -1,13 +1,13 @@
 services:
-  kept:
-    image: ghcr.io/ericerkz/kept:latest
-    container_name: kept-app
+  keeparr:
+    image: ghcr.io/paolostivanin/keeparr:latest
+    container_name: keeparr-app
     ports:
       - "6767:6767"
     environment:
       - NODE_ENV=production
       - PORT=6767
-      - SQLITE_PATH=/app/data/kept.sqlite
+      - SQLITE_PATH=/app/data/keeparr.sqlite
 
       # Pass the host user's UID/GID into the container so files in ./data
       # are owned by you on the host (no sudo needed for backups). $UID is
@@ -24,16 +24,16 @@ services:
       # Public base URL the server thinks it's at. Required for remote MCP/OAuth
       # and OIDC sign-in; otherwise only needed when proxy forwarding headers
       # do not describe the public origin correctly. Use the origin only.
-      # - BASE_URL=https://kept.example.com
+      # - BASE_URL=https://keeparr.example.com
 
       # Optional OpenID Connect single sign-on. Register this callback at the
-      # provider: https://kept.example.com/api/auth/oidc/callback
-      # - KEPT_OIDC_ISSUER=https://id.example.com
-      # - KEPT_OIDC_CLIENT_ID=kept
-      # - KEPT_OIDC_CLIENT_SECRET=
-      # - KEPT_OIDC_NAME=Single sign-on
-      # - KEPT_OIDC_SCOPES=openid profile email
-      # Users first need a local Kept account, then connect their provider
+      # provider: https://keeparr.example.com/api/auth/oidc/callback
+      # - KEEPARR_OIDC_ISSUER=https://id.example.com
+      # - KEEPARR_OIDC_CLIENT_ID=keeparr
+      # - KEEPARR_OIDC_CLIENT_SECRET=
+      # - KEEPARR_OIDC_NAME=Single sign-on
+      # - KEEPARR_OIDC_SCOPES=openid profile email
+      # Users first need a local Keeparr account, then connect their provider
       # account from Settings. OIDC does not create or email-match accounts.
 
       # Allow restoring a SQLite backup via /api/setup/restore. This should really only be enabled when you actually need it
@@ -41,41 +41,41 @@ services:
       # then unset. 
       # If left enabled, anyone with an auth token could restore a backup and overwrite your data.
       # Set to "1" only when you actually need to perform a restore, then unset.
-      # - KEPT_ALLOW_RESTORE=1
+      # - KEEPARR_ALLOW_RESTORE=1
 
       # Session lifetime in days (default 30). Lower = more re-auth, more
       # damage-control if a token is stolen.
-      # - KEPT_SESSION_TTL_DAYS=30
+      # - KEEPARR_SESSION_TTL_DAYS=30
 
       # ── CORS (cross-origin requests) ─────────────────────────────────────
-      # Kept uses Bearer tokens instead of cookies, so the default compose
+      # Keeparr uses Bearer tokens instead of cookies, so the default compose
       # config allows browser API calls from any origin. This avoids remote
       # clients/native shells failing when the app and API are not served from
       # the exact same origin.
       #
       # Allow any origin (easy mode for personal self-hosting):
-      - KEPT_CORS_ALLOW_ALL=1
+      - KEEPARR_CORS_ALLOW_ALL=1
       #
       # Tradeoff: any website can hit your unauth endpoints
       # (/api/setup/status, login, register) from a browser. Authenticated
       # API calls still require a valid Bearer token, so user data is not
       # exposed. Fine for most personal/family instances.
       #
-      # To pin specific origins instead, comment out KEPT_CORS_ALLOW_ALL above
-      # and uncomment KEPT_CORS_ORIGINS below. Comma-separated, no spaces, no
+      # To pin specific origins instead, comment out KEEPARR_CORS_ALLOW_ALL above
+      # and uncomment KEEPARR_CORS_ORIGINS below. Comma-separated, no spaces, no
       # trailing slashes, scheme + host (+ port if non-default):
-      # - KEPT_CORS_ORIGINS=https://kept.example.com,https://app.example.com
+      # - KEEPARR_CORS_ORIGINS=https://keeparr.example.com,https://app.example.com
       #
-      # When KEPT_CORS_ORIGINS is used, Kept still allows exact native app
+      # When KEEPARR_CORS_ORIGINS is used, Keeparr still allows exact native app
       # WebView origins (capacitor://localhost, ionic://localhost, and
       # localhost variants) so iOS/Android apps can connect.
       #
       # Localhost dev / LAN / mixed examples:
-      # - KEPT_CORS_ORIGINS=http://localhost:4200,http://localhost:6767
-      # - KEPT_CORS_ORIGINS=http://192.168.1.50:6767,https://kept.example.com
-      # - KEPT_CORS_ORIGINS=https://kept.example.com,http://kept.local
+      # - KEEPARR_CORS_ORIGINS=http://localhost:4200,http://localhost:6767
+      # - KEEPARR_CORS_ORIGINS=http://192.168.1.50:6767,https://keeparr.example.com
+      # - KEEPARR_CORS_ORIGINS=https://keeparr.example.com,http://keeparr.local
       #
-      # If both KEPT_CORS_ALLOW_ALL and KEPT_CORS_ORIGINS are set, the
+      # If both KEEPARR_CORS_ALLOW_ALL and KEEPARR_CORS_ORIGINS are set, the
       # allowlist takes precedence.
       #
       # Note: CORS does not control realtime presence/live collaboration.
@@ -86,13 +86,13 @@ services:
       # first run if not set. Override here if you want to manage them yourself.
       # - VAPID_PUBLIC_KEY=
       # - VAPID_PRIVATE_KEY=
-      # - VAPID_SUBJECT=https://kept.example.com
+      # - VAPID_SUBJECT=https://keeparr.example.com
 
       # Google Takeout import ZIP cap. Default is 5GB and applies only to
       # Google Keep Takeout imports, not normal note images or attachments.
       # Large uploads may still be limited by Cloudflare/Nginx/etc.; import
       # directly over LAN/SSH or raise proxy body-size/timeouts if needed.
-      # - KEPT_TAKEOUT_UPLOAD_MAX=5GB
+      # - KEEPARR_TAKEOUT_UPLOAD_MAX=5GB
 
 
     volumes:

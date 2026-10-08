@@ -24,7 +24,7 @@ function mountSyncMutationRoute(app, { requireAuth, asyncRoute, executeSyncMutat
     const snapshot = includeSnapshot ? await syncSnapshotForUser(req.user.id) : null;
     // This is a high-water mark, not a cursor that clients may persist directly.
     const serverCursor = snapshot?.cursor ?? await syncCursorForUser(req.user.id);
-    if (testMode && req.get('x-kept-test-drop-response') === '1') {
+    if (testMode && req.get('x-keeparr-test-drop-response') === '1') {
       req.socket.destroy();
       return;
     }

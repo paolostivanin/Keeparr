@@ -194,7 +194,7 @@ async function waitForDevTools(port) {
 async function run() {
   const port = await listenOnEphemeralPort();
   const devToolsPort = await findAvailablePort();
-  const browserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kept-ui-check-'));
+  const browserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'keeparr-ui-check-'));
   const chrome = spawn(findBrowser(), [
     '--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
     `--remote-debugging-port=${devToolsPort}`, `--user-data-dir=${browserDataDir}`, 'about:blank'
@@ -247,7 +247,7 @@ async function run() {
     await cdp('HeapProfiler.enable');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await cdp('Page.addScriptToEvaluateOnNewDocument', {
-      source: `if (!sessionStorage.getItem('kept-harness-logged-out')) localStorage.setItem('gk_session', JSON.stringify({id:1,username:'fixture',displayName:'Fixture',role:'admin',theme:'light',token:'fixture-token',demoNotesCreatedAt:'2026-01-01'}));localStorage.setItem('kept_user_preferences', JSON.stringify({richLinkPreviews:true}));`
+      source: `if (!sessionStorage.getItem('keeparr-harness-logged-out')) localStorage.setItem('gk_session', JSON.stringify({id:1,username:'fixture',displayName:'Fixture',role:'admin',theme:'light',token:'fixture-token',demoNotesCreatedAt:'2026-01-01'}));localStorage.setItem('keeparr_user_preferences', JSON.stringify({richLinkPreviews:true}));`
     });
     if (profileMode) {
       // Diagnostic journey: cold and warm browsing, search, and scroll paging, each split into the
@@ -541,7 +541,7 @@ async function run() {
     smoke.push('lazy admin route');
     knownScripts = afterUsers;
     // Signed-out entry points need a fresh document, as a user opening the shipped app would get.
-    await evaluate(`sessionStorage.setItem('kept-harness-logged-out', '1'); localStorage.removeItem('gk_session')`);
+    await evaluate(`sessionStorage.setItem('keeparr-harness-logged-out', '1'); localStorage.removeItem('gk_session')`);
     for (const route of ['/login', '/register']) {
       await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${route}` });
       await waitForRoute(`app-${route.slice(1)} input[name="username"]`, `Lazy ${route} route`);
@@ -550,7 +550,7 @@ async function run() {
       const scripts = await loadedScripts();
       assert(scripts.some(script => /chunk-/.test(script)), `${route} did not load a lazy chunk.`);
     }
-    await evaluate(`sessionStorage.removeItem('kept-harness-logged-out')`);
+    await evaluate(`sessionStorage.removeItem('keeparr-harness-logged-out')`);
     smoke.push('lazy login/register routes with first-field focus');
     await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${appPath}` });
     await sleep(700);

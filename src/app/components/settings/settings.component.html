@@ -3,8 +3,8 @@
 
     <div class="settings-header">
       <div class="brand-row">
-        <img src="./assets/images/keep2x.fw.png" alt="Kept" width="49">
-        <span>Kept</span>
+        <img src="./assets/images/keep2x.fw.png" alt="Keeparr" width="49">
+        <span>Keeparr</span>
       </div>
       <a routerLink="/">← Back to notes</a>
     </div>
@@ -38,7 +38,7 @@
               <li>Click <strong>Deselect all</strong>, then scroll down and check only <strong>Keep</strong>.</li>
               <li>Click <strong>Next step</strong>, choose your delivery method (email is easiest), then click <strong>Create export</strong>.</li>
               <li>Google will email you a download link — this usually arrives within a few minutes but can take longer for large exports.</li>
-              <li>Download the ZIP from the email and upload it below. Kept accepts Takeout ZIPs up to 5 GB by default; for larger self-hosted imports, set <code>KEPT_TAKEOUT_UPLOAD_MAX</code>.</li>
+              <li>Download the ZIP from the email and upload it below. Keeparr accepts Takeout ZIPs up to 5 GB by default; for larger self-hosted imports, set <code>KEEPARR_TAKEOUT_UPLOAD_MAX</code>.</li>
             </ol>
           }
         </div>
@@ -65,7 +65,7 @@
       </section>
 
       <section class="settings-section export-section" style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 24px; margin-top: 24px;">
-        <div class="section-title">Export your Kept data</div>
+        <div class="section-title">Export your Keeparr data</div>
         <p class="section-desc">
           Download a copy of all your notes, checklists, and labels. Useful for backups or migrating to another service.
         </p>
@@ -107,7 +107,7 @@
           </label>
         </div>
         <p class="section-desc">
-          Allow apps you explicitly approve to access Kept with short-lived OAuth tokens. Each app receives its own revocable connection and never sees your password.
+          Allow apps you explicitly approve to access Keeparr with short-lived OAuth tokens. Each app receives its own revocable connection and never sees your password.
         </p>
 
         @if (oauthAccess?.enabled) {
@@ -118,7 +118,7 @@
                 <div class="oauth-connection-row">
                   <div class="oauth-connection-info">
                     <strong>{{connection.clientName}}</strong>
-                    <span>{{connection.resource.endsWith('/mcp') ? 'Remote MCP' : 'Kept API'}} · {{connection.scopes.join(', ')}}</span>
+                    <span>{{connection.resource.endsWith('/mcp') ? 'Remote MCP' : 'Keeparr API'}} · {{connection.scopes.join(', ')}}</span>
                     <span>Connected {{connection.authorizedAt | date:'medium'}}@if (connection.lastUsedAt) { · Last used {{connection.lastUsedAt | date:'medium'}} }</span>
                   </div>
                   <button type="button" class="btn-secondary" [disabled]="revokingOAuthConnectionId === connection.id"
@@ -150,7 +150,7 @@
         @if (newMcpAccessToken) {
           <div class="mcp-token-panel" role="status">
             <strong>Save this token now</strong>
-            <p>Kept will not show the full local MCP token again.</p>
+            <p>Keeparr will not show the full local MCP token again.</p>
             <div class="mcp-token-row">
               <code>{{newMcpAccessToken}}</code>
               <button type="button" class="btn-secondary" (click)="copyMcpToken()">
@@ -184,7 +184,7 @@
               <div class="preference-row">
                 <div class="preference-info">
                   <span class="preference-label">Locked-note access</span>
-                  <span class="preference-desc">Allow OAuth apps and local MCP clients to request a secure passcode unlock. The passcode goes directly to Kept and is never sent to the connected client.</span>
+                  <span class="preference-desc">Allow OAuth apps and local MCP clients to request a secure passcode unlock. The passcode goes directly to Keeparr and is never sent to the connected client.</span>
                 </div>
                 <label class="toggle-label">
                   <input type="checkbox" [checked]="mcpAccess?.allowLockedNotes"
@@ -220,7 +220,7 @@
         <section class="settings-section sso-section">
           <div class="section-title">Single sign-on</div>
           <p class="section-desc">
-            Connect this Kept account to {{oidcLinkStatus?.providerName}} so you can use it to sign in. Your local username and password remain available.
+            Connect this Keeparr account to {{oidcLinkStatus?.providerName}} so you can use it to sign in. Your local username and password remain available.
           </p>
 
           @if (oidcLinkStatus?.connected) {
@@ -305,7 +305,7 @@
       </h2>
 
       <p class="section-desc">
-        Adjust how Kept presents times, checklist rows, and links on this device.
+        Adjust how Keeparr presents times, checklist rows, and links on this device.
       </p>
 
       <div class="preferences-list">
@@ -380,7 +380,7 @@
       
       <section class="settings-section intro-section">
         <p class="section-desc" style="margin-bottom: 0;">
-          Reminders are built in and work without any additional setup — just set a time on any note and Kept handles the rest.
+          Reminders are built in and work without any additional setup — just set a time on any note and Keeparr handles the rest.
           The integrations below are all <strong>optional</strong> and let you sync reminders to external calendar apps.
         </p>
       </section>
@@ -582,7 +582,7 @@
       </h2>
 
       <p class="section-desc">
-        Manage the permissions Kept needs for reminders, voice capture, and location-based features.
+        Manage the permissions Keeparr needs for reminders, voice capture, and location-based features.
       </p>
 
       @if (notificationPermissionsVisible) {
@@ -693,7 +693,7 @@
       <section class="settings-section danger-section">
         <div class="section-title">Delete your account</div>
         <p class="section-desc">
-          Permanently delete your account and everything you own in Kept. This removes your notes, uploads,
+          Permanently delete your account and everything you own in Keeparr. This removes your notes, uploads,
           attachments, reminders, calendar settings, sessions, and sharing access. Shared notes owned by other
           users are not deleted.
         </p>

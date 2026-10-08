@@ -140,7 +140,7 @@ function reminderResponse(reminder, notesById = new Map()) {
       locationTrigger
     } : null,
     status: reminder.status || 'pending',
-    deepLink: noteId && !inaccessibleNote ? `kept://note/${noteId}` : null,
+    deepLink: noteId && !inaccessibleNote ? `keeparr://note/${noteId}` : null,
     lwwPhysicalMs: Number(reminder.lwwPhysicalMs || 0),
     lwwLogical: Number(reminder.lwwLogical || 0),
     lwwDeviceId: reminder.lwwDeviceId || 'server',

@@ -1,56 +1,56 @@
-# Kept MCP server
+# Keeparr MCP server
 
-Kept includes a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for connecting trusted AI clients and agents to your Kept account. It works through Kept's authenticated HTTP API and never opens the SQLite database directly.
+Keeparr includes a local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for connecting trusted AI clients and agents to your Keeparr account. It works through Keeparr's authenticated HTTP API and never opens the SQLite database directly.
 
 External access is disabled by default. When enabled through either OAuth app access or a local MCP token, an agent can search and read notes, create and edit all supported note types, manage checklists, images, attachments, reminders, labels, binders, collaborators, pinning, archive, and trash. Locked-note access and permanent note deletion remain disabled unless you turn on their separate shared settings.
 
 ## Enable local MCP access
 
-1. Sign in to Kept and open **Settings**.
+1. Sign in to Keeparr and open **Settings**.
 2. Find **External Access** and enable **Local MCP access**.
-3. Copy the generated token immediately. Kept stores only its hash and cannot show the full token again.
-4. Add the token and your Kept URL to your MCP client configuration.
+3. Copy the generated token immediately. Keeparr stores only its hash and cannot show the full token again.
+4. Add the token and your Keeparr URL to your MCP client configuration.
 
-Disabling local MCP access immediately revokes only that local token. **Generate new token** also revokes the previous local token. OAuth app connections are managed separately, and each Kept user has their own settings and token.
+Disabling local MCP access immediately revokes only that local token. **Generate new token** also revokes the previous local token. OAuth app connections are managed separately, and each Keeparr user has their own settings and token.
 
 ## Remote clients and ChatGPT
 
-Kept exposes a Streamable HTTP MCP endpoint at:
+Keeparr exposes a Streamable HTTP MCP endpoint at:
 
 ```text
-https://your-kept.example/mcp
+https://your-keeparr.example/mcp
 ```
 
 Remote access uses OAuth 2.1 authorization code flow with PKCE. In ChatGPT,
 create an MCP app/connector with that URL and choose OAuth authentication.
-Kept publishes the required authorization-server and protected-resource
+Keeparr publishes the required authorization-server and protected-resource
 metadata automatically, and supports both dynamic client registration and
 ChatGPT client metadata documents.
 
-When connecting, sign in to Kept and approve the request. The Kept user must
+When connecting, sign in to Keeparr and approve the request. The Keeparr user must
 already have **OAuth app access** enabled. ChatGPT receives a short-lived,
 revocable OAuth access token, not the dedicated local MCP token shown in
 Settings. The connection is listed separately in Settings and can be revoked
 without changing local MCP access. The same OAuth server can also authorize non-MCP API integrations; see the
 [OAuth integration guide](oauth.md).
 
-`BASE_URL` must be the public HTTPS origin used to reach Kept, and your reverse
-proxy must forward `/mcp`, `/oauth/*`, and `/.well-known/*` to Kept. Do not put
+`BASE_URL` must be the public HTTPS origin used to reach Keeparr, and your reverse
+proxy must forward `/mcp`, `/oauth/*`, and `/.well-known/*` to Keeparr. Do not put
 a local MCP token in the MCP URL or a query parameter.
 
 ## Local MCP client configuration
 
-Local clients can use MCP's `stdio` transport. From a Kept source checkout:
+Local clients can use MCP's `stdio` transport. From a Keeparr source checkout:
 
 ```json
 {
   "mcpServers": {
-    "kept": {
+    "keeparr": {
       "command": "npm",
-      "args": ["--prefix", "/absolute/path/to/kept", "run", "mcp"],
+      "args": ["--prefix", "/absolute/path/to/keeparr", "run", "mcp"],
       "env": {
-        "KEPT_BASE_URL": "https://kept.example.com",
-        "KEPT_MCP_TOKEN": "${KEPT_MCP_TOKEN}"
+        "KEEPARR_BASE_URL": "https://keeparr.example.com",
+        "KEEPARR_MCP_TOKEN": "${KEEPARR_MCP_TOKEN}"
       }
     }
   }
@@ -59,12 +59,12 @@ Local clients can use MCP's `stdio` transport. From a Kept source checkout:
 
 Environment-variable expansion differs by MCP client. Prefer the client's secret store or a wrapper that reads the token from a secret manager instead of placing the token directly in a checked-in configuration file.
 
-The published Kept container can run the same entrypoint:
+The published Keeparr container can run the same entrypoint:
 
 ```bash
 docker run --rm -i \
-  --env-file /secure/path/kept-mcp.env \
-  ghcr.io/ericerkz/kept:latest \
+  --env-file /secure/path/keeparr-mcp.env \
+  ghcr.io/paolostivanin/keeparr:latest \
   node mcp/index.mjs
 ```
 
@@ -72,10 +72,10 @@ docker run --rm -i \
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `KEPT_BASE_URL` | Yes | Kept origin, such as `https://kept.example.com` |
-| `KEPT_MCP_TOKEN` | Yes | Dedicated token generated under **Settings > External Access > Local MCP access** |
-| `KEPT_REQUEST_TIMEOUT_MS` | No | HTTP timeout from 100 through 120000 ms; default 10000 |
-| `KEPT_CUSTOM_HEADERS_JSON` | No | JSON object of additional reverse-proxy headers, such as Cloudflare Access service-token headers |
+| `KEEPARR_BASE_URL` | Yes | Keeparr origin, such as `https://keeparr.example.com` |
+| `KEEPARR_MCP_TOKEN` | Yes | Dedicated token generated under **Settings > External Access > Local MCP access** |
+| `KEEPARR_REQUEST_TIMEOUT_MS` | No | HTTP timeout from 100 through 120000 ms; default 10000 |
+| `KEEPARR_CUSTOM_HEADERS_JSON` | No | JSON object of additional reverse-proxy headers, such as Cloudflare Access service-token headers |
 
 For example:
 
@@ -86,7 +86,7 @@ For example:
 }
 ```
 
-Kept rejects custom `Authorization`, `Cookie`, `Host`, `Content-Length`, `Connection`, and `Accept-Encoding` headers. The adapter also refuses HTTP redirects so it cannot forward credentials to another origin.
+Keeparr rejects custom `Authorization`, `Cookie`, `Host`, `Content-Length`, `Connection`, and `Accept-Encoding` headers. The adapter also refuses HTTP redirects so it cannot forward credentials to another origin.
 
 ## Locked notes
 
@@ -94,9 +94,9 @@ Locked-note content is redacted by default, even when the agent can otherwise se
 
 1. Enable **Locked-note access** in External Access settings.
 2. Ask the agent to request access to the locked note.
-3. Open the short-lived Kept URL returned by the agent and enter the note passcode there.
+3. Open the short-lived Keeparr URL returned by the agent and enter the note passcode there.
 
-The passcode is submitted directly to your Kept server. It is not returned to the MCP client or model. A successful approval unlocks only that note for that MCP token for five minutes.
+The passcode is submitted directly to your Keeparr server. It is not returned to the MCP client or model. A successful approval unlocks only that note for that MCP token for five minutes.
 
 ## Permanent deletion
 
@@ -119,11 +119,11 @@ Collaborators can edit shared note content and manage their own pin state. Owner
 
 ## Security considerations
 
-Enabling OAuth app access or local MCP access grants broad access to the connected user's unlocked Kept data. Only connect MCP clients and models you trust, protect local tokens like passwords, and revoke access when it is no longer needed.
+Enabling OAuth app access or local MCP access grants broad access to the connected user's unlocked Keeparr data. Only connect MCP clients and models you trust, protect local tokens like passwords, and revoke access when it is no longer needed.
 
 Notes and attachments can contain untrusted instructions. An AI client may treat text inside a note as directions even when it should be treated only as data; this is commonly called prompt injection. Review sensitive or destructive actions and avoid connecting autonomous agents whose behavior you cannot inspect.
 
-MCP tokens cannot access Kept's administration, account settings, backup/restore, sync, or arbitrary action-plan endpoints. Mutating MCP API requests are recorded with user, token, route, result status, and time; note content and filenames are not included in that audit record.
+MCP tokens cannot access Keeparr's administration, account settings, backup/restore, sync, or arbitrary action-plan endpoints. Mutating MCP API requests are recorded with user, token, route, result status, and time; note content and filenames are not included in that audit record.
 
 ## Development
 
@@ -133,6 +133,6 @@ Run the MCP unit, transport, and real API contract tests:
 npm run test:mcp
 ```
 
-The adapter targets Kept's application API. Changes to its note, reminder, attachment, sharing, or authentication routes should update the MCP contract tests in the same pull request.
+The adapter targets Keeparr's application API. Changes to its note, reminder, attachment, sharing, or authentication routes should update the MCP contract tests in the same pull request.
 
 Initial MCP support was contributed by [@asymetryk](https://github.com/asymetryk).

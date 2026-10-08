@@ -48,7 +48,7 @@ async function integrationTest() {
     try { await assertion(); }
     catch (error) { regressionFailures.push(`${description}: ${error.message}`); }
   };
-  const directory = mkdtempSync(path.join(tmpdir(), 'kept-native-test-'));
+  const directory = mkdtempSync(path.join(tmpdir(), 'keeparr-native-test-'));
   const dataDirectory = path.join(directory, 'data');
   const port = 14000 + Math.floor(Math.random() * 10000);
   const origin = `http://127.0.0.1:${port}`;
@@ -62,7 +62,7 @@ async function integrationTest() {
     UPLOAD_DIR: path.join(dataDirectory, 'uploads'),
     ATTACHMENT_DIR: path.join(dataDirectory, 'attachments'),
     TAKEOUT_TMP_DIR: path.join(dataDirectory, 'imports', 'tmp'),
-    KEPT_TEST_MODE: '1'
+    KEEPARR_TEST_MODE: '1'
   };
   const startServer = () => {
     const childProcess = spawn(process.execPath, ['server/server.js'], {
@@ -284,7 +284,7 @@ async function integrationTest() {
     const lostResponseMutation = { type: 'note.upsert', syncId: note.syncId, baseRevision: beforeLostResponse.revision,
       operationId: 'accepted-response-dropped', payload: { ...beforeLostResponse, noteTitle: 'Accepted without response' } };
     await assert.rejects(fetch(`${base}/sync/mutations`, {
-      method: 'POST', headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': 'application/json', 'X-Kept-Test-Drop-Response': '1' },
+      method: 'POST', headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': 'application/json', 'X-Keeparr-Test-Drop-Response': '1' },
       body: JSON.stringify({ mutations: [lostResponseMutation] })
     }), 'the harness should be able to simulate a lost successful response');
     const afterLostResponse = await request(`/notes/${note.id}`, owner.token);

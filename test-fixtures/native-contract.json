@@ -16,7 +16,7 @@
     "supportedHtml": [ "<p><b>Bold</b><br>Text</p>", "<p><a href=\"https://example.test/path\">Linked text</a></p>", "<p dir=\"ltr\">Direction metadata</p>" ],
     "unsupportedHtml": [ "<table><tr><td>Keep intact</td></tr></table>", "<img src=\"drawing.png\">", "<span style=\"color:#ff0000\">Styled</span>", "<span data-future=\"keep\">Unknown attribute</span>" ],
     "richChecklistItem": "<a href=\"https://example.test/item\"><b>Rich item</b></a>",
-    "structuredChecklistItem": { "type": "kept-future-item", "text": "preserve me", "metadata": { "revision": 4 } },
+    "structuredChecklistItem": { "type": "keeparr-future-item", "text": "preserve me", "metadata": { "revision": 4 } },
     "nestedChecklistItem": { "id": 17, "done": false, "data": "<b>Nested</b>", "indentLevel": 2, "children": [{ "id": 18, "data": "Child", "done": true }], "futureFlag": true },
     "drawingDataUrl": "data:image/svg+xml;base64,PHN2Zy8+",
     "attachmentMetadata": { "syncId": "attachment-future", "originalName": "future.txt", "mimeType": "text/plain", "futureFlag": { "retain": true } },

@@ -34,7 +34,7 @@
               "src/manifest.webmanifest",
               "src/assets",
               {
-                "glob": "kept-push-sw.js",
+                "glob": "keeparr-push-sw.js",
                 "input": "src",
                 "output": "/"
               }
@@ -121,7 +121,7 @@
               "src/manifest.webmanifest",
               "src/assets",
               {
-                "glob": "kept-push-sw.js",
+                "glob": "keeparr-push-sw.js",
                 "input": "src",
                 "output": "/"
               }

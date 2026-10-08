@@ -27,7 +27,7 @@ export function escapeHtml(text: string): string {
 }
 
 /** Content that is not text (images, link previews) cannot become a checklist item and stays in the body. */
-function isKeptAsBody(node: LineNode): boolean {
+function isKeeparrAsBody(node: LineNode): boolean {
   const className = typeof node.className === 'string' ? node.className : ''
   return node.nodeName === 'IMG' || className.split(/\s+/).includes('editor-link-preview-slot')
 }
@@ -46,7 +46,7 @@ export function splitBodyIntoLines(root: LineNode): { lines: string[]; leftoverH
     if (node.nodeType === TEXT_NODE) {
       current += (node.textContent || '').replace(/\s+/g, ' ')
     } else if (node.nodeType === ELEMENT_NODE) {
-      if (isKeptAsBody(node)) {
+      if (isKeeparrAsBody(node)) {
         if (node.outerHTML) leftover.push(node.outerHTML)
       } else if (node.nodeName === 'BR') {
         flush()

@@ -10,7 +10,7 @@ Product scope and device requirements remain defined by [native-android-plan.md]
 2. Locate functions by name rather than relying on review line numbers. Re-read relevant callers before changing contracts.
 3. Follow the dependency order below. For each behavioral defect, add a failing regression test, implement the fix, and run the affected checks.
 4. Use an isolated server instance with two test users. Never run destructive migration, upload, or fault-injection tests against the user's database or real gateway.
-5. Retain web-client compatibility and the distinct native application ID `dev.kept.android`. Existing web clients must continue to work without adopting native revision checks.
+5. Retain web-client compatibility and the distinct native application ID `dev.keeparr.android`. Existing web clients must continue to work without adopting native revision checks.
 6. Preserve unsynchronized edits, operation IDs, reminder identities, and staged files through migrations/reconnects. Do not reset Room or clear an outbox to make a test pass.
 7. Do not add deferred product features: location reminders, AI capture, drawing creation, audio transcription, administration, or a new push backend.
 8. Record implementation choices and verification results. Mark a package complete only after its required tests pass. Mark device/gateway checks blocked when prerequisites are unavailable.
@@ -18,7 +18,7 @@ Product scope and device requirements remain defined by [native-android-plan.md]
 
 ### Source map
 
-Paths are repository-relative. Native paths in this table are relative to `android-native/app/src/main/java/dev/kept/android/`.
+Paths are repository-relative. Native paths in this table are relative to `android-native/app/src/main/java/dev/keeparr/android/`.
 
 | Area | Current files / entry points |
 | --- | --- |
@@ -29,13 +29,13 @@ Paths are repository-relative. Native paths in this table are relative to `andro
 | Image lifecycle | `server/server.js`: `/api/uploads/images`, `syncNoteImagesForNote`, image deletion/backfill |
 | Server recurrence | `server/reminder-recurrence.js`, `server/reminder-recurrence.test.js` |
 | Native local storage | `data/Database.kt`, exported schemas in `android-native/app/schemas/` |
-| Native sync/recovery | `data/KeptRepository.kt`, `data/SyncWorker.kt` |
+| Native sync/recovery | `data/KeeparrRepository.kt`, `data/SyncWorker.kt` |
 | Native connection/media | `data/Connection.kt`, `data/Media.kt` |
-| Editor/home | `ui/NoteEditor.kt`, `ui/KeptScreen.kt`, `MainActivity.kt` |
+| Editor/home | `ui/NoteEditor.kt`, `ui/KeeparrScreen.kt`, `MainActivity.kt` |
 | Android reminders | `reminders/ReminderScheduler.kt`, application/lifecycle receivers |
 | Widgets | `widgets/NotesWidget.kt`, `WidgetConfigActivity.kt`, `QuickCreateWidget.kt`, widget layouts/XML and manifest |
 | Existing web contracts | `src/app/services/offline-sync.service.ts`, `notes.service.ts`, `note-lock.service.ts`, reminder model/service |
-| Existing checks | `server/native-client.test.js`, `server/sync-smoke.test.js`, `android-native/app/src/test/java/dev/kept/android/data/NativeContractTest.kt` |
+| Existing checks | `server/native-client.test.js`, `server/sync-smoke.test.js`, `android-native/app/src/test/java/dev/keeparr/android/data/NativeContractTest.kt` |
 
 ## 2. Review findings and reproducible baseline
 
@@ -134,7 +134,7 @@ A package may be split into focused patches, but its invariant must stay coheren
 2. Provide request helpers preserving HTTP status and mutation results, including expected failures, replay, two-user requests, multipart uploads, and restart against the same database.
 3. Add a deterministic clock/scheduler-tick seam. Tests must not wait for arbitrary wall-clock intervals to cover firing/roll-forward.
 4. Add injectable native seams for profiles, network API, clock, alarms and notification sink. Use real in-memory Room for local transactions; fake platform boundaries where appropriate.
-5. Add behavior tests for `KeptRepository` and editor state transitions, not just JSON copying/comparator helpers. A pinned MockWebServer dependency may be used for network outcomes.
+5. Add behavior tests for `KeeparrRepository` and editor state transitions, not just JSON copying/comparator helpers. A pinned MockWebServer dependency may be used for network outcomes.
 6. Create shared recurrence/content fixtures in a source-controlled test directory containing only synthetic data. Both implementations should consume the same expected inputs/outputs.
 7. Write the final protocol contract here or in a linked document: result types, canonical IDs, version checks, replay semantics and revocation outcomes.
 
@@ -270,7 +270,7 @@ WP4 implementation notes: `native_upload_receipts` persists content fingerprints
 - Queued reorder/view-state operations converge to deterministic per-user state.
 - Open a pre-change database with pending/conflicted work and verify migration/restart.
 
-WP5 implementation notes: Room outbox schema version 3 removes the resource-level uniqueness constraint, records `queued`/`in_flight`/`conflict` state, creation order and operation dependencies, and migrates v1 rows through explicit v1→v2→v3 migrations. `KeptRepository.sync` now serializes network sync separately from local edits, claims immutable operations, drains newly unblocked work, retries the same in-flight operation after uncertainty, and advances successor revisions from accepted results. Robolectric tests cover migration, database reopen, snapshot retention, successor revision, profile partitioning, canonical reminder IDs and an offline note+reminder+two-upload flush using fake API/media ports. Reminder identity remapping has direct repository coverage. The previous R2/R9 failures are now green in the full Android unit suite; broader WP7/WP8 acceptance remains open.
+WP5 implementation notes: Room outbox schema version 3 removes the resource-level uniqueness constraint, records `queued`/`in_flight`/`conflict` state, creation order and operation dependencies, and migrates v1 rows through explicit v1→v2→v3 migrations. `KeeparrRepository.sync` now serializes network sync separately from local edits, claims immutable operations, drains newly unblocked work, retries the same in-flight operation after uncertainty, and advances successor revisions from accepted results. Robolectric tests cover migration, database reopen, snapshot retention, successor revision, profile partitioning, canonical reminder IDs and an offline note+reminder+two-upload flush using fake API/media ports. Reminder identity remapping has direct repository coverage. The previous R2/R9 failures are now green in the full Android unit suite; broader WP7/WP8 acceptance remains open.
 
 ## 11. WP6 — editor revision, persistence and incoming updates
 
@@ -425,7 +425,7 @@ WP10 implementation notes (2026-10-05): `ConflictResolution` distinguishes repla
 
 Every original code-backed UI/widget requirement has concrete implementation and behavioral evidence; device/launcher checks remain explicit in WP12.
 
-WP11 implementation notes (2026-10-05): manual reorder is limited to unsearched Home/Pinned views, rejects cross-pin-group moves and hides drag affordances in other filters. Multi-select now exposes owner-only bulk Trash with confirmation; individual Trash is confirmed and trashed notes have a visible Restore action. Widgets use fixed-height note cards in a scrollable grid, have no toolbar, and use a single floating create-note button; the separate quick-create widget still offers note and checklist creation. Single-note checklist widgets expose every item as its own scroll row and use explicit activity PendingIntents for open/toggle. Note editor and widget text choose foreground contrast from note background colors. The server field uses URL keyboard settings and app label/icon match Kept. Per-widget filters remain independent. Media cache eviction and sign-out cleanup are profile-scoped; redacted diagnostics are assembled/written off the UI thread and tested for secret/content exclusion. Robolectric coverage checks widget item completeness, reorder policy, redaction, cache isolation and bulk trash/restore queuing. Font scaling, keyboard/accessibility, launcher/background-start, and real widget behavior remain device acceptance under WP12.
+WP11 implementation notes (2026-10-05): manual reorder is limited to unsearched Home/Pinned views, rejects cross-pin-group moves and hides drag affordances in other filters. Multi-select now exposes owner-only bulk Trash with confirmation; individual Trash is confirmed and trashed notes have a visible Restore action. Widgets use fixed-height note cards in a scrollable grid, have no toolbar, and use a single floating create-note button; the separate quick-create widget still offers note and checklist creation. Single-note checklist widgets expose every item as its own scroll row and use explicit activity PendingIntents for open/toggle. Note editor and widget text choose foreground contrast from note background colors. The server field uses URL keyboard settings and app label/icon match Keeparr. Per-widget filters remain independent. Media cache eviction and sign-out cleanup are profile-scoped; redacted diagnostics are assembled/written off the UI thread and tested for secret/content exclusion. Robolectric coverage checks widget item completeness, reorder policy, redaction, cache isolation and bulk trash/restore queuing. Font scaling, keyboard/accessibility, launcher/background-start, and real widget behavior remain device acceptance under WP12.
 
 ## 17. WP12 — verification matrix and release gates
 
@@ -477,7 +477,7 @@ Force-stop is a separate Android limitation. Do not count expected stopped-state
 
 ### Reference capture and deployment readiness
 
-1. When available, re-extract installed Keep/Kept APK sets and record versions/checksums/UI captures in ignored `android-native/references/`.
+1. When available, re-extract installed Keep/Keeparr APK sets and record versions/checksums/UI captures in ignored `android-native/references/`.
 2. Keep personal notes, APKs, certificates, gateway secrets and credentials out of source control; committed fixtures are synthetic.
 3. Record precise prerequisites/blockers. Missing devices/gateway credentials mean pending checks, not completion.
 4. Update the product checkpoint and tracking table with real completion, protocol/migration notes and verification.

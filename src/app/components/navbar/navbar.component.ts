@@ -21,10 +21,10 @@ export class NavbarComponent implements OnInit, OnDestroy {
   showEasterEgg = false;
   eggIndex = 0;
   easterEggMessages = [
-    "Kept: because, unlike your last relationship, these notes are actually worth holding onto 💅",
+    "Keeparr: because, unlike your last relationship, these notes are actually worth holding onto 💅",
     "I added checkboxes so you can mark off all the tasks you won't do.",
-    "Kept: Because why use the trillion-dollar company's version when you can run this on your own bare metal, bay-bee!",
-    "Kept: Why use the original when you can use the version that was built entirely on caffeine and spite? 🔥",
+    "Keeparr: Because why use the trillion-dollar company's version when you can run this on your own bare metal, bay-bee!",
+    "Keeparr: Why use the original when you can use the version that was built entirely on caffeine and spite? 🔥",
     "I know, I know. I look familiar. I get that a lot."
   ];
 

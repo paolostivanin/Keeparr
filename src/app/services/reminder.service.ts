@@ -74,7 +74,7 @@ type AndroidTriggeredGeofenceEvent = {
   triggeredAt: number;
 };
 
-interface KeptGeofencePlugin {
+interface KeeparrGeofencePlugin {
   getPermissionStatus(): Promise<AndroidLocationPermissionStatus>;
   requestForegroundLocationPermission(): Promise<AndroidLocationPermissionStatus>;
   openBackgroundLocationSettings(): Promise<void>;
@@ -91,7 +91,7 @@ interface KeptGeofencePlugin {
 }
 
 const isAndroid = Capacitor.getPlatform() === 'android';
-const KeptGeofence = isAndroid ? registerPlugin<KeptGeofencePlugin>('KeptGeofence') : null;
+const KeeparrGeofence = isAndroid ? registerPlugin<KeeparrGeofencePlugin>('KeeparrGeofence') : null;
 
 @Injectable({ providedIn: 'root' })
 export class ReminderService {
@@ -410,9 +410,9 @@ export class ReminderService {
   async ensureAndroidLocationReminderPermissions(): Promise<boolean> {
     if (!this.isAndroidGeofenceAvailable()) return true;
     try {
-      let location = await KeptGeofence!.getPermissionStatus();
+      let location = await KeeparrGeofence!.getPermissionStatus();
       if (!location.foregroundGranted) {
-        location = await KeptGeofence!.requestForegroundLocationPermission();
+        location = await KeeparrGeofence!.requestForegroundLocationPermission();
       }
       if (!location.foregroundGranted) return false;
 
@@ -420,9 +420,9 @@ export class ReminderService {
         return false;
       }
 
-      let notifications = await KeptGeofence!.getNotificationPermissionStatus();
+      let notifications = await KeeparrGeofence!.getNotificationPermissionStatus();
       if (!notifications.granted) {
-        notifications = await KeptGeofence!.requestNotificationPermission();
+        notifications = await KeeparrGeofence!.requestNotificationPermission();
       }
       return notifications.granted;
     } catch (error) {
@@ -434,24 +434,24 @@ export class ReminderService {
 
   async getAndroidLocationPermissionStatus(): Promise<AndroidLocationPermissionStatus | null> {
     if (!this.isAndroidGeofenceAvailable()) return null;
-    return KeptGeofence!.getPermissionStatus();
+    return KeeparrGeofence!.getPermissionStatus();
   }
 
   async requestAndroidForegroundLocationPermission(): Promise<AndroidLocationPermissionStatus | null> {
     if (!this.isAndroidGeofenceAvailable()) return null;
-    return KeptGeofence!.requestForegroundLocationPermission();
+    return KeeparrGeofence!.requestForegroundLocationPermission();
   }
 
   async openAndroidBackgroundLocationSettings(): Promise<void> {
     if (!this.isAndroidGeofenceAvailable()) return;
-    await KeptGeofence!.openBackgroundLocationSettings();
+    await KeeparrGeofence!.openBackgroundLocationSettings();
   }
 
   async ensureAndroidGeofenceNotificationPermission(): Promise<boolean> {
     if (!this.isAndroidGeofenceAvailable()) return true;
-    let notifications = await KeptGeofence!.getNotificationPermissionStatus();
+    let notifications = await KeeparrGeofence!.getNotificationPermissionStatus();
     if (!notifications.granted) {
-      notifications = await KeptGeofence!.requestNotificationPermission();
+      notifications = await KeeparrGeofence!.requestNotificationPermission();
     }
     return notifications.granted;
   }
@@ -681,7 +681,7 @@ export class ReminderService {
   }
 
   private isAndroidGeofenceAvailable() {
-    return isAndroid && !!KeptGeofence;
+    return isAndroid && !!KeeparrGeofence;
   }
 
   private nativeLocationReminders(reminders: ReminderI[]): AndroidNativeGeofenceReminder[] {
@@ -703,9 +703,9 @@ export class ReminderService {
         radiusMeters: Number(r.radiusMeters ?? 120),
         triggerType: r.locationTrigger === 'leave' ? 'leave' : 'arrive',
         status: 'pending',
-        notificationTitle: r.title || 'Kept reminder',
+        notificationTitle: r.title || 'Keeparr reminder',
         notificationBody: r.body || '',
-        deepLink: `kept://note/${r.noteId}`,
+        deepLink: `keeparr://note/${r.noteId}`,
         createdAt: r.createdAt || '',
         updatedAt: r.updatedAt || '',
       }));
@@ -719,7 +719,7 @@ export class ReminderService {
     }
     this.androidGeofenceSyncRunning = true;
     const nativeReminders = this.nativeLocationReminders(reminders);
-    KeptGeofence!.syncGeofences({ reminders: nativeReminders })
+    KeeparrGeofence!.syncGeofences({ reminders: nativeReminders })
       .then(result => {
         if (result.failed?.length) {
           console.warn('Some Android geofences failed to sync', result.failed);
@@ -739,7 +739,7 @@ export class ReminderService {
     if (!this.isAndroidGeofenceAvailable() || this.androidTriggeredEventsRunning) return;
     this.androidTriggeredEventsRunning = true;
     try {
-      const response = await KeptGeofence!.getPendingTriggeredEvents();
+      const response = await KeeparrGeofence!.getPendingTriggeredEvents();
       const events = response.events || [];
       if (!events.length) return;
 
@@ -756,7 +756,7 @@ export class ReminderService {
       }
       if (acknowledged.length) {
         await this.load();
-        await KeptGeofence!.acknowledgeTriggeredEvents({ eventIds: acknowledged });
+        await KeeparrGeofence!.acknowledgeTriggeredEvents({ eventIds: acknowledged });
       }
     } catch (error) {
       console.warn('Android geofence triggered event handling failed', error);

@@ -13,7 +13,7 @@ import { LinkPreviewData, LocalNotePersistenceError, NotesService } from 'src/ap
 import { PushNotificationService } from 'src/app/services/push-notification.service';
 import { ReminderService } from 'src/app/services/reminder.service';
 import { ReminderRepeatRule, ReminderRepeatType } from 'src/app/interfaces/reminder';
-import { KeptPluginsService, type ResolvedLocation } from 'src/app/services/kept-plugins.service';
+import { KeeparrPluginsService, type ResolvedLocation } from 'src/app/services/keeparr-plugins.service';
 import { LocationSavedPlacesService, type LocationSavedPlace, type LocationTrigger, type SavedPlaceType } from 'src/app/services/location-saved-places.service';
 import { NgZone } from '@angular/core';
 import { TimepickerUI, type ConfirmEventData } from 'timepicker-ui';
@@ -55,7 +55,7 @@ export class InputComponent implements OnInit {
     return isNativePhonePlatform();
   }
 
-  constructor(private cd: ChangeDetectorRef, public Shared: SharedService, public auth: AuthService, private notesService: NotesService, private push: PushNotificationService, private reminderService: ReminderService, public keptPlugins: KeptPluginsService, private savedPlacesService: LocationSavedPlacesService, private zone: NgZone, private router: Router, public noteLock: NoteLockService, public preferences: UserPreferencesService) { }
+  constructor(private cd: ChangeDetectorRef, public Shared: SharedService, public auth: AuthService, private notesService: NotesService, private push: PushNotificationService, private reminderService: ReminderService, public keeparrPlugins: KeeparrPluginsService, private savedPlacesService: LocationSavedPlacesService, private zone: NgZone, private router: Router, public noteLock: NoteLockService, public preferences: UserPreferencesService) { }
 
   @ViewChild("main") main!: ElementRef<HTMLDivElement>
   //? Placeholder  ----------------------------------------------------
@@ -993,7 +993,7 @@ export class InputComponent implements OnInit {
     const userId = this.auth.currentUser?.id || 'anon'
     const server = environment.apiUrl || location.origin
     const noteKey = note?.syncId || note?.id
-    return noteKey ? `kept_completed_checklist_collapsed:${server}:${userId}:${noteKey}` : ''
+    return noteKey ? `keeparr_completed_checklist_collapsed:${server}:${userId}:${noteKey}` : ''
   }
 
   private loadCompletedChecklistCollapseState(note: NoteI) {
@@ -1487,7 +1487,7 @@ export class InputComponent implements OnInit {
   async downloadInlineImage(event: Event) {
     const target = event.target
     if (!(target instanceof HTMLImageElement) || !this.notesService.canUseNativeDownloads()) return
-    await this.downloadImage(target.getAttribute('src') || target.src, target.getAttribute('alt') || 'kept-image', event)
+    await this.downloadImage(target.getAttribute('src') || target.src, target.getAttribute('alt') || 'keeparr-image', event)
   }
 
   attachmentIcon(attachment: Pick<NoteAttachmentI, 'mimeType' | 'originalName'> | File) {
@@ -2877,7 +2877,7 @@ export class InputComponent implements OnInit {
     if (!canvas) return
     const dataUrl = this.drawingDataUrl(true)
     const link = document.createElement('a')
-    link.download = 'kept-drawing.png'
+    link.download = 'keeparr-drawing.png'
     link.href = dataUrl
     link.click()
     this.showDrawingMoreMenu = false
@@ -3775,13 +3775,13 @@ export class InputComponent implements OnInit {
     this.bodyScrollLocked = true;
     this.lockedBodyScrollY = window.scrollY || window.pageYOffset || 0;
     document.body.style.top = `-${this.lockedBodyScrollY}px`;
-    document.body.classList.add('kept-mobile-compose-open');
+    document.body.classList.add('keeparr-mobile-compose-open');
   }
   private unlockBodyScroll() {
     if (!this.bodyScrollLocked) return;
     const scrollY = this.lockedBodyScrollY;
     this.bodyScrollLocked = false;
-    document.body.classList.remove('kept-mobile-compose-open');
+    document.body.classList.remove('keeparr-mobile-compose-open');
     document.body.style.top = '';
     window.scrollTo(0, scrollY);
     this.lockedBodyScrollY = 0;
@@ -3998,7 +3998,7 @@ export class InputComponent implements OnInit {
   reschedulePastReminder(event: Event) {
     event.stopPropagation()
     this.closeReminderPicker()
-    if (this.keptPlugins.supportsNativeLocationReminders) {
+    if (this.keeparrPlugins.supportsNativeLocationReminders) {
       this.openReminderTypeDialog()
       return
     }
@@ -4033,7 +4033,7 @@ export class InputComponent implements OnInit {
       return
     }
 
-    if (this.keptPlugins.supportsNativeLocationReminders) {
+    if (this.keeparrPlugins.supportsNativeLocationReminders) {
       this.openReminderTypeDialog()
       return
     }
@@ -4281,7 +4281,7 @@ export class InputComponent implements OnInit {
       try {
         (window as any).Snackbar?.show({
           pos: 'bottom-left',
-          text: 'Notifications are blocked. Enable them in Settings → Notifications → Kept.',
+          text: 'Notifications are blocked. Enable them in Settings → Notifications → Keeparr.',
           duration: 5000
         })
       } catch {}
@@ -4291,7 +4291,7 @@ export class InputComponent implements OnInit {
       try {
         (window as any).Snackbar?.show({
           pos: 'bottom-left',
-          text: 'On iOS, open Kept from the Home Screen icon to enable reminders. (Safari tabs cannot register notifications.)',
+          text: 'On iOS, open Keeparr from the Home Screen icon to enable reminders. (Safari tabs cannot register notifications.)',
           duration: 6000
         })
       } catch {}
@@ -4579,7 +4579,7 @@ export class InputComponent implements OnInit {
     try {
       if (!await this.ensureAndroidForegroundLocationDisclosureForSearch(view)) return
       await this.loadCurrentLocation()
-      const result = await this.keptPlugins.resolveLocation(phrase, this.savedPlaces, this.currentLocation)
+      const result = await this.keeparrPlugins.resolveLocation(phrase, this.savedPlaces, this.currentLocation)
       if (!result) {
         this.permissionReason = 'Location search is not available in this version of the app.'
         this.locationState = 'permission'
@@ -4693,7 +4693,7 @@ export class InputComponent implements OnInit {
 
     const notificationsOk = await this.reminderService.ensureAndroidGeofenceNotificationPermission()
     if (!notificationsOk) {
-      this.permissionReason = 'Notification permission is needed so Kept can show location reminder alerts.'
+      this.permissionReason = 'Notification permission is needed so Keeparr can show location reminder alerts.'
       this.locationState = 'permission'
       return false
     }
@@ -4749,7 +4749,7 @@ export class InputComponent implements OnInit {
 
     const notificationsOk = await this.reminderService.ensureAndroidGeofenceNotificationPermission()
     if (!notificationsOk) {
-      this.androidBackgroundLocationMessage = 'Notification permission is needed so Kept can show this reminder.'
+      this.androidBackgroundLocationMessage = 'Notification permission is needed so Keeparr can show this reminder.'
       this.cd.detectChanges()
       return
     }
@@ -4810,7 +4810,7 @@ export class InputComponent implements OnInit {
       }
       const notificationsOk = await this.reminderService.ensureAndroidGeofenceNotificationPermission()
       if (!notificationsOk) {
-        this.androidBackgroundLocationMessage = 'Notification permission is needed so Kept can show this reminder.'
+        this.androidBackgroundLocationMessage = 'Notification permission is needed so Keeparr can show this reminder.'
         this.showAndroidBackgroundLocationEducation = true
         this.cd.detectChanges()
         return
@@ -4944,10 +4944,10 @@ export class InputComponent implements OnInit {
   }
 
   private loadCurrentLocation() {
-    if (this.keptPlugins.isIos || this.currentLocation || typeof navigator === 'undefined' || !navigator.geolocation) {
+    if (this.keeparrPlugins.isIos || this.currentLocation || typeof navigator === 'undefined' || !navigator.geolocation) {
       return Promise.resolve()
     }
-    if (this.keptPlugins.isAndroid) {
+    if (this.keeparrPlugins.isAndroid) {
       return this.reminderService.getAndroidLocationPermissionStatus().then(status => {
         if (!status?.foregroundGranted) return
         return this.readCurrentLocation()
@@ -4999,7 +4999,7 @@ export class InputComponent implements OnInit {
 
   private async hydrateLocationMapPreview(location: ResolvedLocation) {
     try {
-      this.locationMapPreview = await this.keptPlugins.locationMapPreview(location) || ''
+      this.locationMapPreview = await this.keeparrPlugins.locationMapPreview(location) || ''
     } catch {
       this.locationMapPreview = ''
     } finally {

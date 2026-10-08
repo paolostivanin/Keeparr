@@ -6,10 +6,10 @@ plugins {
     id("com.google.devtools.ksp")
 }
 android {
-    namespace = "dev.kept.android"
+    namespace = "dev.keeparr.android"
     compileSdk = 35
     defaultConfig {
-        applicationId = "dev.kept.android"
+        applicationId = "dev.keeparr.android"
         minSdk = 34
         targetSdk = 35
         versionCode = 2
@@ -18,20 +18,20 @@ android {
     }
     // Production signing comes from the environment (or -P properties) and never from the repository. Without it the
     // release build is signed with the debug key so it stays installable locally and for benchmarks; such an APK must
-    // not be distributed. Shrinking is opt-in (-Pkept.minify=true) until it has been exercised on a device.
-    val releaseKeystore = (findProperty("kept.release.keystore") as String?) ?: System.getenv("KEPT_RELEASE_KEYSTORE")
+    // not be distributed. Shrinking is opt-in (-Pkeeparr.minify=true) until it has been exercised on a device.
+    val releaseKeystore = (findProperty("keeparr.release.keystore") as String?) ?: System.getenv("KEEPARR_RELEASE_KEYSTORE")
     if (releaseKeystore != null) {
         signingConfigs.create("production") {
             storeFile = file(releaseKeystore)
-            storePassword = (findProperty("kept.release.storePassword") as String?) ?: System.getenv("KEPT_RELEASE_STORE_PASSWORD")
-            keyAlias = (findProperty("kept.release.keyAlias") as String?) ?: System.getenv("KEPT_RELEASE_KEY_ALIAS")
-            keyPassword = (findProperty("kept.release.keyPassword") as String?) ?: System.getenv("KEPT_RELEASE_KEY_PASSWORD")
+            storePassword = (findProperty("keeparr.release.storePassword") as String?) ?: System.getenv("KEEPARR_RELEASE_STORE_PASSWORD")
+            keyAlias = (findProperty("keeparr.release.keyAlias") as String?) ?: System.getenv("KEEPARR_RELEASE_KEY_ALIAS")
+            keyPassword = (findProperty("keeparr.release.keyPassword") as String?) ?: System.getenv("KEEPARR_RELEASE_KEY_PASSWORD")
         }
     }
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "production" else "debug")
-            val shrink = findProperty("kept.minify") == "true"
+            val shrink = findProperty("keeparr.minify") == "true"
             isMinifyEnabled = shrink
             isShrinkResources = shrink
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -43,7 +43,7 @@ android {
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
-    systemProperty("kept.native.fixture", rootProject.projectDir.parentFile.resolve("test-fixtures/native-contract.json").absolutePath)
+    systemProperty("keeparr.native.fixture", rootProject.projectDir.parentFile.resolve("test-fixtures/native-contract.json").absolutePath)
 }
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 dependencies {

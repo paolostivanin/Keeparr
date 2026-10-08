@@ -1,0 +1,120 @@
+import { Injectable } from '@angular/core';
+import { Capacitor } from '@capacitor/core';
+import type { LocationSavedPlace } from './location-saved-places.service';
+
+export interface ResolvedLocation {
+  displayName: string;
+  latitude: number;
+  longitude: number;
+  radiusMeters: number;
+  confidence: 'high' | 'medium' | 'low';
+  source: 'savedLocation' | 'geocoder' | 'localSearch';
+}
+
+export type LocationMapPreviewResponse =
+  | string
+  | { imageDataUrl?: string; dataUrl?: string; url?: string };
+
+export type LocationResolveResponse =
+  | { status: 'resolved'; location: ResolvedLocation }
+  | { status: 'ambiguous'; candidates: ResolvedLocation[] }
+  | { status: 'notFound' }
+  | { status: 'needsLocationPermission'; reason: string };
+
+@Injectable({ providedIn: 'root' })
+export class KeeparrPluginsService {
+  get isIos(): boolean {
+    return Capacitor.getPlatform() === 'ios';
+  }
+
+  get isAndroid(): boolean {
+    return Capacitor.getPlatform() === 'android';
+  }
+
+  get supportsNativeLocationReminders(): boolean {
+    return this.isIos || this.isAndroid;
+  }
+
+  async resolveLocation(
+    phrase: string,
+    savedLocations: LocationSavedPlace[] = [],
+    currentLocation?: { latitude: number; longitude: number } | null
+  ): Promise<LocationResolveResponse | null> {
+    const plugin = this.locationResolutionPlugin();
+    if (!plugin) return null;
+    return plugin.resolveLocation({
+      phrase,
+      currentLocation: currentLocation || undefined,
+      savedLocations: savedLocations.map(place => ({
+        id: place.id,
+        label: String(place.placeType || 'other').toLowerCase(),
+        displayName: place.name || place.address,
+        name: place.name,
+        address: place.address,
+        placeType: place.placeType,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        radiusMeters: place.radiusMeters ?? 120
+      }))
+    });
+  }
+
+  async requestLocationAccess(): Promise<{ granted: boolean } | null> {
+    if (this.isAndroid) {
+      const plugin = (window as any).Capacitor?.Plugins?.KeeparrGeofence;
+      if (!plugin) return null;
+      const status = await plugin.getPermissionStatus?.();
+      if (status?.foregroundGranted && status?.backgroundGranted) return { granted: true };
+      const foreground = status?.foregroundGranted ? status : await plugin.requestForegroundLocationPermission?.();
+      if (!foreground?.foregroundGranted) return { granted: false };
+      if (!foreground.backgroundGranted) await plugin.openBackgroundLocationSettings?.();
+      return { granted: !!foreground.backgroundGranted };
+    }
+
+    const plugin = this.iosReminderPlugin();
+    if (!plugin?.requestLocationAccess) return null;
+    return plugin.requestLocationAccess();
+  }
+
+  async locationMapPreview(location: ResolvedLocation): Promise<string | null> {
+    const plugin = this.locationPreviewPlugin();
+    const previewMethod = plugin?.locationMapPreview || plugin?.mapSnapshot || plugin?.getMapSnapshot;
+    if (typeof previewMethod !== 'function') return null;
+
+    const response: LocationMapPreviewResponse = await previewMethod.call(plugin, {
+      displayName: location.displayName,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      radiusMeters: location.radiusMeters
+    });
+
+    if (!response) return null;
+    if (typeof response === 'string') return response;
+    return response.imageDataUrl || response.dataUrl || response.url || null;
+  }
+
+  private iosReminderPlugin() {
+    return (window as any).Capacitor?.Plugins?.KeeparrReminders;
+  }
+
+  private locationResolutionPlugin() {
+    const plugins = (window as any).Capacitor?.Plugins;
+    if (this.isIos) return plugins?.KeeparrIntelligence;
+    if (this.isAndroid) {
+      const candidates = [plugins?.KeeparrGeofence, plugins?.KeeparrSmartCapture];
+      return candidates.find(plugin => typeof plugin?.resolveLocation === 'function');
+    }
+    return null;
+  }
+
+  private locationPreviewPlugin() {
+    const plugins = (window as any).Capacitor?.Plugins;
+    const candidates = this.isAndroid
+      ? [plugins?.KeeparrGeofence, plugins?.KeeparrSmartCapture]
+      : [plugins?.KeeparrReminders, plugins?.KeeparrIntelligence];
+    return candidates.find(candidate => {
+      const method = candidate?.locationMapPreview || candidate?.mapSnapshot || candidate?.getMapSnapshot;
+      return typeof method === 'function';
+    });
+  }
+}

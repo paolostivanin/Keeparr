@@ -69,7 +69,7 @@ test('reminder responses follow the note unless it is locked or inaccessible', (
   const live = reminderResponse(reminder, notes);
   assert.equal(live.title, 'Live title');
   assert.equal(live.body, 'Live body');
-  assert.equal(live.deepLink, 'kept://note/9');
+  assert.equal(live.deepLink, 'keeparr://note/9');
   assert.equal(live.id, 4);
   const locked = reminderResponse(reminder, new Map([['1:9', { noteTitle: 'Secret', noteBody: 'Secret body', locked: 1 }]]));
   assert.equal(locked.title, 'Stored');

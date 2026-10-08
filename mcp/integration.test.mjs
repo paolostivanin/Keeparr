@@ -12,14 +12,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 async function waitForServer(baseUrl, child) {
   const deadline = Date.now() + 12_000;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`Kept server exited early with code ${child.exitCode}.`);
+    if (child.exitCode !== null) throw new Error(`Keeparr server exited early with code ${child.exitCode}.`);
     try {
       const response = await fetch(`${baseUrl}/api/setup/status`);
       if (response.ok) return;
     } catch {}
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  throw new Error('Timed out waiting for the Kept test server.');
+  throw new Error('Timed out waiting for the Keeparr test server.');
 }
 
 async function api(baseUrl, pathname, { token, method = 'GET', body, form, expected = 200 } = {}) {
@@ -43,7 +43,7 @@ async function api(baseUrl, pathname, { token, method = 'GET', body, form, expec
 test('dedicated MCP access is opt-in, scoped, revocable, and capability gated', { timeout: 25_000 }, async () => {
   const port = 4300 + Math.floor(Math.random() * 1000);
   const baseUrl = `http://127.0.0.1:${port}`;
-  const dbPath = path.join(os.tmpdir(), `kept-mcp-${process.pid}-${Date.now()}.sqlite`);
+  const dbPath = path.join(os.tmpdir(), `keeparr-mcp-${process.pid}-${Date.now()}.sqlite`);
   const child = childProcess.spawn(process.execPath, ['server/server.js'], {
     cwd: root,
     env: { ...process.env, PORT: String(port), SQLITE_PATH: dbPath },
@@ -65,7 +65,7 @@ test('dedicated MCP access is opt-in, scoped, revocable, and capability gated', 
     assert.deepEqual({ enabled: defaults.enabled, locked: defaults.allowLockedNotes, deletion: defaults.allowPermanentDelete }, { enabled: false, locked: false, deletion: false });
 
     const enabled = await api(baseUrl, '/users/me/mcp-access/enable', { token: sessionToken, method: 'POST', body: {}, expected: 201 });
-    assert.match(enabled.accessToken, /^kept_mcp_[a-f0-9]{64}$/);
+    assert.match(enabled.accessToken, /^keeparr_mcp_[a-f0-9]{64}$/);
     const mcpToken = enabled.accessToken;
     const status = await api(baseUrl, '/mcp/status', { token: mcpToken });
     assert.equal(status.userId, login.user.id);

@@ -1,6 +1,6 @@
 # Reproducible web UI performance check
 
-The checked-in browser harness uses deterministic synthetic notes and an isolated mock API. It does not log in to or modify a real Kept server/account.
+The checked-in browser harness uses deterministic synthetic notes and an isolated mock API. It does not log in to or modify a real Keeparr server/account.
 
 ## Run it
 
@@ -58,7 +58,7 @@ The list layout uses a variable-height window with measured rows, stable `syncId
 
 - **Cold** (empty browser profile) and **warm** (IndexedDB populated) start: time to the first card, scripting/layout up to that point (`interactive`), and the following 3 s (`backgroundAfterFirstCard`), plus API requests, heap and mounted cards.
 - **Search** (typing to filtered result) and **clear search**, and a **scroll through the collection** with paging requests and mounted cards at the end.
-- `--cpu-profile` adds top self-time and inclusive-time functions for each start phase; `--build-root=/tmp/kept-dev/browser` serves a development build (`ng build --configuration development --output-path /tmp/kept-dev`) so the functions are readable instead of minified.
+- `--cpu-profile` adds top self-time and inclusive-time functions for each start phase; `--build-root=/tmp/keeparr-dev/browser` serves a development build (`ng build --configuration development --output-path /tmp/keeparr-dev`) so the functions are readable instead of minified.
 
 Chromium's counters restart with each document, so the start phases are measured from zero. The background window is a fixed 3 s: at 10,000 notes the warm background work is longer than that and spills into the search/scroll rows that follow, so compare those two rows between runs with the same fixture rather than treating them as isolated costs.
 
@@ -103,11 +103,11 @@ Target adjustments from this evidence: none needed for browser input (p95 ≈ 13
 
 ## Deployment acceptance (M6.3)
 
-Run against the production Docker image (`docker build -t kept-plan-verify .`, `docker run -p 16767:6767`) on 2026-10-08: the index, SPA routes (`/settings`), `kept-push-sw.js` and the manifest are `Cache-Control: no-cache`; hashed bundles are `public, max-age=31536000, immutable`; JS/HTML are gzip- (or, when requested, brotli-) encoded; the app runs as root in the entrypoint and drops to the `node` user. Initial JavaScript is 352 KB gzipped on the wire (main 174, vendor chunks 110/32/23, polyfills 12.5), above Angular's 300 KB estimate (which assumes brotli); the 1.52 MB raw initial total is inside the 1.6 MB warning budget. A headless Chromium loaded `/setup` from the container and rendered the lazy setup chunk.
+Run against the production Docker image (`docker build -t keeparr-plan-verify .`, `docker run -p 16767:6767`) on 2026-10-08: the index, SPA routes (`/settings`), `keeparr-push-sw.js` and the manifest are `Cache-Control: no-cache`; hashed bundles are `public, max-age=31536000, immutable`; JS/HTML are gzip- (or, when requested, brotli-) encoded; the app runs as root in the entrypoint and drops to the `node` user. Initial JavaScript is 352 KB gzipped on the wire (main 174, vendor chunks 110/32/23, polyfills 12.5), above Angular's 300 KB estimate (which assumes brotli); the 1.52 MB raw initial total is inside the 1.6 MB warning budget. A headless Chromium loaded `/setup` from the container and rendered the lazy setup chunk.
 
 Two defects fixed: a stale tab asking for a chunk that a newer deployment replaced, and any unknown `/api/...` path, received the app shell as HTTP 200 HTML (so a failed `import()` surfaced as a MIME/parse error); both are now 404 JSON (`server/static-assets.test.js`). The auth screens had no initial focus (only the 2FA field did); the first field of sign-in, registration and setup now has `autofocus`.
 
-`web-ui-check.mjs` now also exercises the lazy admin route (`/users`) and fresh signed-out loads of `/login` and `/register` (the latter with the mock enabling self-registration), asserting a new chunk loads and the first field is focused. The service worker (`kept-push-sw.js`) only handles push and an offline navigation fallback, so no precache upgrade path exists to test; the Capacitor/native shell was not exercised (no device).
+`web-ui-check.mjs` now also exercises the lazy admin route (`/users`) and fresh signed-out loads of `/login` and `/register` (the latter with the mock enabling self-registration), asserting a new chunk loads and the first field is focused. The service worker (`keeparr-push-sw.js`) only handles push and an offline navigation fallback, so no precache upgrade path exists to test; the Capacitor/native shell was not exercised (no device).
 
 ## Accessibility and lifecycle acceptance, web part (M6.5)
 

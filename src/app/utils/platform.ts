@@ -1,7 +1,7 @@
 import { Capacitor } from '@capacitor/core';
 
-export const LEGACY_SMART_CAPTURE_KEY = 'kept_android_legacy_smart_capture_enabled';
-export const ANDROID_SMART_CAPTURE_KEY = 'kept_android_smart_capture_enabled';
+export const LEGACY_SMART_CAPTURE_KEY = 'keeparr_android_legacy_smart_capture_enabled';
+export const ANDROID_SMART_CAPTURE_KEY = 'keeparr_android_smart_capture_enabled';
 
 export function isAndroidPlatform(): boolean {
   return Capacitor.getPlatform() === 'android';

@@ -18,7 +18,7 @@ const args = Object.fromEntries(process.argv.slice(2).map(arg => { const [k, v =
 const noteCount = Number(args.notes || 10000);
 const iterations = Number(args.iterations || 25);
 const port = 4300 + Math.floor(Math.random() * 1000);
-const dbPath = path.join(tmpdir(), `kept-server-profile-${process.pid}.sqlite`);
+const dbPath = path.join(tmpdir(), `keeparr-server-profile-${process.pid}.sqlite`);
 const base = `http://127.0.0.1:${port}/api`;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));

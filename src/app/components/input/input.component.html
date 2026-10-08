@@ -371,7 +371,7 @@
         </span>
         <span class="material-symbols-outlined rd-choice-chevron">chevron_right</span>
       </button>
-      @if (keptPlugins.supportsNativeLocationReminders) {
+      @if (keeparrPlugins.supportsNativeLocationReminders) {
         <button type="button" class="rd-choice-card" (click)="chooseReminderPlace()">
           <span class="rd-choice-icon">
             <span class="material-symbols-outlined">location_on</span>
@@ -456,7 +456,7 @@
   }
   <input #customTimeInp type="text" class="timepicker-ui-input rp-hidden-time" autocomplete="off" readonly [(ngModel)]="customTime"
     aria-hidden="true" tabindex="-1">
-  @if (showReminderLocationDialog && !getActiveReminder() && keptPlugins.supportsNativeLocationReminders) {
+  @if (showReminderLocationDialog && !getActiveReminder() && keeparrPlugins.supportsNativeLocationReminders) {
     <div class="reminder-date-dialog reminder-place-dialog" (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
       role="dialog" aria-label="Set location reminder">
       <div class="rd-place-header">
@@ -665,10 +665,10 @@
       </div>
       <h2>Allow background location reminders</h2>
       @if (androidLocationEducationMode === 'foreground') {
-        <p>Kept collects, transmits, and stores location data, including saved places and reminder coordinates, to enable location-based reminders in the background when the app is closed or not in use.</p>
-        <p>This data is used only for reminder features and is stored on your Kept server.</p>
+        <p>Keeparr collects, transmits, and stores location data, including saved places and reminder coordinates, to enable location-based reminders in the background when the app is closed or not in use.</p>
+        <p>This data is used only for reminder features and is stored on your Keeparr server.</p>
       } @else {
-        <p>Kept needs background location access to enable location reminders when the app is closed or not in use.</p>
+        <p>Keeparr needs background location access to enable location reminders when the app is closed or not in use.</p>
         <p>On the next Android screen, choose <strong>Permissions</strong> &gt; <strong>Location</strong> &gt; <strong>Allow all the time</strong>.</p>
       }
       @if (androidBackgroundLocationMessage) {

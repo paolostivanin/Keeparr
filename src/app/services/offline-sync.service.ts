@@ -173,7 +173,7 @@ export class OfflineSyncService {
     };
     const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
     const result = locks
-      ? await locks.request(`kept-offline-sync:${partition}`, { mode: 'exclusive' }, persist)
+      ? await locks.request(`keeparr-offline-sync:${partition}`, { mode: 'exclusive' }, persist)
       : await persist();
     this.state$.next(navigator.onLine ? 'syncing' : 'offline');
     this.cacheChanged$.next({ notesChanged: true, remindersChanged: true, attachmentsChanged: true, fullSnapshot: true });
@@ -216,7 +216,7 @@ export class OfflineSyncService {
     // safe if two tabs race to flush the same outbox entry.
     const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
     if (!locks) return run();
-    return locks.request(`kept-offline-sync:${partition}`, { mode: 'exclusive' }, run);
+    return locks.request(`keeparr-offline-sync:${partition}`, { mode: 'exclusive' }, run);
   }
 
   private async syncCycle(options: { bootstrapIfEmpty?: boolean } = {}) {
@@ -667,7 +667,7 @@ export class OfflineSyncService {
         new Promise<T>((_resolve, reject) => {
           timer = setTimeout(() => {
             const error = new Error('Request timed out.');
-            error.name = 'KeptRequestTimeout';
+            error.name = 'KeeparrRequestTimeout';
             reject(error);
           }, timeoutMs);
         })
@@ -678,7 +678,7 @@ export class OfflineSyncService {
   }
 
   private isRequestTimeout(error: unknown) {
-    return error instanceof Error && error.name === 'KeptRequestTimeout';
+    return error instanceof Error && error.name === 'KeeparrRequestTimeout';
   }
 
   private scheduleDegradedRetries() {

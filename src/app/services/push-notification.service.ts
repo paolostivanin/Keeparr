@@ -9,7 +9,7 @@ declare var Snackbar: any;
 @Injectable({ providedIn: 'root' })
 export class PushNotificationService {
   private readonly apiUrl = environment.apiUrl;
-  private readonly permissionPromptDismissedKey = 'kept_notification_permission_prompt_dismissed';
+  private readonly permissionPromptDismissedKey = 'keeparr_notification_permission_prompt_dismissed';
   private isRegistering = false;
 
   constructor(private http: HttpClient, private auth: AuthService) {
@@ -114,7 +114,7 @@ export class PushNotificationService {
 
       // Wait for the SW to reach `activated` before subscribing — iOS
       // refuses pushManager.subscribe() against an installing/waiting worker.
-      const registration = await navigator.serviceWorker.register('/kept-push-sw.js');
+      const registration = await navigator.serviceWorker.register('/keeparr-push-sw.js');
       if (registration.installing || registration.waiting) {
         await new Promise<void>(resolve => {
           const sw = registration.installing || registration.waiting;
@@ -184,7 +184,7 @@ export class PushNotificationService {
 
   async unsubscribe() {
     if (!this.isSupported()) return;
-    const registration = await navigator.serviceWorker.getRegistration('/kept-push-sw.js');
+    const registration = await navigator.serviceWorker.getRegistration('/keeparr-push-sw.js');
     const subscription = await registration?.pushManager.getSubscription();
     if (!subscription) return;
 

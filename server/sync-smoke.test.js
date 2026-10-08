@@ -6,7 +6,7 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const port = 3300 + Math.floor(Math.random() * 1000);
-const dbPath = path.join(os.tmpdir(), `kept-sync-smoke-${process.pid}.sqlite`);
+const dbPath = path.join(os.tmpdir(), `keeparr-sync-smoke-${process.pid}.sqlite`);
 const base = `http://127.0.0.1:${port}/api`;
 
 async function request(pathname, options = {}) {

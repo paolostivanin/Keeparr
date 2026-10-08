@@ -18,8 +18,8 @@ export type WidgetCreateRequest = { requestId: string; type: WidgetCreateType }
 })
 export class SharedService {
   private tooltipOutsideListeners = new WeakMap<HTMLDivElement, (event: Event) => void>();
-  private readonly binderStorageKey = 'kept_binders_v1';
-  private readonly noteViewTypeStorageKey = 'kept_note_view_type';
+  private readonly binderStorageKey = 'keeparr_binders_v1';
+  private readonly noteViewTypeStorageKey = 'keeparr_note_view_type';
 
   // PWA State
   deferredInstallPrompt?: any;
@@ -148,7 +148,7 @@ export class SharedService {
 
   setSearchScope(scope: 'all' | 'current') {
     this.searchScope.next(scope)
-    try { localStorage.setItem('kept_search_scope', scope); } catch {}
+    try { localStorage.setItem('keeparr_search_scope', scope); } catch {}
   }
 
   setNoteViewType(type: 'list' | 'grid') {
@@ -170,7 +170,7 @@ export class SharedService {
 
   private initialSearchScope(): 'all' | 'current' {
     try {
-      return localStorage.getItem('kept_search_scope') === 'current' ? 'current' : 'all'
+      return localStorage.getItem('keeparr_search_scope') === 'current' ? 'current' : 'all'
     } catch {
       return 'all'
     }
@@ -430,7 +430,7 @@ export class SharedService {
       // 1. Link Card (Pinned!)
       await this.Notes.add({
         noteTitle: 'Saved Links 🔗',
-        noteBody: 'You can save links in Kept and they\'ll automatically generate a full preview for you! Check out the project here: https://github.com/ericerkz/kept',
+        noteBody: 'You can save links in Keeparr and they\'ll automatically generate a full preview for you! Check out the project here: https://github.com/paolostivanin/Keeparr',
         bgColor: bgColors.sky,
         pinned: true, archived: false, trashed: false, isCbox: false, labels: [],
         isDemo: true
@@ -515,7 +515,7 @@ export class SharedService {
           dueAtUtc: tomorrow.toISOString(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           title: 'A Little Nudge... ⏰',
-          body: 'Kept will handle the whole "remembering-things" stuff with push notifications across all devices.'
+          body: 'Keeparr will handle the whole "remembering-things" stuff with push notifications across all devices.'
         });
       }
 
@@ -532,14 +532,14 @@ export class SharedService {
 
       if (attachmentNoteId && attachmentNoteId !== -1) {
         const welcomeText =
-          'Welcome to Kept!\n' +
+          'Welcome to Keeparr!\n' +
           '================\n\n' +
           'This little file is here to show off how attachments work.\n' +
           'You can drop in PDFs, Office docs, ZIPs, plain text, and more —\n' +
           'up to 25 MB each. Files keep their original names on download,\n' +
           'so receipts, manuals, and anything else you want to keep next\n' +
           'to a note are just a click away.\n\n' +
-          '— Kept ✨\n';
+          '— Keeparr ✨\n';
         const file = new Blob([welcomeText], { type: 'text/plain' });
         try {
           await this.Notes.uploadAttachment(attachmentNoteId, file, 'welcome.txt');

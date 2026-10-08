@@ -30,7 +30,7 @@ interface NotesCardPage {
 interface NotesLoadOptions {
   cacheBust?: boolean;
 }
-type KeptDownloadsPlugin = {
+type KeeparrDownloadsPlugin = {
   saveFile: (options: { filename: string; mimeType: string; base64Data: string }) => Promise<void>;
 };
 import { environment } from 'src/environments/environment';
@@ -47,7 +47,7 @@ import { sameDisplayedNote } from '../utils/note-identity';
 import { RequestGate, StaleRequestError, type RequestTicket } from '../utils/request-gate';
 import { reconnectDelay } from '../utils/reconnect-backoff';
 
-const KeptDownloads = registerPlugin<KeptDownloadsPlugin>('KeptDownloads');
+const KeeparrDownloads = registerPlugin<KeeparrDownloadsPlugin>('KeeparrDownloads');
 
 export class LocalNotePersistenceError extends Error {
   constructor(readonly originalError: unknown) {
@@ -275,12 +275,12 @@ export class NotesService {
   private connectRealtime(token: string) {
     this.shouldReconnectRealtime = true;
     const url = this.realtimeUrl(token);
-    console.log('[Kept WS] connecting to', url.replace(/token=[^&]+/, 'token=***'));
+    console.log('[Keeparr WS] connecting to', url.replace(/token=[^&]+/, 'token=***'));
     this.realtimeSocket = new WebSocket(url);
     const socket = this.realtimeSocket;
 
     this.realtimeSocket.onopen = () => {
-      console.log('[Kept WS] connected');
+      console.log('[Keeparr WS] connected');
       this.realtimeFailures = 0;
       // Replay any notes we'd previously asked to be present in. This covers
       // (a) joinNote() calls issued while the socket was still handshaking,
@@ -295,7 +295,7 @@ export class NotesService {
     };
 
     this.realtimeSocket.onerror = (event) => {
-      console.error('[Kept WS] error', event);
+      console.error('[Keeparr WS] error', event);
     };
 
     this.realtimeSocket.onmessage = event => {
@@ -326,7 +326,7 @@ export class NotesService {
     };
 
     this.realtimeSocket.onclose = (event) => {
-      console.warn('[Kept WS] closed', event.code, event.reason);
+      console.warn('[Keeparr WS] closed', event.code, event.reason);
       if (this.realtimeSocket !== socket) return;
       if (!this.shouldReconnectRealtime || !this.auth.token) return;
       // Back off while the server is unreachable instead of retrying every two seconds indefinitely.
@@ -887,7 +887,7 @@ export class NotesService {
   private async tryNativeDownload(blob: Blob, filename: string, mimeType?: string) {
     if (!this.canUseNativeDownloads()) return false;
     try {
-      await KeptDownloads.saveFile({
+      await KeeparrDownloads.saveFile({
         filename,
         mimeType: mimeType || blob.type || 'application/octet-stream',
         base64Data: await this.blobToBase64(blob)
@@ -928,7 +928,7 @@ export class NotesService {
     const fromUrl = this.filenameFromUrl(src);
     if (fromUrl) return fromUrl;
     const ext = this.extensionFromMimeType(mimeType);
-    return `${clean || 'kept-image'}.${ext}`;
+    return `${clean || 'keeparr-image'}.${ext}`;
   }
 
   private filenameFromUrl(src: string) {
@@ -1630,7 +1630,7 @@ export class NotesService {
         new Promise<T>((_resolve, reject) => {
           timer = setTimeout(() => {
             const error = new Error('Request timed out.');
-            error.name = 'KeptRequestTimeout';
+            error.name = 'KeeparrRequestTimeout';
             reject(error);
           }, timeoutMs);
         })
@@ -1641,7 +1641,7 @@ export class NotesService {
   }
 
   private isRequestTimeout(error: unknown) {
-    return error instanceof Error && error.name === 'KeptRequestTimeout';
+    return error instanceof Error && error.name === 'KeeparrRequestTimeout';
   }
 
   private fileToDataUrl(file: File | Blob) {

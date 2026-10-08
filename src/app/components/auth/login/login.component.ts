@@ -51,7 +51,7 @@ export class LoginComponent implements OnInit, OnDestroy {
     this.oauthRequest = oauthRequest;
     if (oidcError) {
       this.error = oidcError === 'no_account'
-        ? 'Your identity provider account is not linked to an enabled Kept user.'
+        ? 'Your identity provider account is not linked to an enabled Keeparr user.'
         : 'Single sign-on could not be completed. Please try again.';
       return;
     }

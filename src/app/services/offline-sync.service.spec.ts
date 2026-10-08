@@ -32,7 +32,7 @@ describe('OfflineSyncService incremental cache changes', () => {
       await service.syncNow();
 
       expect(request).toHaveBeenCalledOnceWith(
-        'kept-offline-sync:https://server.example.test|17',
+        'keeparr-offline-sync:https://server.example.test|17',
         { mode: 'exclusive' },
         jasmine.any(Function)
       );

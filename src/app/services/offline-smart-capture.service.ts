@@ -1,9 +1,9 @@
 import { Injectable } from '@angular/core';
 import {
-  KeptAction,
-  KeptActionPlan,
-  KeptPlanExecution,
-  KeptPlanValidation,
+  KeeparrAction,
+  KeeparrActionPlan,
+  KeeparrPlanExecution,
+  KeeparrPlanValidation,
   SetReminderAction
 } from '../interfaces/ai';
 import { NoteI } from '../interfaces/notes';
@@ -23,7 +23,7 @@ export class OfflineSmartCaptureService {
     private reminders: ReminderService
   ) {}
 
-  validate(transcript: string, inputPlan: KeptActionPlan): KeptPlanValidation {
+  validate(transcript: string, inputPlan: KeeparrActionPlan): KeeparrPlanValidation {
     const normalizedPlan = this.normalizePlan(transcript, inputPlan);
     const errors: string[] = [];
     const warnings = ['Smart Capture will save these changes on this device and sync them when you reconnect.'];
@@ -88,9 +88,9 @@ export class OfflineSmartCaptureService {
     };
   }
 
-  async execute(plan: KeptActionPlan, selectedActionIndexes?: number[]): Promise<KeptPlanExecution> {
+  async execute(plan: KeeparrActionPlan, selectedActionIndexes?: number[]): Promise<KeeparrPlanExecution> {
     const selected = selectedActionIndexes ? new Set(selectedActionIndexes) : null;
-    const result: KeptPlanExecution = {
+    const result: KeeparrPlanExecution = {
       ok: true,
       executed: [],
       failed: [],
@@ -153,8 +153,8 @@ export class OfflineSmartCaptureService {
     return result;
   }
 
-  private normalizePlan(transcript: string, inputPlan: KeptActionPlan): KeptActionPlan {
-    const actions: KeptAction[] = [];
+  private normalizePlan(transcript: string, inputPlan: KeeparrActionPlan): KeeparrActionPlan {
+    const actions: KeeparrAction[] = [];
     let createdNoteAvailable = false;
 
     for (const rawAction of inputPlan.actions || []) {
@@ -183,7 +183,7 @@ export class OfflineSmartCaptureService {
     };
   }
 
-  private normalizeAction(rawAction: KeptAction): KeptAction {
+  private normalizeAction(rawAction: KeeparrAction): KeeparrAction {
     const raw = rawAction as any;
     const location = raw.location && typeof raw.location === 'object' ? raw.location : {};
     const action: any = {
@@ -210,10 +210,10 @@ export class OfflineSmartCaptureService {
     );
     action.locationTrigger = raw.locationTrigger || raw.location_trigger || raw.triggerType
       || location.locationTrigger || location.triggerType;
-    return action as KeptAction;
+    return action as KeeparrAction;
   }
 
-  private noteFromAction(action: KeptAction): NoteI {
+  private noteFromAction(action: KeeparrAction): NoteI {
     const isChecklist = action.type === 'create_todo_note';
     return {
       noteTitle: this.actionTitle(action),
@@ -264,7 +264,7 @@ export class OfflineSmartCaptureService {
       || !!action.locationTrigger;
   }
 
-  private reminderNoteText(action: KeptAction, transcript: string) {
+  private reminderNoteText(action: KeeparrAction, transcript: string) {
     return this.actionText(action)
       || this.actionTitle(action)
       || String(transcript || '')

@@ -5,8 +5,8 @@ const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const AUTHORIZATION_CODE_TTL_SECONDS = 5 * 60;
 const PENDING_TTL_SECONDS = 10 * 60;
-const SUPPORTED_SCOPES = ['kept.read', 'kept.write'];
-const MCP_INTERNAL_HEADER = 'x-kept-mcp-internal';
+const SUPPORTED_SCOPES = ['keeparr.read', 'keeparr.write'];
+const MCP_INTERNAL_HEADER = 'x-keeparr-mcp-internal';
 const MCP_INTERNAL_SECRET = crypto.randomBytes(32).toString('base64url');
 
 function sha256(value) {
@@ -70,9 +70,9 @@ function appendRedirect(urlValue, values) {
 }
 
 function htmlPage(title, body, script = '') {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} - Kept</title><style>
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} - Keeparr</title><style>
   :root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f7f8;color:#202124}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(520px,100%);background:#fff;border:1px solid #dadce0;border-radius:8px;padding:28px;box-shadow:0 8px 28px #0002}.brand{font-size:18px;font-weight:700;color:#f9ab00;margin-bottom:24px}h1{font-size:25px;margin:0 0 12px}p{line-height:1.5;color:#5f6368}.scopes{padding:0;list-style:none;margin:20px 0}.scopes li{padding:10px 0;border-top:1px solid #eee}.actions{display:flex;gap:10px;justify-content:flex-end;margin-top:24px}button,a.button{appearance:none;border:1px solid #dadce0;border-radius:5px;padding:10px 16px;background:#fff;color:#202124;font:inherit;text-decoration:none;cursor:pointer}.primary{background:#1a73e8!important;border-color:#1a73e8!important;color:#fff!important}.error{color:#b3261e}@media(prefers-color-scheme:dark){:root{background:#202124;color:#e8eaed}.panel{background:#292a2d;border-color:#5f6368}p{color:#bdc1c6}.scopes li{border-color:#3c4043}button,a.button{background:#292a2d;color:#e8eaed;border-color:#5f6368}}
-  </style></head><body><main class="panel"><div class="brand">Kept</div>${body}</main>${script ? `<script>${script}</script>` : ''}</body></html>`;
+  </style></head><body><main class="panel"><div class="brand">Keeparr</div>${body}</main>${script ? `<script>${script}</script>` : ''}</body></html>`;
 }
 
 async function initOAuthTables({ run, all }) {
@@ -161,7 +161,7 @@ async function initOAuthTables({ run, all }) {
 }
 
 async function resolveOAuthAccessToken(token, { get }) {
-  if (!String(token || '').startsWith('kept_oauth_')) return null;
+  if (!String(token || '').startsWith('keeparr_oauth_')) return null;
   return get(
     `SELECT users.*, oauth_grants.id AS oauthGrantId,
             oauth_access_tokens.scope AS oauthScope, oauth_access_tokens.clientId AS oauthClientId,
@@ -183,13 +183,13 @@ function oauthTokenCanCallApi(access, req) {
 }
 
 function oidcSettings() {
-  const issuer = String(process.env.KEPT_OIDC_ISSUER || '').trim();
-  const clientId = String(process.env.KEPT_OIDC_CLIENT_ID || '').trim();
+  const issuer = String(process.env.KEEPARR_OIDC_ISSUER || '').trim();
+  const clientId = String(process.env.KEEPARR_OIDC_CLIENT_ID || '').trim();
   return {
     enabled: !!(issuer && clientId), issuer, clientId,
-    clientSecret: String(process.env.KEPT_OIDC_CLIENT_SECRET || ''),
-    name: String(process.env.KEPT_OIDC_NAME || 'Single sign-on').trim() || 'Single sign-on',
-    scopes: String(process.env.KEPT_OIDC_SCOPES || 'openid profile email').trim()
+    clientSecret: String(process.env.KEEPARR_OIDC_CLIENT_SECRET || ''),
+    name: String(process.env.KEEPARR_OIDC_NAME || 'Single sign-on').trim() || 'Single sign-on',
+    scopes: String(process.env.KEEPARR_OIDC_SCOPES || 'openid profile email').trim()
   };
 }
 
@@ -197,9 +197,9 @@ function validOidcReturnUrl(value) {
   if (!value) return '';
   let parsed;
   try { parsed = new URL(String(value)); } catch { return ''; }
-  if (parsed.protocol !== 'kept:' || parsed.hostname !== 'auth' || parsed.pathname !== '/oidc') return '';
+  if (parsed.protocol !== 'keeparr:' || parsed.hostname !== 'auth' || parsed.pathname !== '/oidc') return '';
   if (parsed.username || parsed.password || parsed.search || parsed.hash) return '';
-  return 'kept://auth/oidc';
+  return 'keeparr://auth/oidc';
 }
 
 function oidcReturnTarget(flow, params) {
@@ -286,7 +286,7 @@ function mountOAuthAndMcpRoutes(app, dependencies) {
     if (req.body?.token_endpoint_auth_method && req.body.token_endpoint_auth_method !== 'none') {
       return oauthError(res, 400, 'invalid_client_metadata', 'Only public clients using token_endpoint_auth_method none are supported.');
     }
-    const clientId = randomToken('kept_client_');
+    const clientId = randomToken('keeparr_client_');
     const clientName = String(req.body?.client_name || 'OAuth client').trim().slice(0, 120) || 'OAuth client';
     await run('INSERT INTO oauth_clients (clientId, clientName, redirectUris, createdAt) VALUES (?, ?, ?, ?)', [clientId, clientName, JSON.stringify(redirectUris), new Date().toISOString()]);
     res.status(201).json({ client_id: clientId, client_id_issued_at: Math.floor(Date.now() / 1000), client_name: clientName, redirect_uris: redirectUris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'] });
@@ -300,10 +300,10 @@ function mountOAuthAndMcpRoutes(app, dependencies) {
     const safeRequest = JSON.stringify(requestId).replace(/</g, '\\u003c');
     const scopes = new Set(parseScopes(pending?.scope));
     const scopeItems = [
-      scopes.has('kept.read') ? '<li><strong>Read</strong> your notes, labels, reminders, images, and attachments</li>' : '',
-      scopes.has('kept.write') ? '<li><strong>Change</strong> notes, checklists, reminders, collaborators, and attachments</li>' : ''
+      scopes.has('keeparr.read') ? '<li><strong>Read</strong> your notes, labels, reminders, images, and attachments</li>' : '',
+      scopes.has('keeparr.write') ? '<li><strong>Change</strong> notes, checklists, reminders, collaborators, and attachments</li>' : ''
     ].join('');
-    return htmlPage('Connect', `<h1>Connect ${escapeHtml(clientName)}?</h1><p>This client is requesting access to your Kept account.</p><ul class="scopes">${scopeItems}</ul><p>Locked notes and permanent deletion still follow your External Access settings.</p><p id="message"></p><div class="actions"><button id="cancel">Cancel</button><button class="primary" id="approve">Connect</button></div>`, `
+    return htmlPage('Connect', `<h1>Connect ${escapeHtml(clientName)}?</h1><p>This client is requesting access to your Keeparr account.</p><ul class="scopes">${scopeItems}</ul><p>Locked notes and permanent deletion still follow your External Access settings.</p><p id="message"></p><div class="actions"><button id="cancel">Cancel</button><button class="primary" id="approve">Connect</button></div>`, `
 const requestId=${safeRequest};const message=document.getElementById('message');
 function session(){try{return JSON.parse(localStorage.getItem('gk_session')||'null')}catch{return null}}
 const current=session();if(!current?.token){location.href='/login?oauth_request='+encodeURIComponent(requestId)}
@@ -316,14 +316,14 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
     const clientId = String(req.query.client_id || '');
     const client = await resolveClient(clientId, { get });
     const redirectUri = String(req.query.redirect_uri || '');
-    if (!client || !client.redirectUris.includes(redirectUri)) return res.status(400).send(htmlPage('Invalid request', '<h1>Invalid OAuth request</h1><p>The client or redirect address is not registered with this Kept server.</p>'));
+    if (!client || !client.redirectUris.includes(redirectUri)) return res.status(400).send(htmlPage('Invalid request', '<h1>Invalid OAuth request</h1><p>The client or redirect address is not registered with this Keeparr server.</p>'));
     if (req.query.response_type !== 'code') return res.redirect(appendRedirect(redirectUri, { error: 'unsupported_response_type', state: req.query.state }));
     if (req.query.code_challenge_method !== 'S256' || !/^[A-Za-z0-9_-]{43,128}$/.test(String(req.query.code_challenge || ''))) return res.redirect(appendRedirect(redirectUri, { error: 'invalid_request', error_description: 'PKCE S256 is required.', state: req.query.state }));
     const resource = String(req.query.resource || `${issuer}/api`).replace(/\/+$/, '');
     if (![`${issuer}/api`, `${issuer}/mcp`].includes(resource)) return res.redirect(appendRedirect(redirectUri, { error: 'invalid_target', state: req.query.state }));
-    const scope = parseScopes(String(req.query.scope || 'kept.read')).join(' ');
+    const scope = parseScopes(String(req.query.scope || 'keeparr.read')).join(' ');
     if (!validScopes(scope)) return res.redirect(appendRedirect(redirectUri, { error: 'invalid_scope', error_description: `Supported scopes: ${SUPPORTED_SCOPES.join(' ')}`, state: req.query.state }));
-    const requestId = randomToken('kept_oauth_request_');
+    const requestId = randomToken('keeparr_oauth_request_');
     const pending = { scope };
     await run(`INSERT INTO oauth_pending_authorizations (requestHash, clientId, redirectUri, state, codeChallenge, resource, scope, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [sha256(requestId), clientId, redirectUri, String(req.query.state || ''), String(req.query.code_challenge), resource, scope, new Date().toISOString(), addSeconds(PENDING_TTL_SECONDS)]);
     res.type('html').send(consentPage(requestId, pending, client.clientName));
@@ -349,14 +349,14 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
     const header = req.header('authorization') || '';
     const sessionToken = header.startsWith('Bearer ') ? header.slice(7) : '';
     const user = await resolveSessionFromToken(sessionToken);
-    if (!user) return res.status(401).json({ error: 'Please sign in to Kept first.' });
+    if (!user) return res.status(401).json({ error: 'Please sign in to Keeparr first.' });
     const requestId = String(req.body?.request || '');
     const pending = await loadPending(requestId);
     if (!pending) return res.status(400).json({ error: 'This connection request expired.' });
-    if (!user.oauthEnabled) return res.status(403).json({ error: 'Enable OAuth app access in Kept settings before connecting this client.' });
+    if (!user.oauthEnabled) return res.status(403).json({ error: 'Enable OAuth app access in Keeparr settings before connecting this client.' });
     const client = await resolveClient(pending.clientId, { get });
     if (!client) return res.status(400).json({ error: 'This OAuth client is no longer available.' });
-    const code = randomToken('kept_code_');
+    const code = randomToken('keeparr_code_');
     const now = new Date().toISOString();
     await run('BEGIN IMMEDIATE');
     try {
@@ -392,8 +392,8 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
   }
 
   async function issueTokens(record) {
-    const accessToken = randomToken('kept_oauth_');
-    const refreshToken = randomToken('kept_refresh_');
+    const accessToken = randomToken('keeparr_oauth_');
+    const refreshToken = randomToken('keeparr_refresh_');
     const now = new Date().toISOString();
     await run(`INSERT INTO oauth_access_tokens (tokenHash, userId, grantId, clientId, resource, scope, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [sha256(accessToken), record.userId, record.grantId, record.clientId, record.resource, record.scope, now, addSeconds(ACCESS_TOKEN_TTL_SECONDS)]);
     await run(`INSERT INTO oauth_refresh_tokens (tokenHash, userId, grantId, clientId, resource, scope, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [sha256(refreshToken), record.userId, record.grantId, record.clientId, record.resource, record.scope, now, addSeconds(REFRESH_TOKEN_TTL_SECONDS)]);
@@ -564,7 +564,7 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
       const target = oidcReturnTarget(flow, { oidc_error: 'no_account', oauth_request: flow.oauthRequest });
       return res.redirect(target || `/login?oidc_error=no_account${flow.oauthRequest ? `&oauth_request=${encodeURIComponent(flow.oauthRequest)}` : ''}`);
     }
-    const loginCode = randomToken('kept_login_');
+    const loginCode = randomToken('keeparr_login_');
     await run('INSERT INTO oidc_login_codes (codeHash, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)', [sha256(loginCode), identity.id, new Date().toISOString(), addSeconds(60)]);
     const params = new URLSearchParams({ oidc_code: loginCode });
     if (flow.oauthRequest) params.set('oauth_request', flow.oauthRequest);
@@ -577,7 +577,7 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
     const record = await get('SELECT * FROM oidc_login_codes WHERE codeHash = ? AND usedAt IS NULL AND expiresAt > ?', [codeHash, new Date().toISOString()]);
     if (!record) return res.status(400).json({ error: 'This SSO sign-in expired. Please try again.' });
     const user = await get('SELECT * FROM users WHERE id = ? AND enabled = 1', [record.userId]);
-    if (!user) return res.status(403).json({ error: 'This Kept account is not enabled.' });
+    if (!user) return res.status(403).json({ error: 'This Keeparr account is not enabled.' });
     const result = await run('UPDATE oidc_login_codes SET usedAt = ? WHERE codeHash = ? AND usedAt IS NULL', [new Date().toISOString(), codeHash]);
     if (!result.changes) return res.status(400).json({ error: 'This SSO sign-in was already used.' });
     res.json(await createSession(user));
@@ -590,19 +590,19 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
     const access = await resolveOAuthAccessToken(token, { get });
     if (!access || access.oauthResource !== `${issuer}/mcp`) {
       res.set('WWW-Authenticate', `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp"`);
-      return res.status(401).json({ error: 'invalid_token', error_description: 'A valid Kept OAuth access token is required.' });
+      return res.status(401).json({ error: 'invalid_token', error_description: 'A valid Keeparr OAuth access token is required.' });
     }
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();
-    const [{ StreamableHTTPServerTransport }, { KeptClient }, { createKeptMcpServer }] = await Promise.all([
-      import('@modelcontextprotocol/sdk/server/streamableHttp.js'), import('../mcp/kept-client.mjs'), import('../mcp/server.mjs')
+    const [{ StreamableHTTPServerTransport }, { KeeparrClient }, { createKeeparrMcpServer }] = await Promise.all([
+      import('@modelcontextprotocol/sdk/server/streamableHttp.js'), import('../mcp/keeparr-client.mjs'), import('../mcp/server.mjs')
     ]);
-    const client = new KeptClient({
+    const client = new KeeparrClient({
       baseUrl: internalBaseUrl,
       token,
       timeoutMs: 120000,
       customHeaders: { [MCP_INTERNAL_HEADER]: MCP_INTERNAL_SECRET }
     });
-    const mcpServer = createKeptMcpServer(client, { oauth: true });
+    const mcpServer = createKeeparrMcpServer(client, { oauth: true });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { transport.close().catch(() => undefined); mcpServer.close().catch(() => undefined); });
     await mcpServer.connect(transport);

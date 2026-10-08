@@ -749,7 +749,7 @@ describe('OfflineStoreService interrupted transactions and upgrades', () => {
   });
 
   it('opens a database from the first schema generation without losing queued work or drafts', async () => {
-    const name = `kept-upgrade-${crypto.randomUUID()}`;
+    const name = `keeparr-upgrade-${crypto.randomUUID()}`;
     await new Promise<void>((resolve, reject) => {
       const request = indexedDB.open(name, 1);
       request.onupgradeneeded = () => {

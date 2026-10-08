@@ -10,7 +10,7 @@ const path = require('node:path');
 
 const root = path.join(__dirname, '..');
 const port = 5800 + Math.floor(Math.random() * 300);
-const dbPath = path.join(os.tmpdir(), `kept-negotiation-${process.pid}.sqlite`);
+const dbPath = path.join(os.tmpdir(), `keeparr-negotiation-${process.pid}.sqlite`);
 const base = `http://127.0.0.1:${port}/api`;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 

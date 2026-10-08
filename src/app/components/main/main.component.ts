@@ -2,7 +2,7 @@ import { NoteI } from '../../interfaces/notes';
 import { Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { TimepickerUI, type ConfirmEventData } from 'timepicker-ui';
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { KeptAction, KeptActionPlan, KeptPlanExecution, KeptPlanValidation } from 'src/app/interfaces/ai';
+import { KeeparrAction, KeeparrActionPlan, KeeparrPlanExecution, KeeparrPlanValidation } from 'src/app/interfaces/ai';
 import { AiService } from 'src/app/services/ai.service';
 import { ReminderService } from 'src/app/services/reminder.service';
 import { SharedService } from 'src/app/services/shared.service';
@@ -55,13 +55,13 @@ interface AndroidSmartCaptureStatus {
 }
 
 interface SmartCaptureResult {
-  actionPlan?: KeptActionPlan;
+  actionPlan?: KeeparrActionPlan;
   transcript?: string;
   text?: string;
   provider?: AndroidSmartCaptureProvider;
 }
 
-interface KeptSmartCapturePlugin {
+interface KeeparrSmartCapturePlugin {
   checkPermissions(): Promise<{
     microphone: string;
     speechRecognition: string;
@@ -103,14 +103,14 @@ interface KeptSmartCapturePlugin {
   }): Promise<SmartCaptureResult>;
 }
 
-interface KeptModelManagerPlugin {
+interface KeeparrModelManagerPlugin {
   getStatus(): Promise<AndroidLocalModelStatus>;
   downloadModel(): Promise<AndroidLocalModelStatus>;
   deleteModel(): Promise<void>;
 }
 
-const KeptSmartCapture = registerPlugin<KeptSmartCapturePlugin>('KeptSmartCapture');
-const KeptModelManager = registerPlugin<KeptModelManagerPlugin>('KeptModelManager');
+const KeeparrSmartCapture = registerPlugin<KeeparrSmartCapturePlugin>('KeeparrSmartCapture');
+const KeeparrModelManager = registerPlugin<KeeparrModelManagerPlugin>('KeeparrModelManager');
 
 @Component({
     selector: 'app-main',
@@ -133,9 +133,9 @@ export class MainComponent implements OnInit, OnDestroy {
   smartCaptureAvailable = false;
   smartCaptureTranscript = '';
   smartCaptureEstimate: SmartCaptureEstimate | null = null;
-  smartCapturePlan: KeptActionPlan | null = null;
-  smartCaptureValidation: KeptPlanValidation | null = null;
-  smartCaptureResult: KeptPlanExecution | null = null;
+  smartCapturePlan: KeeparrActionPlan | null = null;
+  smartCaptureValidation: KeeparrPlanValidation | null = null;
+  smartCaptureResult: KeeparrPlanExecution | null = null;
   smartCaptureError = '';
   smartCaptureProvider: 'ios' | 'gemini-nano' | 'local-model' | null = null;
   showGemmaFallbackInstallPrompt = false;
@@ -309,19 +309,19 @@ export class MainComponent implements OnInit, OnDestroy {
     if (this.isAndroidSmartCapture()) {
       setTimeout(() => this.ngZone.run(() => this.refreshSmartCaptureAvailability()), 800);
     }
-    window.addEventListener('kept-smart-capture-estimate', this.smartCaptureEstimateEventHandler as EventListener);
-    window.addEventListener('kept-smart-capture-plan', this.smartCaptureEventHandler as EventListener);
+    window.addEventListener('keeparr-smart-capture-estimate', this.smartCaptureEstimateEventHandler as EventListener);
+    window.addEventListener('keeparr-smart-capture-plan', this.smartCaptureEventHandler as EventListener);
     window.addEventListener('smartCaptureCompleted', this.smartCaptureEventHandler as EventListener);
-    (window as any).KeptSmartCapture = {
-      ...((window as any).KeptSmartCapture || {}),
+    (window as any).KeeparrSmartCapture = {
+      ...((window as any).KeeparrSmartCapture || {}),
       receiveEstimate: (payload: SmartCaptureEstimate) => this.ngZone.run(() => this.receiveSmartCaptureEstimate(payload)),
       receivePlan: (payload: any) => this.ngZone.run(() => this.receiveSmartCapture(payload))
     };
   }
 
   ngOnDestroy(): void {
-    window.removeEventListener('kept-smart-capture-estimate', this.smartCaptureEstimateEventHandler as EventListener);
-    window.removeEventListener('kept-smart-capture-plan', this.smartCaptureEventHandler as EventListener);
+    window.removeEventListener('keeparr-smart-capture-estimate', this.smartCaptureEstimateEventHandler as EventListener);
+    window.removeEventListener('keeparr-smart-capture-plan', this.smartCaptureEventHandler as EventListener);
     window.removeEventListener('smartCaptureCompleted', this.smartCaptureEventHandler as EventListener);
     this.stopGemmaFallbackProgressPolling();
     this.cancelNativeVoiceCapture();
@@ -346,7 +346,7 @@ export class MainComponent implements OnInit, OnDestroy {
     this.smartCaptureError = '';
   }
 
-  async receiveSmartCapture(payload: { transcript?: string; actionPlan?: KeptActionPlan; plan?: KeptActionPlan }) {
+  async receiveSmartCapture(payload: { transcript?: string; actionPlan?: KeeparrActionPlan; plan?: KeeparrActionPlan }) {
     const actionPlan = payload.actionPlan || payload.plan;
     if (!actionPlan) {
       if (payload.transcript) this.smartCaptureTranscript = payload.transcript;
@@ -469,7 +469,7 @@ export class MainComponent implements OnInit, OnDestroy {
       }
       this.closeSmartCapture();
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        window.dispatchEvent(new CustomEvent('kept-smart-capture-notes-added'));
+        window.dispatchEvent(new CustomEvent('keeparr-smart-capture-notes-added'));
         window.dispatchEvent(new Event('resize'));
       }));
     } catch (error: any) {
@@ -484,7 +484,7 @@ export class MainComponent implements OnInit, OnDestroy {
     if (!this.smartCapturePlan) return null;
     this.ensureSmartProposalColors(this.smartCapturePlan);
     const selected = selectedActionIndexes ? new Set(selectedActionIndexes) : null;
-    const plan: KeptActionPlan = {
+    const plan: KeeparrActionPlan = {
       ...this.smartCapturePlan,
       actions: this.smartCapturePlan.actions.map(action => ({ ...action }))
     };
@@ -548,10 +548,10 @@ export class MainComponent implements OnInit, OnDestroy {
         this.smartCaptureError = 'Say something first, then tap Done.';
         return;
       }
-      const plugin = this.keptIntelligencePlugin();
+      const plugin = this.keeparrIntelligencePlugin();
       if (this.isAndroidSmartCapture()) {
         await this.loadSmartSavedPlaces(true);
-        const result = await KeptSmartCapture.analyze({
+        const result = await KeeparrSmartCapture.analyze({
           text: command,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           locale: navigator.language,
@@ -612,12 +612,12 @@ export class MainComponent implements OnInit, OnDestroy {
     return this.smartVoiceCapturing ? 'stop' : 'mic';
   }
 
-  private keptIntelligencePlugin() {
-    return (window as any).Capacitor?.Plugins?.KeptIntelligence;
+  private keeparrIntelligencePlugin() {
+    return (window as any).Capacitor?.Plugins?.KeeparrIntelligence;
   }
 
   private smartVoicePlugin() {
-    return this.isAndroidSmartCapture() ? KeptSmartCapture : this.keptIntelligencePlugin();
+    return this.isAndroidSmartCapture() ? KeeparrSmartCapture : this.keeparrIntelligencePlugin();
   }
 
   private smartCaptureContext() {
@@ -657,11 +657,11 @@ export class MainComponent implements OnInit, OnDestroy {
     }));
   }
 
-  private async syncNativeConfirmedReminders(actions: KeptAction[]) {
+  private async syncNativeConfirmedReminders(actions: KeeparrAction[]) {
     if (!this.isIosSmartCapture()) return;
     if (!actions.some(action => action.type === 'set_reminder')) return;
 
-    const plugin = this.keptIntelligencePlugin();
+    const plugin = this.keeparrIntelligencePlugin();
     if (!plugin?.getCapabilities || !plugin?.syncConfirmedReminders) return;
 
     try {
@@ -690,7 +690,7 @@ export class MainComponent implements OnInit, OnDestroy {
       return;
     }
 
-    const plugin = this.keptIntelligencePlugin();
+    const plugin = this.keeparrIntelligencePlugin();
     if (!plugin?.startVoiceCapture || !plugin?.processTextCommand) {
       this.smartCaptureAvailable = false;
       this.smartCaptureProvider = null;
@@ -717,7 +717,7 @@ export class MainComponent implements OnInit, OnDestroy {
 
   private async refreshAndroidSmartCaptureStatus(revealInstallPrompt = false) {
     try {
-      const status = await KeptSmartCapture.getStatus();
+      const status = await KeeparrSmartCapture.getStatus();
       this.androidSmartCaptureStatus = status;
       if (this.androidLocalModelInstalled(status)) {
         this.smartCaptureAvailable = true;
@@ -760,11 +760,11 @@ export class MainComponent implements OnInit, OnDestroy {
 
   private async ensureAndroidSmartCaptureVoicePermissions() {
     if (!this.isAndroidSmartCapture()) return;
-    const permissions = await KeptSmartCapture.checkPermissions();
-    if (permissions.microphone !== 'granted') await KeptSmartCapture.requestMicrophoneAccess();
+    const permissions = await KeeparrSmartCapture.checkPermissions();
+    if (permissions.microphone !== 'granted') await KeeparrSmartCapture.requestMicrophoneAccess();
     const speechRecognition = permissions.speechRecognition;
     if (speechRecognition !== 'granted') {
-      await KeptSmartCapture.requestSpeechAccess();
+      await KeeparrSmartCapture.requestSpeechAccess();
     }
   }
 
@@ -776,7 +776,7 @@ export class MainComponent implements OnInit, OnDestroy {
     this.gemmaFallbackProgress = 0;
     this.startGemmaFallbackProgressPolling();
     try {
-      const modelStatus = await KeptModelManager.downloadModel();
+      const modelStatus = await KeeparrModelManager.downloadModel();
       this.gemmaFallbackProgress = modelStatus.downloadProgress ?? (modelStatus.installed ? 1 : this.gemmaFallbackProgress);
       if (!modelStatus.installed) {
         throw new Error(modelStatus.error || 'The local Gemma model could not be installed.');
@@ -800,7 +800,7 @@ export class MainComponent implements OnInit, OnDestroy {
     this.stopGemmaFallbackProgressPolling();
     this.gemmaFallbackProgressTimer = window.setInterval(async () => {
       try {
-        const modelStatus = await KeptModelManager.getStatus();
+        const modelStatus = await KeeparrModelManager.getStatus();
         this.ngZone.run(() => {
           this.gemmaFallbackProgress = modelStatus.downloadProgress ?? (modelStatus.installed ? 1 : this.gemmaFallbackProgress ?? 0);
         });
@@ -888,7 +888,7 @@ export class MainComponent implements OnInit, OnDestroy {
   }
 
   private setSmartCaptureDocumentLock(locked: boolean) {
-    document.body.classList.toggle('kept-smart-capture-open', locked);
+    document.body.classList.toggle('keeparr-smart-capture-open', locked);
   }
 
   openSmartReminderPicker(index: number, event?: Event) {
@@ -1065,11 +1065,11 @@ export class MainComponent implements OnInit, OnDestroy {
     return `${String(hour).padStart(2, '0')}:${twentyFourHour[2]}`;
   }
 
-  actionTitle(action: KeptAction) {
+  actionTitle(action: KeeparrAction) {
     return action.type.replace(/_/g, ' ');
   }
 
-  actionSummary(action: KeptAction) {
+  actionSummary(action: KeeparrAction) {
     const anyAction = action as any;
     if (action.type === 'create_text_note') return anyAction.title || anyAction.text || 'Create a text note';
     if (action.type === 'create_todo_note') return `${anyAction.title || 'New checklist'} · ${(anyAction.items || []).length} items`;
@@ -1081,12 +1081,12 @@ export class MainComponent implements OnInit, OnDestroy {
     return 'Smart action';
   }
 
-  actionMeta(action: KeptAction) {
+  actionMeta(action: KeeparrAction) {
     const noteId = (action as any).noteId;
     return noteId ? `Note #${noteId}` : '';
   }
 
-  proposalColor(action: KeptAction, _index: number) {
+  proposalColor(action: KeeparrAction, _index: number) {
     const anyAction = action as any;
     if (anyAction.bgColor) return anyAction.bgColor;
     const key = this.smartProposalColorKey(action, _index);
@@ -1097,7 +1097,7 @@ export class MainComponent implements OnInit, OnDestroy {
     return color;
   }
 
-  private ensureSmartProposalColors(plan: KeptActionPlan) {
+  private ensureSmartProposalColors(plan: KeeparrActionPlan) {
     for (const [index, action] of (plan.actions || []).entries()) {
       const anyAction = action as any;
       if ((action.type === 'create_text_note' || action.type === 'create_todo_note') && !anyAction.bgColor) {
@@ -1106,7 +1106,7 @@ export class MainComponent implements OnInit, OnDestroy {
     }
   }
 
-  private smartProposalColorKey(action: KeptAction, index: number) {
+  private smartProposalColorKey(action: KeeparrAction, index: number) {
     const anyAction = action as any;
     return [
       index,
@@ -1117,7 +1117,7 @@ export class MainComponent implements OnInit, OnDestroy {
     ].join('::');
   }
 
-  proposalHasDarkBackground(action: KeptAction) {
+  proposalHasDarkBackground(action: KeeparrAction) {
     const color = String((action as any).bgColor || '');
     return !!color && !this.isLightColor(color);
   }
@@ -1326,7 +1326,7 @@ export class MainComponent implements OnInit, OnDestroy {
     return 'notes';
   }
 
-  proposalBadge(action: KeptAction) {
+  proposalBadge(action: KeeparrAction) {
     if (action.type === 'create_text_note' || action.type === 'create_todo_note') return 'New';
     if (action.type === 'append_to_note' || action.type === 'add_checklist_items' || action.type === 'add_labels') return 'Updates';
     if (action.type === 'set_reminder') return 'Reminder';
@@ -1336,7 +1336,7 @@ export class MainComponent implements OnInit, OnDestroy {
     return 'Action';
   }
 
-  proposalTitle(action: KeptAction) {
+  proposalTitle(action: KeeparrAction) {
     const anyAction = action as any;
     if (action.type === 'create_text_note' || action.type === 'create_todo_note') return anyAction.title || 'Untitled note';
     if (action.type === 'append_to_note') return 'Append to note';
@@ -1378,7 +1378,7 @@ export class MainComponent implements OnInit, OnDestroy {
     return 'Reminder time needed';
   }
 
-  proposalBody(action: KeptAction) {
+  proposalBody(action: KeeparrAction) {
     const anyAction = action as any;
     if (action.type === 'create_text_note') return anyAction.text || anyAction.body || '';
     if (action.type === 'append_to_note') return anyAction.text || '';
@@ -1390,13 +1390,13 @@ export class MainComponent implements OnInit, OnDestroy {
     return '';
   }
 
-  proposalChecklistItems(action: KeptAction) {
+  proposalChecklistItems(action: KeeparrAction) {
     const anyAction = action as any;
     if (action.type !== 'create_todo_note' && action.type !== 'add_checklist_items') return [];
     return (anyAction.items || []).map((item: any) => typeof item === 'string' ? item : (item?.data || item?.text || item?.title || '')).filter(Boolean);
   }
 
-  proposalExtra(action: KeptAction) {
+  proposalExtra(action: KeeparrAction) {
     const anyAction = action as any;
     if (action.type === 'add_labels') return `${(anyAction.labels || []).length} label(s)`;
     if (action.type === 'set_reminder' && anyAction.timezone) return anyAction.timezone;

@@ -29,7 +29,7 @@ const CapacitorApp = registerPlugin<CapacitorAppPlugin>('App');
           <button type="button" class="notification-permission-close" aria-label="Dismiss notification prompt"
             (click)="dismissNotificationPrompt()">×</button>
           <div class="notification-permission-title">Enable notifications?</div>
-          <p>Kept can send reminder alerts and important notification updates from this device.</p>
+          <p>Keeparr can send reminder alerts and important notification updates from this device.</p>
           <button type="button" class="notification-permission-enable" (click)="enableNotifications()">Enable</button>
         </div>
       }
@@ -134,7 +134,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.notificationPromptFocusListener = () => {
       this.ngZone.run(() => this.refreshNotificationPrompt());
     };
-    window.addEventListener('kept-notification-permission-reprompt', this.notificationPromptResetListener);
+    window.addEventListener('keeparr-notification-permission-reprompt', this.notificationPromptResetListener);
     document.addEventListener('visibilitychange', this.notificationPromptVisibilityListener);
     window.addEventListener('focus', this.notificationPromptFocusListener);
     this.routerSubscription = this.router.events
@@ -151,7 +151,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.androidBackButtonHandle?.remove();
     this.oidcDeepLinkHandle?.remove();
     if (this.notificationPromptResetListener) {
-      window.removeEventListener('kept-notification-permission-reprompt', this.notificationPromptResetListener);
+      window.removeEventListener('keeparr-notification-permission-reprompt', this.notificationPromptResetListener);
     }
     if (this.notificationPromptVisibilityListener) {
       document.removeEventListener('visibilitychange', this.notificationPromptVisibilityListener);
@@ -208,7 +208,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private handleOidcDeepLink(rawUrl: string) {
     let url: URL;
     try { url = new URL(rawUrl); } catch { return; }
-    if (url.protocol !== 'kept:' || url.hostname !== 'auth' || url.pathname !== '/oidc') return;
+    if (url.protocol !== 'keeparr:' || url.hostname !== 'auth' || url.pathname !== '/oidc') return;
 
     const oidcCode = url.searchParams.get('oidc_code');
     const oidcError = url.searchParams.get('oidc_error');

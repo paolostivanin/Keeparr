@@ -51,7 +51,7 @@
           <span class="material-symbols-outlined">auto_awesome</span>
           <span>
             <strong>Smart Capture</strong>
-            <small>Can run privately on this device with Kept’s local Gemma model.</small>
+            <small>Can run privately on this device with Keeparr’s local Gemma model.</small>
             <small class="smart-gemma-action">{{ gemmaFallbackInstalling ? 'Installing local Gemma model…' : 'Install local Gemma model' }}</small>
             @if (gemmaFallbackProgressPercent() !== null) {
               <small>{{ gemmaFallbackProgressPercent() }}%</small>
@@ -64,7 +64,7 @@
       </div>
     }
     @if ((Shared.showInstallButton | async) && !Shared.isInstallFabDismissed()) {
-      <div class="mobile-install-fab" role="region" aria-label="Install Kept">
+      <div class="mobile-install-fab" role="region" aria-label="Install Keeparr">
         <button type="button" class="mobile-install-main" (click)="installPwa()">
           <span class="material-symbols-outlined">install_mobile</span>
           <span class="label">Install App</span>
@@ -80,16 +80,16 @@
   <div class="pwa-install-card" (click)="$event.stopPropagation()">
     <button class="pwa-close" type="button" aria-label="Close install instructions"
       (click)="installHelpOpen = false">×</button>
-    <h3>Install Kept</h3>
+    <h3>Install Keeparr</h3>
     @if (Shared.isIos) {
-      <p>On iPhone or iPad, use Safari to install Kept.</p>
+      <p>On iPhone or iPad, use Safari to install Keeparr.</p>
       <ol>
         <li>Tap the <strong>Share</strong> button in Safari's toolbar.</li>
         <li>Choose <strong>Add to Home Screen</strong>.</li>
         <li>Tap <strong>Add</strong> to finish.</li>
       </ol>
     } @else {
-      <p>Use your browser menu to install Kept as an app.</p>
+      <p>Use your browser menu to install Keeparr as an app.</p>
     }
   </div>
 }

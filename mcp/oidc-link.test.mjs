@@ -11,7 +11,7 @@ const root = new URL('..', import.meta.url).pathname;
 
 function waitForServer(child) {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Timed out waiting for Kept test server.')), 10000);
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for Keeparr test server.')), 10000);
     child.stdout.on('data', chunk => {
       if (String(chunk).includes('Keep API listening')) {
         clearTimeout(timeout);
@@ -24,7 +24,7 @@ function waitForServer(child) {
     });
     child.once('exit', code => {
       clearTimeout(timeout);
-      reject(new Error(`Kept test server exited early with code ${code}.`));
+      reject(new Error(`Keeparr test server exited early with code ${code}.`));
     });
   });
 }
@@ -99,7 +99,7 @@ async function startProvider() {
       const now = Math.floor(Date.now() / 1000);
       const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'test-key', typ: 'JWT' })).toString('base64url');
       const payload = Buffer.from(JSON.stringify({
-        iss: issuer, aud: 'kept-test', iat: now, exp: now + 300, nonce: record.nonce,
+        iss: issuer, aud: 'keeparr-test', iat: now, exp: now + 300, nonce: record.nonce,
         sub: record.identity.sub, email: record.identity.email, email_verified: true,
         name: record.identity.name, preferred_username: record.identity.email.split('@')[0]
       })).toString('base64url');
@@ -128,7 +128,7 @@ async function completeProviderRedirect(startUrl) {
 }
 
 test('OIDC accounts can be explicitly linked, signed in, and safely disconnected', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'kept-oidc-'));
+  const directory = await mkdtemp(join(tmpdir(), 'keeparr-oidc-'));
   const provider = await startProvider();
   const port = 33000 + Math.floor(Math.random() * 1000);
   const origin = `http://127.0.0.1:${port}`;
@@ -136,9 +136,9 @@ test('OIDC accounts can be explicitly linked, signed in, and safely disconnected
     cwd: root,
     env: {
       ...process.env,
-      PORT: String(port), SQLITE_PATH: join(directory, 'kept.sqlite'), BASE_URL: origin,
-      KEPT_OIDC_ISSUER: provider.issuer, KEPT_OIDC_CLIENT_ID: 'kept-test',
-      KEPT_OIDC_CLIENT_SECRET: 'test-secret', KEPT_OIDC_NAME: 'Test Identity'
+      PORT: String(port), SQLITE_PATH: join(directory, 'keeparr.sqlite'), BASE_URL: origin,
+      KEEPARR_OIDC_ISSUER: provider.issuer, KEEPARR_OIDC_CLIENT_ID: 'keeparr-test',
+      KEEPARR_OIDC_CLIENT_SECRET: 'test-secret', KEEPARR_OIDC_NAME: 'Test Identity'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -181,12 +181,12 @@ test('OIDC accounts can be explicitly linked, signed in, and safely disconnected
   });
   assert.equal(ssoLogin.user.id, admin.user.id);
 
-  const nativeSsoStart = await fetch(`${origin}/api/auth/oidc/start?return_url=${encodeURIComponent('kept://auth/oidc')}`, { redirect: 'manual' });
+  const nativeSsoStart = await fetch(`${origin}/api/auth/oidc/start?return_url=${encodeURIComponent('keeparr://auth/oidc')}`, { redirect: 'manual' });
   const nativeSsoCallback = await completeProviderRedirect(nativeSsoStart.headers.get('location'));
   const nativeSsoResult = await fetch(nativeSsoCallback, { redirect: 'manual' });
   const nativeRedirect = new URL(nativeSsoResult.headers.get('location'));
-  assert.equal(`${nativeRedirect.protocol}//${nativeRedirect.hostname}${nativeRedirect.pathname}`, 'kept://auth/oidc');
-  assert.match(nativeRedirect.searchParams.get('oidc_code'), /^kept_login_/);
+  assert.equal(`${nativeRedirect.protocol}//${nativeRedirect.hostname}${nativeRedirect.pathname}`, 'keeparr://auth/oidc');
+  assert.match(nativeRedirect.searchParams.get('oidc_code'), /^keeparr_login_/);
 
   const second = await json(`${origin}/api/users`, {
     method: 'POST', headers: bearer(admin.token),
@@ -212,12 +212,12 @@ test('OIDC accounts can be explicitly linked, signed in, and safely disconnected
   provider.setIdentity({ sub: 'native-link-subject', email: 'native@example.test', name: 'Native Link' });
   const nativeLinkStart = await json(`${origin}/api/auth/oidc/link/start`, {
     method: 'POST', headers: bearer(secondLogin.token),
-    body: JSON.stringify({ return_url: 'kept://auth/oidc' })
+    body: JSON.stringify({ return_url: 'keeparr://auth/oidc' })
   });
   const nativeLinkCallback = await completeProviderRedirect(nativeLinkStart.url);
   const nativeLinkResult = await fetch(nativeLinkCallback, { redirect: 'manual' });
   const nativeLinkRedirect = new URL(nativeLinkResult.headers.get('location'));
-  assert.equal(`${nativeLinkRedirect.protocol}//${nativeLinkRedirect.hostname}${nativeLinkRedirect.pathname}`, 'kept://auth/oidc');
+  assert.equal(`${nativeLinkRedirect.protocol}//${nativeLinkRedirect.hostname}${nativeLinkRedirect.pathname}`, 'keeparr://auth/oidc');
   assert.equal(nativeLinkRedirect.searchParams.get('oidc_link'), 'connected');
 
   const secondSsoStart = await fetch(`${origin}/api/auth/oidc/start`, { redirect: 'manual' });

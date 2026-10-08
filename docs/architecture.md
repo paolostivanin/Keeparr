@@ -18,10 +18,10 @@ This document records the current authoritative state and write boundaries while
 
 | Responsibility | Owner | Authority / compatibility |
 | --- | --- | --- |
-| Local documents, Room transactions, and outbox | `KeptRepository` and `KeptDatabase` | Room raw note JSON and the outbox remain authoritative; typed/projection work is derived from those records. |
-| Sync/protocol | `KeptRepository`, `NativeProtocol`, and `SyncWorker` | Shared native contract fixtures define wire compatibility; operation IDs and revision guards protect replay and updates. |
+| Local documents, Room transactions, and outbox | `KeeparrRepository` and `KeeparrDatabase` | Room raw note JSON and the outbox remain authoritative; typed/projection work is derived from those records. |
+| Sync/protocol | `KeeparrRepository`, `NativeProtocol`, and `SyncWorker` | Shared native contract fixtures define wire compatibility; operation IDs and revision guards protect replay and updates. |
 | Connection settings and authenticated client snapshots | `Connection` and `ApiClient` | Settings initialize asynchronously; requests capture immutable profile snapshots. |
-| Screen/editor state | `KeptScreen`, `NoteCardUiModel`, `NoteEditorViewModel`, and Compose UI | Home card fields are projected off main into immutable `NoteCardUiModel` values; the ViewModel and AndroidView editor remain in place, with full screen extraction and bounded session ownership still planned. |
+| Screen/editor state | `KeeparrScreen`, `NoteCardUiModel`, `NoteEditorViewModel`, and Compose UI | Home card fields are projected off main into immutable `NoteCardUiModel` values; the ViewModel and AndroidView editor remain in place, with full screen extraction and bounded session ownership still planned. |
 | Media staging/loading | `Media` | Pending upload files, authenticated OkHttp access, disk cache, and bounded decoded previews are managed here. |
 
 ## Backend
@@ -48,4 +48,4 @@ This document records the current authoritative state and write boundaries while
 - `NotesService.notesList$` aliases `NotesStoreService.notes$` while consumers migrate to selectors.
 - `SharedService.note.all/pinned/unpinned` presents compatibility views over the notes store; `SharedService` still owns unrelated UI and command concerns.
 - `NoteI` currently represents both card previews and complete notes with `isCardPreview`; distinct public types remain planned.
-- The large Angular notes/editor components and Android `KeptScreen.kt` remain active ownership boundaries pending behavior-preserving extraction.
+- The large Angular notes/editor components and Android `KeeparrScreen.kt` remain active ownership boundaries pending behavior-preserving extraction.

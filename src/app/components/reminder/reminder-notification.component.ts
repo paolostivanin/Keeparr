@@ -26,8 +26,8 @@ export class ReminderNotificationComponent implements OnInit, OnDestroy {
 
     const updateHeight = () => {
       const height = Math.ceil(element.nativeElement.getBoundingClientRect().height);
-      document.documentElement.style.setProperty('--kept-reminder-banner-height', `${height}px`);
-      document.body.classList.add('kept-reminder-active');
+      document.documentElement.style.setProperty('--keeparr-reminder-banner-height', `${height}px`);
+      document.body.classList.add('keeparr-reminder-active');
     };
     updateHeight();
     this.bannerResizeObserver = new ResizeObserver(updateHeight);
@@ -89,7 +89,7 @@ export class ReminderNotificationComponent implements OnInit, OnDestroy {
       const notification = new Notification(title, {
         body: body || undefined,
         icon: '/assets/images/keep2x.png',
-        tag: `kept-reminder-${payload.reminderId}`,
+        tag: `keeparr-reminder-${payload.reminderId}`,
         data: {
           reminderId: payload.reminderId,
           noteId: payload.noteId
@@ -141,7 +141,7 @@ export class ReminderNotificationComponent implements OnInit, OnDestroy {
   }
 
   private clearBannerLayoutState() {
-    document.body.classList.remove('kept-reminder-active');
-    document.documentElement.style.removeProperty('--kept-reminder-banner-height');
+    document.body.classList.remove('keeparr-reminder-active');
+    document.documentElement.style.removeProperty('--keeparr-reminder-banner-height');
   }
 }

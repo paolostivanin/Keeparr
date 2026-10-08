@@ -9,7 +9,7 @@ type NativeConnectionHeader = {
   value: string;
 };
 
-type KeptConnectionHeadersPlugin = {
+type KeeparrConnectionHeadersPlugin = {
   getEnabledHeaders?: () => Promise<{ headers?: NativeConnectionHeader[] }>;
 };
 
@@ -28,7 +28,7 @@ export class ConnectionHeadersInterceptor implements HttpInterceptor {
 
   intercept(req: HttpRequest<unknown>, next: HttpHandler): Observable<HttpEvent<unknown>> {
     const plugin = this.plugin();
-    if (!plugin?.getEnabledHeaders || !this.targetsKeptServer(req.url)) return next.handle(req);
+    if (!plugin?.getEnabledHeaders || !this.targetsKeeparrServer(req.url)) return next.handle(req);
 
     return from(this.loadHeaders(plugin)).pipe(
       switchMap(headers => {
@@ -38,11 +38,11 @@ export class ConnectionHeadersInterceptor implements HttpInterceptor {
     );
   }
 
-  private plugin(): KeptConnectionHeadersPlugin | undefined {
-    return (window as any).Capacitor?.Plugins?.KeptConnectionHeaders;
+  private plugin(): KeeparrConnectionHeadersPlugin | undefined {
+    return (window as any).Capacitor?.Plugins?.KeeparrConnectionHeaders;
   }
 
-  private targetsKeptServer(url: string) {
+  private targetsKeeparrServer(url: string) {
     try {
       const base = new URL(environment.apiUrl, window.location.origin);
       const target = new URL(url, base);
@@ -52,7 +52,7 @@ export class ConnectionHeadersInterceptor implements HttpInterceptor {
     }
   }
 
-  private loadHeaders(plugin: KeptConnectionHeadersPlugin) {
+  private loadHeaders(plugin: KeeparrConnectionHeadersPlugin) {
     if (this.cachedHeaders) return Promise.resolve(this.cachedHeaders);
     if (!this.loadingHeaders) {
       this.loadingHeaders = plugin.getEnabledHeaders!()

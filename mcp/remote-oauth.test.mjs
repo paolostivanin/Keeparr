@@ -10,7 +10,7 @@ const root = new URL('..', import.meta.url).pathname;
 
 function waitForServer(child) {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Timed out waiting for Kept test server.')), 10000);
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for Keeparr test server.')), 10000);
     child.stdout.on('data', chunk => {
       if (String(chunk).includes('Keep API listening')) {
         clearTimeout(timeout);
@@ -23,7 +23,7 @@ function waitForServer(child) {
     });
     child.once('exit', code => {
       clearTimeout(timeout);
-      reject(new Error(`Kept test server exited early with code ${code}.`));
+      reject(new Error(`Keeparr test server exited early with code ${code}.`));
     });
   });
 }
@@ -35,13 +35,13 @@ async function json(url, options = {}) {
   return body;
 }
 
-test('OAuth grants scoped access to the Kept API and remote MCP', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'kept-oauth-'));
+test('OAuth grants scoped access to the Keeparr API and remote MCP', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'keeparr-oauth-'));
   const port = 32000 + Math.floor(Math.random() * 1000);
   const origin = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server/server.js'], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), SQLITE_PATH: join(directory, 'kept.sqlite'), BASE_URL: origin },
+    env: { ...process.env, PORT: String(port), SQLITE_PATH: join(directory, 'keeparr.sqlite'), BASE_URL: origin },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   t.after(async () => {
@@ -105,27 +105,27 @@ test('OAuth grants scoped access to the Kept API and remote MCP', async t => {
     });
   }
 
-  const tokens = await authorizeToken({ scope: 'kept.read kept.write', resource: `${origin}/mcp`, state: 'mcp-test' });
-  assert.match(tokens.access_token, /^kept_oauth_/);
-  assert.match(tokens.refresh_token, /^kept_refresh_/);
+  const tokens = await authorizeToken({ scope: 'keeparr.read keeparr.write', resource: `${origin}/mcp`, state: 'mcp-test' });
+  assert.match(tokens.access_token, /^keeparr_oauth_/);
+  assert.match(tokens.refresh_token, /^keeparr_refresh_/);
 
   const mcpResponse = await json(`${origin}/mcp`, {
     method: 'POST',
     headers: { authorization: `Bearer ${tokens.access_token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } } })
   });
-  assert.equal(mcpResponse.result.serverInfo.name, 'kept-mcp');
+  assert.equal(mcpResponse.result.serverInfo.name, 'keeparr-mcp');
   const tools = await json(`${origin}/mcp`, {
     method: 'POST',
     headers: { authorization: `Bearer ${tokens.access_token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
   });
   assert.equal(tools.result.tools.length, 23);
-  assert.deepEqual(tools.result.tools[0]._meta.securitySchemes, [{ type: 'oauth2', scopes: ['kept.read', 'kept.write'] }]);
+  assert.deepEqual(tools.result.tools[0]._meta.securitySchemes, [{ type: 'oauth2', scopes: ['keeparr.read', 'keeparr.write'] }]);
   const mcpSearch = await json(`${origin}/mcp`, {
     method: 'POST',
     headers: { authorization: `Bearer ${tokens.access_token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'kept_search_notes', arguments: { query: 'anything' } } })
+    body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'keeparr_search_notes', arguments: { query: 'anything' } } })
   });
   assert.equal(mcpSearch.result.isError, undefined);
   const deniedDirectApi = await fetch(`${origin}/api/notes/search?q=anything`, {
@@ -133,8 +133,8 @@ test('OAuth grants scoped access to the Kept API and remote MCP', async t => {
   });
   assert.equal(deniedDirectApi.status, 403);
 
-  const apiTokens = await authorizeToken({ scope: 'kept.read', resource: `${origin}/api`, state: 'api-test' });
-  assert.equal(apiTokens.scope, 'kept.read');
+  const apiTokens = await authorizeToken({ scope: 'keeparr.read', resource: `${origin}/api`, state: 'api-test' });
+  assert.equal(apiTokens.scope, 'keeparr.read');
   const connectedUser = await json(`${origin}/api/oauth/me`, {
     headers: { authorization: `Bearer ${apiTokens.access_token}` }
   });
@@ -184,7 +184,7 @@ test('OAuth grants scoped access to the Kept API and remote MCP', async t => {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'refresh_token', client_id: client.client_id, refresh_token: tokens.refresh_token })
   });
-  assert.match(refreshed.access_token, /^kept_oauth_/);
+  assert.match(refreshed.access_token, /^keeparr_oauth_/);
   assert.notEqual(refreshed.refresh_token, tokens.refresh_token);
 
   await fetch(`${origin}/oauth/revoke`, {
@@ -200,7 +200,7 @@ test('OAuth grants scoped access to the Kept API and remote MCP', async t => {
     method: 'POST', headers: { authorization: `Bearer ${login.token}`, 'content-type': 'application/json' }, body: '{}'
   });
   assert.notEqual(replacementLocalAccess.accessToken, localAccess.accessToken);
-  const oauthBeforeDisable = await authorizeToken({ scope: 'kept.read kept.write', resource: `${origin}/mcp`, state: 'disable-test' });
+  const oauthBeforeDisable = await authorizeToken({ scope: 'keeparr.read keeparr.write', resource: `${origin}/mcp`, state: 'disable-test' });
   await fetch(`${origin}/api/users/me/oauth-access`, {
     method: 'DELETE', headers: { authorization: `Bearer ${login.token}` }
   });

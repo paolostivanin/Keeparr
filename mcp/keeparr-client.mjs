@@ -1,0 +1,306 @@
+import dns from 'node:dns/promises';
+import net from 'node:net';
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+const BLOCKED_HEADER_NAMES = new Set(['authorization', 'cookie', 'host', 'content-length', 'connection', 'accept-encoding']);
+const IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+const IMAGE_MIME_BY_EXT = new Map([
+  ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.gif', 'image/gif'], ['.webp', 'image/webp']
+]);
+const ATTACHMENT_MIME_BY_EXT = new Map([
+  ['.pdf', 'application/pdf'], ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'], ['.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  ['.doc', 'application/msword'], ['.xls', 'application/vnd.ms-excel'], ['.ppt', 'application/vnd.ms-powerpoint'],
+  ['.txt', 'text/plain'], ['.csv', 'text/csv'], ['.md', 'text/markdown'], ['.json', 'application/json'], ['.xml', 'application/xml'],
+  ['.zip', 'application/zip'], ['.rar', 'application/x-rar-compressed'], ['.7z', 'application/x-7z-compressed'],
+  ['.gz', 'application/gzip'], ['.tar', 'application/x-tar'], ['.odt', 'application/vnd.oasis.opendocument.text'],
+  ['.ods', 'application/vnd.oasis.opendocument.spreadsheet'], ['.odp', 'application/vnd.oasis.opendocument.presentation']
+]);
+const IMAGE_MIME_TYPES = new Set(IMAGE_MIME_BY_EXT.values());
+const ATTACHMENT_MIME_TYPES = new Set(ATTACHMENT_MIME_BY_EXT.values());
+
+export class KeeparrApiError extends Error {
+  constructor(message, { status, code } = {}) {
+    super(message);
+    this.name = 'KeeparrApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function connectionHeaders(value) {
+  if (!value) return {};
+  let parsed;
+  try { parsed = JSON.parse(value); } catch { throw new KeeparrApiError('KEEPARR_CUSTOM_HEADERS_JSON must be valid JSON.'); }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new KeeparrApiError('KEEPARR_CUSTOM_HEADERS_JSON must be a JSON object.');
+  const headers = {};
+  for (const [rawName, rawValue] of Object.entries(parsed)) {
+    const name = String(rawName || '').trim();
+    const headerValue = String(rawValue ?? '').trim();
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || !headerValue) throw new KeeparrApiError('Custom header names and values must be non-empty and valid.');
+    if (BLOCKED_HEADER_NAMES.has(name.toLowerCase())) throw new KeeparrApiError(`Custom header ${name} is not allowed.`);
+    headers[name] = headerValue;
+  }
+  return headers;
+}
+
+export function loadKeeparrConfig(env = process.env) {
+  const baseUrl = String(env.KEEPARR_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!baseUrl) throw new KeeparrApiError('KEEPARR_BASE_URL is required.');
+  let parsedUrl;
+  try { parsedUrl = new URL(baseUrl); } catch { throw new KeeparrApiError('KEEPARR_BASE_URL must be a valid http or https URL.'); }
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new KeeparrApiError('KEEPARR_BASE_URL must use http or https.');
+  if (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) throw new KeeparrApiError('KEEPARR_BASE_URL cannot contain credentials, a query, or a fragment.');
+  const token = String(env.KEEPARR_MCP_TOKEN || '').trim();
+  if (!token) throw new KeeparrApiError('KEEPARR_MCP_TOKEN is required. Enable Agent Access in Keeparr settings and generate a token.');
+  const timeoutMs = Number(env.KEEPARR_REQUEST_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 100 || timeoutMs > 120_000) throw new KeeparrApiError('KEEPARR_REQUEST_TIMEOUT_MS must be between 100 and 120000 milliseconds.');
+  return { baseUrl, token, timeoutMs, customHeaders: connectionHeaders(env.KEEPARR_CUSTOM_HEADERS_JSON) };
+}
+
+function responseMessage(payload, status) {
+  if (payload && typeof payload === 'object' && typeof payload.error === 'string') return payload.error.slice(0, 500);
+  if (typeof payload === 'string' && payload.trim()) return payload.trim().slice(0, 500);
+  return `Keeparr API returned HTTP ${status}.`;
+}
+
+function extensionFromName(name) {
+  const clean = String(name || '').split(/[\\/]/).pop() || '';
+  const match = clean.toLowerCase().match(/(\.[a-z0-9]+)$/);
+  return match ? match[1] : '';
+}
+
+function sanitizedFilename(name, fallback) {
+  return (String(name || '').split(/[\\/]/).pop() || fallback).replace(/[\r\n"]/g, '_').slice(0, 255) || fallback;
+}
+
+function isPrivateIp(address) {
+  if (net.isIP(address) === 4) {
+    const parts = address.split('.').map(Number);
+    return parts[0] === 10 || parts[0] === 127 || parts[0] === 0
+      || (parts[0] === 169 && parts[1] === 254)
+      || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+      || (parts[0] === 192 && parts[1] === 168)
+      || parts[0] >= 224;
+  }
+  const value = address.toLowerCase();
+  return value === '::1' || value === '::' || value.startsWith('fc') || value.startsWith('fd') || value.startsWith('fe80:');
+}
+
+async function assertPublicHttpsUrl(rawUrl) {
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { throw new KeeparrApiError('The file download URL is invalid.'); }
+  if (parsed.protocol !== 'https:') throw new KeeparrApiError('File download URLs must use HTTPS.');
+  if (parsed.username || parsed.password) throw new KeeparrApiError('File download URLs cannot contain credentials.');
+  const records = await dns.lookup(parsed.hostname, { all: true });
+  if (!records.length || records.some(record => isPrivateIp(record.address))) {
+    throw new KeeparrApiError('File download URL resolves to a private or unsupported network address.');
+  }
+  return parsed.toString();
+}
+
+function inferMime({ filename, providedMime, kind }) {
+  const normalized = String(providedMime || '').split(';')[0].trim().toLowerCase();
+  const allowed = kind === 'image' ? IMAGE_MIME_TYPES : ATTACHMENT_MIME_TYPES;
+  if (allowed.has(normalized)) return normalized;
+  const byExt = kind === 'image' ? IMAGE_MIME_BY_EXT : ATTACHMENT_MIME_BY_EXT;
+  return byExt.get(extensionFromName(filename)) || '';
+}
+
+async function readResponseBody(response, maxBytes) {
+  if (!response.body?.getReader) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > maxBytes) throw new KeeparrApiError('The selected file is too large for Keeparr.');
+    return buffer;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new KeeparrApiError('The selected file is too large for Keeparr.');
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total);
+}
+
+async function readResponse(response, responseType) {
+  if (response.status === 204) return null;
+  if (responseType === 'bytes') return {
+    bytes: Buffer.from(await response.arrayBuffer()),
+    contentType: response.headers.get('content-type') || 'application/octet-stream',
+    disposition: response.headers.get('content-disposition') || ''
+  };
+  const contentType = response.headers.get('content-type') || '';
+  return contentType.includes('application/json') ? response.json() : response.text();
+}
+
+export class KeeparrClient {
+  constructor(config, { fetchImpl = globalThis.fetch } = {}) {
+    if (typeof fetchImpl !== 'function') throw new KeeparrApiError('A Fetch API implementation is required.');
+    this.config = config;
+    this.fetch = fetchImpl;
+  }
+
+  async request(path, { method = 'GET', body, formData, responseType = 'json' } = {}) {
+    const headers = {
+      accept: responseType === 'bytes' ? '*/*' : 'application/json',
+      authorization: `Bearer ${this.config.token}`,
+      'user-agent': 'keeparr-mcp/2.0',
+      ...this.config.customHeaders
+    };
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    let response;
+    try {
+      response = await this.fetch(`${this.config.baseUrl}${path}`, {
+        method,
+        headers,
+        redirect: 'manual',
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(formData ? { body: formData } : {}),
+        signal: AbortSignal.timeout(this.config.timeoutMs)
+      });
+    } catch (error) {
+      const pathname = new URL(path, this.config.baseUrl).pathname;
+      throw new KeeparrApiError(`${method} ${pathname} failed: ${error.message}`, { code: 'NETWORK_ERROR' });
+    }
+    if (response.status >= 300 && response.status < 400) throw new KeeparrApiError('Keeparr refused an HTTP redirect so access credentials are not forwarded to another origin.', { status: response.status, code: 'REDIRECT_BLOCKED' });
+    const payload = await readResponse(response, responseType);
+    if (!response.ok) throw new KeeparrApiError(responseMessage(payload, response.status), { status: response.status, code: 'API_ERROR' });
+    return payload;
+  }
+
+  status() { return this.request('/api/mcp/status'); }
+  listLabels() { return this.request('/api/labels'); }
+  searchUsers(query) { return this.request(`/api/users/search?q=${encodeURIComponent(query)}`); }
+  searchNotes(query) { return this.request(`/api/notes/search?q=${encodeURIComponent(query)}`); }
+  getNote(noteId) { return this.request(`/api/notes/${noteId}`); }
+  createNote(note) { return this.request('/api/notes', { method: 'POST', body: note }); }
+  async updateNote(noteId, changes) {
+    await this.request(`/api/notes/${noteId}`, { method: 'PATCH', body: changes });
+    return this.getNote(noteId);
+  }
+
+  async assertNoteOwner(noteId, action, note) {
+    const [status, currentNote] = await Promise.all([
+      this.status(),
+      note ? Promise.resolve(note) : this.getNote(noteId)
+    ]);
+    if (Number(currentNote.ownerUserId) !== Number(status.userId)) {
+      throw new KeeparrApiError(`Only the note owner can ${action}.`, { status: 403, code: 'OWNER_REQUIRED' });
+    }
+    return currentNote;
+  }
+
+  async resolveLabels(names) {
+    const existing = await this.listLabels();
+    const byName = new Map(existing.map(label => [String(label.name).toLowerCase(), label]));
+    const resolved = [];
+    const selected = new Set();
+    for (const rawName of names) {
+      const name = String(rawName).trim();
+      const key = name.toLowerCase();
+      if (!name || selected.has(key)) continue;
+      selected.add(key);
+      let label = byName.get(key);
+      if (!label) {
+        label = await this.request('/api/labels/find-or-create', { method: 'POST', body: { name } });
+        byName.set(key, label);
+      }
+      resolved.push({ id: label.id, name: label.name, added: true });
+    }
+    return resolved;
+  }
+
+  async setLifecycle(noteId, state) {
+    await this.assertNoteOwner(noteId, `${state} this note`);
+    const changes = state === 'archive' ? { archived: true, trashed: false } : state === 'trash' ? { archived: false, trashed: true } : { archived: false, trashed: false };
+    return this.updateNote(noteId, changes);
+  }
+  async permanentlyDeleteNote(noteId) {
+    await this.assertNoteOwner(noteId, 'permanently delete this note');
+    await this.request(`/api/notes/${noteId}`, { method: 'DELETE' });
+    return { ok: true, noteId };
+  }
+
+  listReminders() { return this.request('/api/reminders'); }
+  createReminder(reminder) { return this.request('/api/reminders', { method: 'POST', body: reminder }); }
+  updateReminder(reminderId, changes) { return this.request(`/api/reminders/${reminderId}`, { method: 'PATCH', body: changes }); }
+  async deleteReminder(reminderId) {
+    await this.request(`/api/reminders/${reminderId}`, { method: 'DELETE' });
+    return { ok: true, reminderId };
+  }
+
+  getCollaborators(noteId) { return this.request(`/api/notes/${noteId}/collaborators`); }
+  setCollaborators(noteId, userIds) { return this.request(`/api/notes/${noteId}/collaborators`, { method: 'PUT', body: { userIds } }); }
+
+  async uploadImage({ filename, mimeType, base64Data }) {
+    const form = new FormData();
+    form.append('image', new Blob([Buffer.from(base64Data, 'base64')], { type: mimeType }), filename);
+    return this.request('/api/uploads/images', { method: 'POST', formData: form });
+  }
+
+  async fileParamToUpload(file, { kind, fallbackName }) {
+    const filename = sanitizedFilename(file?.file_name, fallbackName || (kind === 'image' ? 'image' : 'attachment'));
+    const mimeType = inferMime({ filename, providedMime: file?.mime_type, kind });
+    if (!mimeType) {
+      throw new KeeparrApiError(kind === 'image'
+        ? 'This image type is not supported. Use PNG, JPEG, GIF, or WebP.'
+        : 'This file type is not supported. Use PDF, Office documents, text files, or archives.');
+    }
+    const maxBytes = kind === 'image' ? IMAGE_UPLOAD_MAX_BYTES : ATTACHMENT_UPLOAD_MAX_BYTES;
+    let url = await assertPublicHttpsUrl(file?.download_url);
+    let response;
+    for (let redirects = 0; redirects <= 3; redirects += 1) {
+      response = await this.fetch(url, { headers: { accept: '*/*' }, redirect: 'manual', signal: AbortSignal.timeout(this.config.timeoutMs) });
+      if (![301, 302, 303, 307, 308].includes(response.status)) break;
+      const location = response.headers.get('location');
+      if (!location) break;
+      url = await assertPublicHttpsUrl(new URL(location, url).toString());
+    }
+    if (!response?.ok) throw new KeeparrApiError(`Could not download the selected file for upload${response ? ` (HTTP ${response.status})` : ''}.`);
+    const declaredLength = Number(response.headers.get('content-length') || 0);
+    if (declaredLength > maxBytes) throw new KeeparrApiError('The selected file is too large for Keeparr.');
+    const bytes = await readResponseBody(response, maxBytes);
+    return { filename, mimeType, base64Data: bytes.toString('base64') };
+  }
+
+  async readImage(noteId, imageId) {
+    const note = await this.getNote(noteId);
+    const image = (note.images || []).find(candidate => String(candidate?.id) === String(imageId));
+    if (!image) throw new KeeparrApiError('Image not found on this note.', { status: 404, code: 'IMAGE_NOT_FOUND' });
+    const source = String(image.dataUrl || '');
+    const inline = source.match(/^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/=\s]+)$/i);
+    if (inline) return { contentType: inline[1].toLowerCase(), base64Data: inline[2].replace(/\s/g, ''), name: image.name || 'image' };
+
+    let parsed;
+    try { parsed = new URL(source, this.config.baseUrl); } catch { throw new KeeparrApiError('This note image has an invalid URL.'); }
+    const base = new URL(this.config.baseUrl);
+    if (parsed.origin !== base.origin) throw new KeeparrApiError('External note images cannot be fetched through Keeparr MCP.');
+    const match = parsed.pathname.match(/^\/(?:api\/uploads\/images|uploads)\/([^/]+)$/);
+    if (!match) throw new KeeparrApiError('This note image is not stored in Keeparr.');
+    const result = await this.request(`/api/uploads/images/${encodeURIComponent(decodeURIComponent(match[1]))}`, { responseType: 'bytes' });
+    return { contentType: result.contentType, base64Data: result.bytes.toString('base64'), name: image.name || match[1] };
+  }
+
+  async uploadAttachment(noteId, { filename, mimeType, base64Data }) {
+    const form = new FormData();
+    form.append('file', new Blob([Buffer.from(base64Data, 'base64')], { type: mimeType }), filename);
+    return this.request(`/api/notes/${noteId}/attachments`, { method: 'POST', formData: form });
+  }
+  async readAttachment(attachmentId) {
+    const result = await this.request(`/api/attachments/${attachmentId}`, { responseType: 'bytes' });
+    return { contentType: result.contentType, disposition: result.disposition, base64Data: result.bytes.toString('base64') };
+  }
+  async deleteAttachment(noteId, attachmentId) {
+    await this.request(`/api/notes/${noteId}/attachments/${attachmentId}`, { method: 'DELETE' });
+    return { ok: true, noteId, attachmentId };
+  }
+  requestLockedNoteAccess(noteId) { return this.request(`/api/mcp/locked-notes/${noteId}/unlock`, { method: 'POST', body: {} }); }
+}

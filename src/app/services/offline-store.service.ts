@@ -91,12 +91,12 @@ export interface AppliedChangeSummary {
 
 @Injectable({ providedIn: 'root' })
 export class OfflineStoreService {
-  private readonly databaseName = 'kept-offline-v1';
+  private readonly databaseName = 'keeparr-offline-v1';
   private readonly databaseVersion = 3;
   // Editor drafts live in their own database so that adding them neither bumps
   // the main schema version (older builds could not open it after a rollback)
   // nor lets a draft write contend with sync transactions.
-  private readonly sessionDatabaseName = 'kept-editor-sessions-v1';
+  private readonly sessionDatabaseName = 'keeparr-editor-sessions-v1';
   private database?: Promise<IDBDatabase>;
   private sessionDatabase?: Promise<IDBDatabase>;
   private lastStampPhysicalMs = 0;
@@ -112,7 +112,7 @@ export class OfflineStoreService {
   }
 
   deviceId() {
-    const key = 'kept_offline_device_id';
+    const key = 'keeparr_offline_device_id';
     let value = localStorage.getItem(key);
     if (!value) {
       value = crypto.randomUUID();
@@ -1642,15 +1642,15 @@ export class OfflineStoreService {
   }
 
   private offlineMediaCanonicalMap(): Map<string, string> {
-    const global = window as typeof window & { __keptOfflineMediaCanonical?: Map<string, string> };
-    if (!global.__keptOfflineMediaCanonical) global.__keptOfflineMediaCanonical = new Map();
-    return global.__keptOfflineMediaCanonical;
+    const global = window as typeof window & { __keeparrOfflineMediaCanonical?: Map<string, string> };
+    if (!global.__keeparrOfflineMediaCanonical) global.__keeparrOfflineMediaCanonical = new Map();
+    return global.__keeparrOfflineMediaCanonical;
   }
 
   private offlineMediaObjectMap(): Map<string, string> {
-    const global = window as typeof window & { __keptOfflineMediaObjects?: Map<string, string> };
-    if (!global.__keptOfflineMediaObjects) global.__keptOfflineMediaObjects = new Map();
-    return global.__keptOfflineMediaObjects;
+    const global = window as typeof window & { __keeparrOfflineMediaObjects?: Map<string, string> };
+    if (!global.__keeparrOfflineMediaObjects) global.__keeparrOfflineMediaObjects = new Map();
+    return global.__keeparrOfflineMediaObjects;
   }
 
   private async listByPartition<T>(storeName: string, partition: string): Promise<T[]> {

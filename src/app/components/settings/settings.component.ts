@@ -173,9 +173,9 @@ export class SettingsComponent implements OnInit, OnDestroy {
     if (oidcLinkResult) {
       const messages: Record<string, string> = {
         connected: 'Single sign-on account connected successfully.',
-        already_connected: 'That single sign-on account is already connected to another Kept account.',
+        already_connected: 'That single sign-on account is already connected to another Keeparr account.',
         missing_identity: 'The identity provider did not return a usable account identifier.',
-        account_unavailable: 'This Kept account is no longer available for linking.'
+        account_unavailable: 'This Keeparr account is no longer available for linking.'
       };
       if (oidcLinkResult === 'connected') this.success = messages[oidcLinkResult];
       else this.error = messages[oidcLinkResult] || 'Could not connect the single sign-on account.';
@@ -208,20 +208,20 @@ export class SettingsComponent implements OnInit, OnDestroy {
     const enabled = (event.target as HTMLInputElement).checked;
     this.legacyAndroidSmartCaptureEnabled = enabled;
     setLegacyAndroidSmartCaptureEnabled(enabled);
-    window.dispatchEvent(new CustomEvent('kept-legacy-smart-capture-changed', { detail: { enabled } }));
+    window.dispatchEvent(new CustomEvent('keeparr-legacy-smart-capture-changed', { detail: { enabled } }));
   }
 
   toggleAndroidSmartCapture(event: Event) {
     const enabled = (event.target as HTMLInputElement).checked;
     this.androidSmartCaptureEnabled = enabled;
     setAndroidSmartCaptureEnabled(enabled);
-    window.dispatchEvent(new CustomEvent('kept-smart-capture-changed', { detail: { enabled } }));
+    window.dispatchEvent(new CustomEvent('keeparr-smart-capture-changed', { detail: { enabled } }));
   }
 
   showNotificationPrompt() {
     this.push.restoreNotificationPermissionPrompt();
     this.refreshNotificationPermissionState();
-    window.dispatchEvent(new CustomEvent('kept-notification-permission-reprompt'));
+    window.dispatchEvent(new CustomEvent('keeparr-notification-permission-reprompt'));
     this.success = 'Notification prompt restored.';
   }
 
@@ -291,7 +291,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
     try {
       const feed = await this.reminderService.getIcsFeedToken();
       this.icsFeedToken = feed.token;
-      this.icsFeedUrl = `${window.location.origin}/api/reminders/ics/${feed.token}/kept-reminders.ics`;
+      this.icsFeedUrl = `${window.location.origin}/api/reminders/ics/${feed.token}/keeparr-reminders.ics`;
     } catch (e: any) {
       this.icsFeedError = e?.error?.error || e?.message || 'Could not load feed URL.';
     }
@@ -332,7 +332,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
 
   async disconnectOidc() {
     const provider = this.oidcLinkStatus?.providerName || 'single sign-on';
-    if (!confirm(`Disconnect ${provider}? You will no longer be able to use it to sign in to this Kept account.`)) return;
+    if (!confirm(`Disconnect ${provider}? You will no longer be able to use it to sign in to this Keeparr account.`)) return;
     this.isDisconnectingOidc = true;
     this.error = '';
     try {
@@ -424,7 +424,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
   }
 
   async revokeOAuthConnection(connectionId: number, clientName: string) {
-    if (!confirm(`Revoke ${clientName}'s access to Kept?`)) return;
+    if (!confirm(`Revoke ${clientName}'s access to Keeparr?`)) return;
     this.revokingOAuthConnectionId = connectionId;
     this.error = '';
     try {
@@ -476,9 +476,9 @@ export class SettingsComponent implements OnInit, OnDestroy {
     this.isLoadingPermissions = true;
     this.permissionsError = '';
     try {
-      const plugin = (window as any).Capacitor?.Plugins?.KeptIntelligence;
+      const plugin = (window as any).Capacitor?.Plugins?.KeeparrIntelligence;
       if (!plugin) {
-        this.permissionsError = 'KeptIntelligence plugin not available.';
+        this.permissionsError = 'KeeparrIntelligence plugin not available.';
         return;
       }
       this.permissionsStatus = await plugin.getPermissionsStatus();
@@ -494,21 +494,21 @@ export class SettingsComponent implements OnInit, OnDestroy {
     this.isRequestingPermission = key;
     this.permissionsError = '';
     try {
-      const KeptReminders = (window as any).Capacitor?.Plugins?.KeptReminders;
-      const KeptIntelligence = (window as any).Capacitor?.Plugins?.KeptIntelligence;
+      const KeeparrReminders = (window as any).Capacitor?.Plugins?.KeeparrReminders;
+      const KeeparrIntelligence = (window as any).Capacitor?.Plugins?.KeeparrIntelligence;
 
       switch (key) {
         case 'reminders':
-          await KeptReminders?.requestAccess();
+          await KeeparrReminders?.requestAccess();
           break;
         case 'speechRecognition':
-          await KeptIntelligence?.requestSpeechAccess();
+          await KeeparrIntelligence?.requestSpeechAccess();
           break;
         case 'microphone':
-          await KeptIntelligence?.requestMicrophoneAccess();
+          await KeeparrIntelligence?.requestMicrophoneAccess();
           break;
         case 'location':
-          await KeptReminders?.requestLocationAccess();
+          await KeeparrReminders?.requestLocationAccess();
           break;
       }
     } catch (e: any) {
@@ -523,7 +523,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
   async openAppSettings() {
     if (!this.isIos) return;
     try {
-      const plugin = (window as any).Capacitor?.Plugins?.KeptIntelligence;
+      const plugin = (window as any).Capacitor?.Plugins?.KeeparrIntelligence;
       await plugin?.openAppSettings();
     } catch (e: any) {
       this.permissionsError = e?.message || 'Could not open app settings.';
@@ -634,7 +634,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
     try {
       const feed = await this.reminderService.regenerateIcsFeedToken();
       this.icsFeedToken = feed.token;
-      this.icsFeedUrl = `${window.location.origin}/api/reminders/ics/${feed.token}/kept-reminders.ics`;
+      this.icsFeedUrl = `${window.location.origin}/api/reminders/ics/${feed.token}/keeparr-reminders.ics`;
     } catch (e: any) {
       this.icsFeedError = e?.error?.error || e?.message || 'Could not regenerate feed URL.';
     }
@@ -717,7 +717,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
       if (e?.status === 413) {
         this.takeoutError = e?.error?.error || 'That Takeout ZIP is too large for this server or proxy. Try importing directly over LAN/SSH, or raise your proxy upload limit.';
       } else if (e?.status === 0) {
-        this.takeoutError = 'Import upload could not reach Kept. Large Takeout ZIPs may be blocked by Cloudflare, Nginx, or another proxy before Kept can read them. Try importing directly over LAN/SSH.';
+        this.takeoutError = 'Import upload could not reach Keeparr. Large Takeout ZIPs may be blocked by Cloudflare, Nginx, or another proxy before Keeparr can read them. Try importing directly over LAN/SSH.';
       } else {
         this.takeoutError = e?.error?.error || 'Import failed. If this is a large Takeout ZIP, try importing directly over LAN/SSH or raise your proxy upload limit.';
       }
@@ -789,7 +789,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
     try {
       const notes = await this.notesService.getAll();
       const blob = new Blob([JSON.stringify(notes, null, 2)], { type: 'application/json' });
-      this.downloadFile(blob, 'kept-notes-export.json');
+      this.downloadFile(blob, 'keeparr-notes-export.json');
       this.success = 'JSON export complete.';
     } catch (e: any) {
       this.error = 'Failed to export JSON.';
@@ -815,7 +815,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
       ]);
       const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv' });
-      this.downloadFile(blob, 'kept-notes-export.csv');
+      this.downloadFile(blob, 'keeparr-notes-export.csv');
       this.success = 'CSV export complete.';
     } catch (e: any) {
       this.error = 'Failed to export CSV.';
@@ -866,7 +866,7 @@ export class SettingsComponent implements OnInit, OnDestroy {
       });
 
       const blob = await zip.generateAsync({ type: 'blob' });
-      this.downloadFile(blob, 'kept-markdown-export.zip');
+      this.downloadFile(blob, 'keeparr-markdown-export.zip');
       this.success = 'Markdown ZIP export complete.';
     } catch (e: any) {
       this.error = 'Failed to export Markdown ZIP.';

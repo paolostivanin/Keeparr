@@ -311,7 +311,7 @@ describe('OfflineSyncService guarded note saves', () => {
       Object.assign(service, { auth: { currentUser: { id: 1 } } });
       try {
         await service.syncNow();
-        expect(held).toEqual([`kept-offline-sync:${partition}`]);
+        expect(held).toEqual([`keeparr-offline-sync:${partition}`]);
         Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
         await service.syncNow();
         expect(held.length).toBe(1);

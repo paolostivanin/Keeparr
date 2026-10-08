@@ -36,7 +36,7 @@ type CapacitorAppPlugin = {
     listenerFunc: (event?: { url?: string; isActive?: boolean }) => void
   ) => Promise<PluginListenerHandle>;
 };
-type KeptWidgetIntentsPlugin = {
+type KeeparrWidgetIntentsPlugin = {
   getPendingOpenNoteId: () => Promise<{ noteId: number | null }>;
   acknowledgeOpenNoteId: () => Promise<void>;
   getPendingCreateType: () => Promise<{ type: WidgetCreateType | null }>;
@@ -64,7 +64,7 @@ type CachedGridWindow = {
 }
 
 const CapacitorApp = registerPlugin<CapacitorAppPlugin>('App');
-const KeptWidgetIntents = registerPlugin<KeptWidgetIntentsPlugin>('KeptWidgetIntents');
+const KeeparrWidgetIntents = registerPlugin<KeeparrWidgetIntentsPlugin>('KeeparrWidgetIntents');
 @Component({
     selector: 'app-notes',
     templateUrl: './notes.component.html',
@@ -244,9 +244,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private noteOpenRequest = 0
   private suppressScrollPaginationUntil = 0
   private lastOverviewCheckboxTouchAt = 0
-  private keptAppReadyQueued = false
-  private keptAppReadySent = false
-  private keptAppReadyRetry?: ReturnType<typeof setTimeout>
+  private keeparrAppReadyQueued = false
+  private keeparrAppReadySent = false
+  private keeparrAppReadyRetry?: ReturnType<typeof setTimeout>
   private noteCardResizeObserver?: ResizeObserver
   private observedNoteCards = new Set<HTMLElement>()
   private widgetAppUrlOpenHandle?: PluginListenerHandle
@@ -2614,7 +2614,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       try {
         (window as any).Snackbar?.show({
           pos: 'bottom-left',
-          text: 'Notifications are blocked. Enable them in Settings → Notifications → Kept.',
+          text: 'Notifications are blocked. Enable them in Settings → Notifications → Keeparr.',
           duration: 5000
         })
       } catch {}
@@ -2624,7 +2624,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       try {
         (window as any).Snackbar?.show({
           pos: 'bottom-left',
-          text: 'On iOS, open Kept from the Home Screen icon to enable reminders. (Safari tabs cannot register notifications.)',
+          text: 'On iOS, open Keeparr from the Home Screen icon to enable reminders. (Safari tabs cannot register notifications.)',
           duration: 6000
         })
       } catch {}
@@ -2893,47 +2893,47 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.maybeBackfillFilteredPage()
     this.observeLoadMoreSentinelIfNeeded()
     this.scheduleBuildMasonry()
-    this.queueKeptAppReadySignal()
+    this.queueKeeparrAppReadySignal()
   }
 
-  private queueKeptAppReadySignal() {
-    if (this.keptAppReadySent || this.keptAppReadyQueued) return
+  private queueKeeparrAppReadySignal() {
+    if (this.keeparrAppReadySent || this.keeparrAppReadyQueued) return
     if (!this.notesService.hasLoaded || this.notesService.loading) return
 
-    this.keptAppReadyQueued = true
+    this.keeparrAppReadyQueued = true
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      this.keptAppReadyQueued = false
-      if (this.trySignalKeptAppReady('notes-rendered')) return
+      this.keeparrAppReadyQueued = false
+      if (this.trySignalKeeparrAppReady('notes-rendered')) return
 
-      if (this.keptAppReadyRetry) clearTimeout(this.keptAppReadyRetry)
-      this.keptAppReadyRetry = setTimeout(() => {
-        this.keptAppReadyRetry = undefined
-        this.trySignalKeptAppReady('notes-rendered-retry')
+      if (this.keeparrAppReadyRetry) clearTimeout(this.keeparrAppReadyRetry)
+      this.keeparrAppReadyRetry = setTimeout(() => {
+        this.keeparrAppReadyRetry = undefined
+        this.trySignalKeeparrAppReady('notes-rendered-retry')
       }, 80)
     }))
   }
 
-  private trySignalKeptAppReady(reason: string) {
-    if (this.keptAppReadySent) return true
+  private trySignalKeeparrAppReady(reason: string) {
+    if (this.keeparrAppReadySent) return true
     if (!this.notesService.hasLoaded || this.notesService.loading) return false
 
     const hasRenderableNotesState = !!document.querySelector('.note-container, .no-notes')
     if (!hasRenderableNotesState) return false
 
-    this.keptAppReadySent = true
+    this.keeparrAppReadySent = true
     const payload = {
       ready: true,
       reason: 'angular-ready'
     }
 
     try {
-      ;(window as any).webkit?.messageHandlers?.keptAppReady?.postMessage(payload)
+      ;(window as any).webkit?.messageHandlers?.keeparrAppReady?.postMessage(payload)
     } catch (error) {
-      console.warn('[Kept] keptAppReady native signal failed', error)
+      console.warn('[Keeparr] keeparrAppReady native signal failed', error)
     }
 
     try {
-      window.dispatchEvent(new CustomEvent('kept-app-ready', { detail: payload }))
+      window.dispatchEvent(new CustomEvent('keeparr-app-ready', { detail: payload }))
     } catch {}
 
     return true
@@ -2997,7 +2997,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.zone.runOutsideAngular(() => {
       window.addEventListener('scroll', this.windowScrollHandler, { passive: true })
     })
-    window.addEventListener('kept-smart-capture-notes-added', this.smartCaptureNotesAddedHandler)
+    window.addEventListener('keeparr-smart-capture-notes-added', this.smartCaptureNotesAddedHandler)
     this.registerPullToRefresh()
     this.registerWidgetOpenHandlers()
     this.subscriptions.push(
@@ -3127,7 +3127,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       })
       this.schedulePendingWidgetNoteCheck()
     } catch (error) {
-      console.warn('Kept widget note-open listener unavailable', error)
+      console.warn('Keeparr widget note-open listener unavailable', error)
     }
   }
 
@@ -3149,12 +3149,12 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
         await this.openWidgetComposer(createType)
         return
       }
-      const result = await KeptWidgetIntents.getPendingOpenNoteId()
+      const result = await KeeparrWidgetIntents.getPendingOpenNoteId()
       const noteId = Number(result?.noteId || 0)
       if (!Number.isFinite(noteId) || noteId <= 0) return
       await this.openWidgetNote(noteId, true)
     } catch (error) {
-      console.warn('Could not process pending Kept widget action', error)
+      console.warn('Could not process pending Keeparr widget action', error)
     } finally {
       this.pendingWidgetOpenInFlight = false
     }
@@ -3162,7 +3162,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   private async getPendingWidgetCreateType(): Promise<WidgetCreateType | null> {
     try {
-      const result = await KeptWidgetIntents.getPendingCreateType()
+      const result = await KeeparrWidgetIntents.getPendingCreateType()
       return result?.type === 'plain' || result?.type === 'checklist' || result?.type === 'drawing'
         ? result.type
         : null
@@ -3195,7 +3195,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     ))
     this.Shared.widgetCreateRequested.next(request)
     await opened
-    await KeptWidgetIntents.acknowledgeCreateType()
+    await KeeparrWidgetIntents.acknowledgeCreateType()
   }
 
   private async openWidgetNote(noteId: number, acknowledge: boolean) {
@@ -3211,9 +3211,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     await this.openModal(null, note)
     if (acknowledge) {
       try {
-        await KeptWidgetIntents.acknowledgeOpenNoteId()
+        await KeeparrWidgetIntents.acknowledgeOpenNoteId()
       } catch (error) {
-        console.warn('Could not acknowledge Kept widget note open', error)
+        console.warn('Could not acknowledge Keeparr widget note open', error)
       }
     }
   }
@@ -3224,7 +3224,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   private noteIdFromWidgetUrl(url: string) {
-    const match = String(url || '').match(/^kept:\/\/note\/(\d+)(?:[/?#]|$)/i)
+    const match = String(url || '').match(/^keeparr:\/\/note\/(\d+)(?:[/?#]|$)/i)
     const noteId = Number(match?.[1] || 0)
     return Number.isFinite(noteId) && noteId > 0 ? noteId : null
   }
@@ -3246,7 +3246,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.clearPullRefreshSettleTimer()
     if (this.masonryPackFrame != null) cancelAnimationFrame(this.masonryPackFrame)
     this.containerResizeObserver?.disconnect()
-    window.removeEventListener('kept-smart-capture-notes-added', this.smartCaptureNotesAddedHandler)
+    window.removeEventListener('keeparr-smart-capture-notes-added', this.smartCaptureNotesAddedHandler)
     this.unregisterPullToRefresh()
     this.widgetAppUrlOpenHandle?.remove()
     this.widgetAppStateHandle?.remove()
@@ -3254,7 +3254,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.loadMoreObserver?.disconnect()
     this.noteCardResizeObserver?.disconnect()
     this.observedNoteCards.clear()
-    if (this.keptAppReadyRetry) clearTimeout(this.keptAppReadyRetry)
+    if (this.keeparrAppReadyRetry) clearTimeout(this.keeparrAppReadyRetry)
     if (this.pendingWidgetOpenTimer) clearTimeout(this.pendingWidgetOpenTimer)
     this.clearModalScrollRestoreTimers()
     this.closeReminderPicker()
@@ -3297,7 +3297,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   async downloadInlineImage(event: Event) {
     const target = event.target
     if (!(target instanceof HTMLImageElement) || !this.notesService.canUseNativeDownloads()) return
-    await this.downloadImage(target.getAttribute('src') || target.src, target.getAttribute('alt') || 'kept-image', event)
+    await this.downloadImage(target.getAttribute('src') || target.src, target.getAttribute('alt') || 'keeparr-image', event)
   }
 
   attachmentIcon(attachment: NoteAttachmentI) {

@@ -42,7 +42,7 @@ const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const uploadDir = process.env.UPLOAD_DIR || path.join(dataDir, 'uploads');
 const attachmentDir = process.env.ATTACHMENT_DIR || path.join(dataDir, 'attachments');
 const takeoutTmpDir = process.env.TAKEOUT_TMP_DIR || path.join(dataDir, 'imports', 'tmp');
-const dbPath = process.env.SQLITE_PATH || path.join(dataDir, 'kept.sqlite');
+const dbPath = process.env.SQLITE_PATH || path.join(dataDir, 'keeparr.sqlite');
 const vapidPath = path.join(dataDir, 'vapid.json');
 const staticDir = path.join(__dirname, '..', 'dist', 'keep');
 
@@ -51,14 +51,14 @@ fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(attachmentDir, { recursive: true });
 fs.mkdirSync(takeoutTmpDir, { recursive: true });
 
-const KEPT_VERSION = (() => {
+const KEEPARR_VERSION = (() => {
   try {
     return require(path.join(__dirname, '..', 'package.json')).version || '0.0';
   } catch {
     return '0.0';
   }
 })();
-const GITHUB_RELEASES_URL = 'https://api.github.com/repos/ericerkz/kept/releases/latest';
+const GITHUB_RELEASES_URL = 'https://api.github.com/repos/paolostivanin/Keeparr/releases/latest';
 
 function configureDatabase(database) {
   database.configure('busyTimeout', 5000);
@@ -354,7 +354,7 @@ function createPerfTrace(name, details = {}) {
   let last = start;
   const elapsed = (from = start) => Number(process.hrtime.bigint() - from) / 1e6;
   const detailText = Object.keys(details).length ? ` ${JSON.stringify(details)}` : '';
-  console.log(`[KeptPerf:server] ${name}#${id} start${detailText}`);
+  console.log(`[KeeparrPerf:server] ${name}#${id} start${detailText}`);
   return {
     id,
     mark(label, extra = {}) {
@@ -362,11 +362,11 @@ function createPerfTrace(name, details = {}) {
       const delta = Number(now - last) / 1e6;
       last = now;
       const extraText = Object.keys(extra).length ? ` ${JSON.stringify(extra)}` : '';
-      console.log(`[KeptPerf:server] ${name}#${id} ${label} +${delta.toFixed(1)}ms total=${elapsed().toFixed(1)}ms${extraText}`);
+      console.log(`[KeeparrPerf:server] ${name}#${id} ${label} +${delta.toFixed(1)}ms total=${elapsed().toFixed(1)}ms${extraText}`);
     },
     end(extra = {}) {
       const extraText = Object.keys(extra).length ? ` ${JSON.stringify(extra)}` : '';
-      console.log(`[KeptPerf:server] ${name}#${id} end total=${elapsed().toFixed(1)}ms${extraText}`);
+      console.log(`[KeeparrPerf:server] ${name}#${id} end total=${elapsed().toFixed(1)}ms${extraText}`);
     }
   };
 }
@@ -1051,7 +1051,7 @@ function randomAvatarPreset() {
   return presets[Math.floor(Math.random() * presets.length)];
 }
 
-const SESSION_TTL_DAYS = Number(process.env.KEPT_SESSION_TTL_DAYS || 30);
+const SESSION_TTL_DAYS = Number(process.env.KEEPARR_SESSION_TTL_DAYS || 30);
 async function createSession(user) {
   const token = randomHex(32);
   const now = new Date();
@@ -1158,7 +1158,7 @@ function localImageFilenameFromUrl(value) {
   if (!raw || raw.startsWith('data:')) return '';
   let pathname = raw;
   try {
-    pathname = new URL(raw, 'http://kept.local').pathname;
+    pathname = new URL(raw, 'http://keeparr.local').pathname;
   } catch {}
   const match = pathname.match(/^(?:\/uploads\/|\/api\/uploads\/images\/)([^/?#]+)$/);
   if (!match) return '';
@@ -1771,7 +1771,7 @@ async function findLabelForUser(userId, rawName) {
   return await get('SELECT id, name FROM labels WHERE userId = ? AND lower(name) = lower(?)', [userId, name]);
 }
 
-async function validateKeptActionPlan(userId, transcript, actionPlan) {
+async function validateKeeparrActionPlan(userId, transcript, actionPlan) {
   const normalizedPlan = normalizeActionPlan(actionPlan, transcript);
   const errors = [];
   const warnings = [];
@@ -1806,8 +1806,8 @@ async function validateKeptActionPlan(userId, transcript, actionPlan) {
     if (action.type === 'set_reminder' && !action.dueAtUtc && !isLocationReminderAction(action)) {
       risky = true;
       warnings.push(`${label}.dueAtUtc is missing; ask for a reminder time before executing.`);
-      if (!normalizedPlan.unresolvedQuestions.includes('When should Kept remind you?')) {
-        normalizedPlan.unresolvedQuestions.push('When should Kept remind you?');
+      if (!normalizedPlan.unresolvedQuestions.includes('When should Keeparr remind you?')) {
+        normalizedPlan.unresolvedQuestions.push('When should Keeparr remind you?');
       }
     }
     if (action.type === 'share_note') {
@@ -2491,10 +2491,10 @@ function mcpTokenHash(token) {
 }
 
 async function resolveMcpToken(token) {
-  if (String(token || '').startsWith('kept_oauth_')) {
+  if (String(token || '').startsWith('keeparr_oauth_')) {
     return await resolveOAuthAccessToken(token, { get });
   }
-  if (!String(token || '').startsWith('kept_mcp_')) return null;
+  if (!String(token || '').startsWith('keeparr_mcp_')) return null;
   return await get(
     `SELECT users.*, mcp_tokens.id AS mcpTokenId, mcp_tokens.tokenPrefix
      FROM mcp_tokens
@@ -2572,7 +2572,7 @@ async function requireAuth(req, res, next) {
       if (!oauthTokenCanCallApi(mcpAccess, req)) {
         return res.status(403).json({ error: 'This OAuth token was issued for a different protected resource.' });
       }
-      const requiredScope = ['GET', 'HEAD'].includes(req.method) ? 'kept.read' : 'kept.write';
+      const requiredScope = ['GET', 'HEAD'].includes(req.method) ? 'keeparr.read' : 'keeparr.write';
       if (!hasOAuthScope(mcpAccess, requiredScope)) {
         res.set('WWW-Authenticate', `Bearer error="insufficient_scope", scope="${requiredScope}"`);
         return res.status(403).json({ error: `This OAuth token does not have the ${requiredScope} scope.` });
@@ -2596,7 +2596,7 @@ async function requireAuth(req, res, next) {
     }
     if (req.path === '/api/notes' || req.path === '/api/admin/update-status') {
       const authMs = Number(process.hrtime.bigint() - perfAuthStart) / 1e6;
-      console.log(`[KeptPerf:server] auth ${req.method} ${req.path} ${authMs.toFixed(1)}ms`);
+      console.log(`[KeeparrPerf:server] auth ${req.method} ${req.path} ${authMs.toFixed(1)}ms`);
     }
     next();
   } catch (error) {
@@ -2614,7 +2614,7 @@ async function requireAuthOrQueryToken(req, res, next) {
     const tokenFromQuery = !token && !!req.query.token;
     if (tokenFromQuery) token = String(req.query.token);
     if (!token) return sendAuthenticationRequired(req, res);
-    if (tokenFromQuery && token.startsWith('kept_oauth_')) return sendAuthenticationRequired(req, res);
+    if (tokenFromQuery && token.startsWith('keeparr_oauth_')) return sendAuthenticationRequired(req, res);
     let session = await resolveSessionFromToken(token);
     let mcpAccess = null;
     if (!session) mcpAccess = await resolveMcpToken(token);
@@ -2626,7 +2626,7 @@ async function requireAuthOrQueryToken(req, res, next) {
       if (!oauthTokenCanCallApi(mcpAccess, req)) {
         return res.status(403).json({ error: 'This OAuth token was issued for a different protected resource.' });
       }
-      const requiredScope = ['GET', 'HEAD'].includes(req.method) ? 'kept.read' : 'kept.write';
+      const requiredScope = ['GET', 'HEAD'].includes(req.method) ? 'keeparr.read' : 'keeparr.write';
       if (!hasOAuthScope(mcpAccess, requiredScope)) {
         res.set('WWW-Authenticate', `Bearer error="insufficient_scope", scope="${requiredScope}"`);
         return res.status(403).json({ error: `This OAuth token does not have the ${requiredScope} scope.` });
@@ -3025,16 +3025,16 @@ function buildVCalendar(reminder) {
   const esc = s => String(s || '').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\n/g,'\\n');
   const dtend = toIcalDate(new Date(new Date(reminder.dueAtUtc).getTime() + 30 * 60000).toISOString());
   const body = (reminder.body || '').trim();
-  const attribution = '— Created by Kept ✨';
+  const attribution = '— Created by Keeparr ✨';
   const description = body ? `${body}\n\n\n${attribution}` : attribution;
   return [
-    'BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Kept//Kept//EN',
+    'BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Keeparr//Keeparr//EN',
     'BEGIN:VEVENT',
-    `UID:kept-reminder-${reminder.id}@kept`,
+    `UID:keeparr-reminder-${reminder.id}@keeparr`,
     `DTSTAMP:${toIcalDate(new Date().toISOString())}`,
     `DTSTART:${toIcalDate(reminder.dueAtUtc)}`,
     `DTEND:${dtend}`,
-    `SUMMARY:${esc(reminder.title || 'Kept Reminder')}`,
+    `SUMMARY:${esc(reminder.title || 'Keeparr Reminder')}`,
     `DESCRIPTION:${esc(description)}`,
     'END:VEVENT','END:VCALENDAR'
   ].join('\r\n');
@@ -3045,7 +3045,7 @@ function caldavRequest(settings, reminderId, method, body) {
   const http = require('http');
   let base = settings.calendarUrl;
   if (!base.endsWith('/')) base += '/';
-  const url = new URL(`${base}kept-reminder-${reminderId}.ics`);
+  const url = new URL(`${base}keeparr-reminder-${reminderId}.ics`);
   const proto = url.protocol === 'https:' ? https : http;
   const auth = Buffer.from(`${settings.username}:${settings.password}`).toString('base64');
   const bodyBuf = body ? Buffer.from(body, 'utf8') : null;
@@ -3088,7 +3088,7 @@ function buildReminderPushPayload(reminder) {
     body: plainText(reminder.body),
     imageUrl: reminder.imageUrl || null,
     icon: '/assets/images/keep2x.png',
-    deepLink: reminder.deepLink || (reminder.noteId ? `kept://note/${reminder.noteId}` : null),
+    deepLink: reminder.deepLink || (reminder.noteId ? `keeparr://note/${reminder.noteId}` : null),
     url: '/'
   });
 }
@@ -3148,13 +3148,13 @@ function testCaldavConnection(settings) {
 
 // ─── ICS feed helpers ─────────────────────────────────────────────────────
 
-function buildIcsFeed(reminders, calName = 'Kept Reminders') {
+function buildIcsFeed(reminders, calName = 'Keeparr Reminders') {
   const esc = s => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
-  const attribution = '— Created by Kept ✨';
+  const attribution = '— Created by Keeparr ✨';
   const lines = [
-    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Kept//Kept//EN',
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Keeparr//Keeparr//EN',
     `X-WR-CALNAME:${esc(calName)}`,
-    'X-WR-CALDESC:Reminders from Kept',
+    'X-WR-CALDESC:Reminders from Keeparr',
     'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'
   ];
   for (const r of reminders) {
@@ -3162,11 +3162,11 @@ function buildIcsFeed(reminders, calName = 'Kept Reminders') {
     const body = (r.body || '').trim();
     const description = body ? `${body}\n\n\n${attribution}` : attribution;
     lines.push('BEGIN:VEVENT',
-      `UID:kept-reminder-${r.id}@kept`,
+      `UID:keeparr-reminder-${r.id}@keeparr`,
       `DTSTAMP:${toIcalDate(new Date().toISOString())}`,
       `DTSTART:${toIcalDate(r.dueAtUtc)}`,
       `DTEND:${dtend}`,
-      `SUMMARY:${esc(r.title || 'Kept Reminder')}`,
+      `SUMMARY:${esc(r.title || 'Keeparr Reminder')}`,
       `DESCRIPTION:${esc(description)}`,
       r.status !== 'pending' ? 'STATUS:COMPLETED' : 'STATUS:CONFIRMED',
       'END:VEVENT');
@@ -3299,10 +3299,10 @@ async function getValidGoogleToken(userId) {
 function buildGCalEvent(reminder) {
   const end = new Date(new Date(reminder.dueAtUtc).getTime() + 30 * 60000).toISOString();
   const body = reminder.body || '';
-  const attribution = '— Created by Kept ✨';
+  const attribution = '— Created by Keeparr ✨';
   const description = body ? `${body}\n\n${attribution}` : attribution;
   return {
-    summary: reminder.title || 'Kept Reminder',
+    summary: reminder.title || 'Keeparr Reminder',
     description,
     start: { dateTime: reminder.dueAtUtc, timeZone: reminder.timezone || 'UTC' },
     end: { dateTime: end, timeZone: reminder.timezone || 'UTC' },
@@ -3402,23 +3402,23 @@ function startReminderScheduler() {
 // By default the SPA is served same-origin so no CORS headers are needed.
 // Two opt-in modes for cross-origin deployments:
 //
-//   KEPT_CORS_ALLOW_ALL=1
+//   KEEPARR_CORS_ALLOW_ALL=1
 //     Send `Access-Control-Allow-Origin: *` to every request, no credential
 //     mode. Fine for personal/family self-hosted instances where you don't
 //     want to fight allowlist syntax. Authenticated calls still need a valid
-//     Bearer token (Kept doesn't use cookies), so an attacker site can't
+//     Bearer token (Keeparr doesn't use cookies), so an attacker site can't
 //     read user data — but it does expose the unauth endpoints (login,
 //     register, setup status) to direct browser fetch from anywhere. See
 //     docker-compose.yml for the full security tradeoff.
 //
-//   KEPT_CORS_ORIGINS=https://app.example.com,https://kept.example.com
-//     Comma-separated allowlist. Kept also allows exact native-shell origins
+//   KEEPARR_CORS_ORIGINS=https://app.example.com,https://keeparr.example.com
+//     Comma-separated allowlist. Keeparr also allows exact native-shell origins
 //     so the iOS/Android apps can connect while browser access stays pinned
-//     to your configured domains. Required if you ever switch Kept to
+//     to your configured domains. Required if you ever switch Keeparr to
 //     cookie-based sessions.
 //
 // If both are set, the explicit allowlist wins.
-const corsAllowlist = String(process.env.KEPT_CORS_ORIGINS || '')
+const corsAllowlist = String(process.env.KEEPARR_CORS_ORIGINS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 const nativeShellOrigins = new Set([
   'capacitor://localhost',
@@ -3435,7 +3435,7 @@ if (corsAllowlist.length) {
     },
     credentials: true
   }));
-} else if (process.env.KEPT_CORS_ALLOW_ALL === '1') {
+} else if (process.env.KEEPARR_CORS_ALLOW_ALL === '1') {
   app.use(cors({ origin: '*' }));
 }
 app.use('/api', (_req, res, next) => {
@@ -3480,11 +3480,11 @@ app.post('/api/setup/admin', setupLimiter, asyncRoute(async (req, res) => {
 
 app.post('/api/setup/restore', setupLimiter, multer({ dest: path.join(dataDir, 'backups') }).single('backup'), asyncRoute(async (req, res) => {
   // Guard: even if all users are deleted, restore must be explicitly enabled
-  // by the operator via KEPT_ALLOW_RESTORE=1. Otherwise an attacker who can
+  // by the operator via KEEPARR_ALLOW_RESTORE=1. Otherwise an attacker who can
   // wipe the DB could swap in an arbitrary SQLite to take over.
-  if (process.env.KEPT_ALLOW_RESTORE !== '1') {
+  if (process.env.KEEPARR_ALLOW_RESTORE !== '1') {
     if (req.file) try { fs.unlinkSync(req.file.path); } catch {}
-    return res.status(403).json({ error: 'Restore is disabled. Set KEPT_ALLOW_RESTORE=1 on the server to enable.' });
+    return res.status(403).json({ error: 'Restore is disabled. Set KEEPARR_ALLOW_RESTORE=1 on the server to enable.' });
   }
   const row = await get('SELECT COUNT(*) AS count FROM users');
   if (row.count > 0) {
@@ -3591,7 +3591,7 @@ app.get('/api/setup/2fa/generate', asyncRoute(async (req, res) => {
   const safeUsername = /^[A-Za-z0-9._-]{1,64}$/.test(requestedUsername) ? requestedUsername : 'admin';
 
   const secret = generateTotpSecret();
-  const otpauthUrl = buildTotpKeyUri(safeUsername, 'Kept', secret);
+  const otpauthUrl = buildTotpKeyUri(safeUsername, 'Keeparr', secret);
   const qrCodeUrl = await qrcode.toDataURL(otpauthUrl);
 
   res.json({ secret, qrCodeUrl });
@@ -3599,7 +3599,7 @@ app.get('/api/setup/2fa/generate', asyncRoute(async (req, res) => {
 
 app.get('/api/auth/2fa/generate', requireAuth, asyncRoute(async (req, res) => {
   const secret = generateTotpSecret();
-  const otpauthUrl = buildTotpKeyUri(req.user.username, 'Kept', secret);
+  const otpauthUrl = buildTotpKeyUri(req.user.username, 'Keeparr', secret);
   const qrCodeUrl = await qrcode.toDataURL(otpauthUrl);
 
   res.json({ secret, qrCodeUrl });
@@ -3708,7 +3708,7 @@ app.get('/api/users/me/mcp-access', requireAuth, asyncRoute(async (req, res) => 
 }));
 
 app.post('/api/users/me/mcp-access/enable', requireAuth, asyncRoute(async (req, res) => {
-  const rawToken = `kept_mcp_${randomHex(32)}`;
+  const rawToken = `keeparr_mcp_${randomHex(32)}`;
   const now = new Date().toISOString();
   await run('BEGIN IMMEDIATE');
   try {
@@ -4075,14 +4075,14 @@ app.get('/api/admin/update-status', requireAuth, requireAdmin, asyncRoute(async 
     trace.mark('dismissal-query-skipped');
   }
 
-  const isOutdated = latest?.version ? compareVersion(latest.version, KEPT_VERSION) > 0 : false;
+  const isOutdated = latest?.version ? compareVersion(latest.version, KEEPARR_VERSION) > 0 : false;
   const now = new Date();
   const suppressed =
     dismissedForever ||
     (dismissedUntil && new Date(dismissedUntil) > now);
 
   sendJsonWithPerf(res, trace, {
-    current: KEPT_VERSION,
+    current: KEEPARR_VERSION,
     latest: latest?.version || null,
     releaseUrl: latest?.url || null,
     releaseNotes: latest?.notes || null,
@@ -4268,7 +4268,7 @@ app.get('/api/mcp/status', requireAuth, (req, res) => {
 
 app.post('/api/mcp/locked-notes/:noteId/unlock', requireAuth, asyncRoute(async (req, res) => {
   if (!req.mcpCapabilities?.allowLockedNotes) {
-    return res.status(403).json({ error: 'Locked-note access is disabled in Kept settings.' });
+    return res.status(403).json({ error: 'Locked-note access is disabled in Keeparr settings.' });
   }
   const noteId = Number(req.params.noteId);
   const note = await getAccessibleNote(noteId, req.user.id);
@@ -4308,7 +4308,7 @@ app.get('/api/mcp/unlock/:challenge', asyncRoute(async (req, res) => {
   if (!challenge) return res.status(404).send('This unlock request is invalid or has expired.');
   if (challenge.approved) return res.send('This note is already unlocked for external access. You can close this page.');
   const safeTitle = escapeHtml(plainText(challenge.noteTitle || '') || 'Locked note');
-  res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unlock Kept note</title><style>body{background:#202124;color:#e8eaed;font:16px system-ui;margin:0;padding:32px}main{max-width:420px;margin:10vh auto}input,button{box-sizing:border-box;font:inherit;width:100%;padding:12px;margin-top:12px}button{background:#fbbc04;border:0;color:#202124;font-weight:700;cursor:pointer}.hint{color:#9aa0a6;font-size:13px}</style></head><body><main><h1>Unlock ${safeTitle}</h1><p>Enter this note's Kept passcode. It is sent directly to your Kept server and is not shared with the connected client or model.</p><form method="post"><input type="password" name="passcode" autocomplete="current-password" required autofocus><button type="submit">Unlock for 5 minutes</button></form><p class="hint">This only unlocks this note for the requesting connection.</p></main></body></html>`);
+  res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unlock Keeparr note</title><style>body{background:#202124;color:#e8eaed;font:16px system-ui;margin:0;padding:32px}main{max-width:420px;margin:10vh auto}input,button{box-sizing:border-box;font:inherit;width:100%;padding:12px;margin-top:12px}button{background:#fbbc04;border:0;color:#202124;font-weight:700;cursor:pointer}.hint{color:#9aa0a6;font-size:13px}</style></head><body><main><h1>Unlock ${safeTitle}</h1><p>Enter this note's Keeparr passcode. It is sent directly to your Keeparr server and is not shared with the connected client or model.</p><form method="post"><input type="password" name="passcode" autocomplete="current-password" required autofocus><button type="submit">Unlock for 5 minutes</button></form><p class="hint">This only unlocks this note for the requesting connection.</p></main></body></html>`);
 }));
 
 app.post('/api/mcp/unlock/:challenge', express.urlencoded({ extended: false, limit: '8kb' }), asyncRoute(async (req, res) => {
@@ -5542,11 +5542,11 @@ async function applyReminderOccurrenceAction(userId, payload) {
   return { ok: true, resourceType: 'reminder-occurrence', syncId: row.occurrenceId };
 }
 
-mountClientCapabilities(app, requireAuth, KEPT_VERSION);
+mountClientCapabilities(app, requireAuth, KEEPARR_VERSION);
 app.get('/api/native/reminders/occurrences', requireAuth, asyncRoute(async (req, res) => {
   res.json(await nativeOccurrencesForUser(req.user.id));
 }));
-if (process.env.KEPT_TEST_MODE === '1') {
+if (process.env.KEEPARR_TEST_MODE === '1') {
   app.post('/api/test/failpoint', requireAuth, asyncRoute(async (req, res) => {
     try { armTestFault(String(req.body?.name || ''), String(req.body?.mode || 'throw'), req.body?.pauseMs); }
     catch (error) { return res.status(400).json({ error: error.message }); }
@@ -5566,7 +5566,7 @@ mountSyncMutationRoute(app, {
   executeSyncMutation,
   syncSnapshotForUser,
   syncCursorForUser,
-  testMode: process.env.KEPT_TEST_MODE === '1'
+  testMode: process.env.KEEPARR_TEST_MODE === '1'
 });
 
 
@@ -5943,7 +5943,7 @@ app.get('/api/ai/context', requireAuth, asyncRoute(async (req, res) => {
 app.post('/api/ai/action-plan/validate', requireAuth, asyncRoute(async (req, res) => {
   const transcript = String(req.body.transcript || '');
   const actionPlan = req.body.actionPlan;
-  const validation = await validateKeptActionPlan(req.user.id, transcript, actionPlan);
+  const validation = await validateKeeparrActionPlan(req.user.id, transcript, actionPlan);
   await insertAiActionHistory(
     req.user.id,
     transcript,
@@ -5958,7 +5958,7 @@ app.post('/api/ai/action-plan/execute', requireAuth, asyncRoute(async (req, res)
   const transcript = String(req.body.transcript || '');
   const actionPlan = req.body.actionPlan;
   const executeOptions = req.body.executeOptions || req.body.options || {};
-  const validation = await validateKeptActionPlan(req.user.id, transcript, actionPlan);
+  const validation = await validateKeeparrActionPlan(req.user.id, transcript, actionPlan);
   if (!validation.valid) {
     await insertAiActionHistory(req.user.id, transcript, actionPlan, validation.normalizedPlan, 'failed');
     return res.status(400).json({ ok: false, errors: validation.errors, validation });
@@ -6642,7 +6642,7 @@ app.delete('/api/notes/:id', requireAuth, asyncRoute(async (req, res) => {
   const isOwner = note.ownerUserId === req.user.id;
   if (isOwner) {
     if (req.mcpToken && !req.mcpCapabilities?.allowPermanentDelete) {
-      return res.status(403).json({ error: 'Permanent deletion through MCP is disabled in Kept settings.' });
+      return res.status(403).json({ error: 'Permanent deletion through MCP is disabled in Keeparr settings.' });
     }
     if (req.mcpToken && note.locked && !await mcpNoteIsUnlocked(req, note.id)) {
       return res.status(423).json({ error: 'Unlock this note before permanently deleting it through MCP.' });
@@ -6860,7 +6860,7 @@ app.post('/api/reminders/ics-token', requireAuth, asyncRoute(async (req, res) =>
 // variant exists because Thunderbird (and a few other clients) names a
 // subscribed calendar after the last URL path segment — putting the token
 // at the end means users see the token as the default calendar name.
-// Putting kept-reminders.ics at the end gives them a friendly default.
+// Putting keeparr-reminders.ics at the end gives them a friendly default.
 const handleIcsFeed = asyncRoute(async (req, res) => {
   const user = await get('SELECT id FROM users WHERE icsFeedToken = ?', [req.params.token]);
   if (!user) return res.status(404).type('text').send('Feed not found.');
@@ -6874,15 +6874,15 @@ const handleIcsFeed = asyncRoute(async (req, res) => {
   const enrichedReminders = await enrichReminderResponses(reminders);
   res.set({
     'Content-Type': 'text/calendar; charset=utf-8',
-    'Content-Disposition': 'attachment; filename="kept-reminders.ics"',
+    'Content-Disposition': 'attachment; filename="keeparr-reminders.ics"',
     'Cache-Control': 'no-cache, no-store'
   });
   res.send(buildIcsFeed(enrichedReminders));
 });
 
-// Friendly route: token in the middle, kept-reminders.ics at the end so
+// Friendly route: token in the middle, keeparr-reminders.ics at the end so
 // calendar clients pick up a sensible default name from the URL path.
-app.get('/api/reminders/ics/:token/kept-reminders.ics', handleIcsFeed);
+app.get('/api/reminders/ics/:token/keeparr-reminders.ics', handleIcsFeed);
 // Legacy route kept so existing subscriptions don't break.
 app.get('/api/reminders/ics/:token', handleIcsFeed);
 
@@ -7409,7 +7409,7 @@ function fetchLatestRelease() {
   return new Promise((resolve, reject) => {
     const req = https.get(GITHUB_RELEASES_URL, {
       headers: {
-        'User-Agent': `Kept/${KEPT_VERSION}`,
+        'User-Agent': `Keeparr/${KEEPARR_VERSION}`,
         Accept: 'application/vnd.github+json'
       },
       timeout: 8000
@@ -7422,7 +7422,7 @@ function fetchLatestRelease() {
           const body = JSON.parse(data);
           resolve({
             version: String(body.tag_name || body.name || '').replace(/^v/i, ''),
-            url: body.html_url || `https://github.com/ericerkz/kept/releases`,
+            url: body.html_url || `https://github.com/paolostivanin/Keeparr/releases`,
             notes: String(body.body || '').slice(0, 5000),
             publishedAt: body.published_at || null
           });
@@ -7637,7 +7637,7 @@ function bestPreviewImage(candidates, baseUrl) {
 }
 
 function previewScreenshotUrl(baseUrl) {
-  if (process.env.KEPT_LINK_PREVIEW_SCREENSHOTS === '0') return null;
+  if (process.env.KEEPARR_LINK_PREVIEW_SCREENSHOTS === '0') return null;
   try {
     const target = new URL(baseUrl);
     if (!['http:', 'https:'].includes(target.protocol)) return null;
@@ -7714,7 +7714,7 @@ function parseOgMeta(html, baseUrl) {
 
   // Screenshot fallback handles sites that block server-side HTML fetches or
   // do not publish useful OpenGraph imagery. Set
-  // KEPT_LINK_PREVIEW_SCREENSHOTS=0 to avoid using the third-party service.
+  // KEEPARR_LINK_PREVIEW_SCREENSHOTS=0 to avoid using the third-party service.
   if (!bestImage) {
     bestImage = previewScreenshotUrl(baseUrl);
   }
@@ -7867,7 +7867,7 @@ function formatBytes(bytes) {
 }
 
 const TAKEOUT_UPLOAD_MAX_BYTES = parseByteSize(
-  process.env.KEPT_TAKEOUT_UPLOAD_MAX || process.env.KEPT_TAKEOUT_UPLOAD_MAX_BYTES,
+  process.env.KEEPARR_TAKEOUT_UPLOAD_MAX || process.env.KEEPARR_TAKEOUT_UPLOAD_MAX_BYTES,
   5 * 1024 * 1024 * 1024
 );
 
@@ -7894,7 +7894,7 @@ function googleTakeoutUpload(req, res, next) {
     if (req.file?.path) fs.promises.unlink(req.file.path).catch(() => {});
     if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({
-        error: `Google Takeout ZIP is too large for this Kept server. The current Takeout upload limit is ${formatBytes(TAKEOUT_UPLOAD_MAX_BYTES)}. If this failed below that size, your proxy/CDN may be rejecting the upload before Kept receives it. Try importing over a direct LAN/SSH connection or raise your proxy upload limit.`
+        error: `Google Takeout ZIP is too large for this Keeparr server. The current Takeout upload limit is ${formatBytes(TAKEOUT_UPLOAD_MAX_BYTES)}. If this failed below that size, your proxy/CDN may be rejecting the upload before Keeparr receives it. Try importing over a direct LAN/SSH connection or raise your proxy upload limit.`
       });
     }
     if (error.message === 'Only ZIP files are supported.') {
@@ -8100,7 +8100,7 @@ app.post('/api/import/google-takeout', requireAuth, googleTakeoutUpload, asyncRo
 
     const jsonEntries = entries.filter(isKeepJsonEntry);
     if (!jsonEntries.length) {
-      return res.status(400).json({ error: 'No Google Keep notes found in this ZIP. Upload the full Takeout ZIP that contains Takeout/Keep/*.json files. If your ZIP is large and this appears incorrectly, try importing over a direct LAN/SSH connection because some proxies/CDNs reject large uploads before Kept can inspect them.' });
+      return res.status(400).json({ error: 'No Google Keep notes found in this ZIP. Upload the full Takeout ZIP that contains Takeout/Keep/*.json files. If your ZIP is large and this appears incorrectly, try importing over a direct LAN/SSH connection because some proxies/CDNs reject large uploads before Keeparr can inspect them.' });
     }
 
     let imported = 0, skipped = 0, errors = 0, pinnedCount = 0, deduped = 0;
@@ -8274,7 +8274,7 @@ app.use((error, _req, res, _next) => {
 
 init().then(() => {
   setupRealtime();
-  if (process.env.KEPT_TEST_MODE !== '1') startReminderScheduler();
+  if (process.env.KEEPARR_TEST_MODE !== '1') startReminderScheduler();
   startBackupScheduler();
   cleanupStaleTakeoutUploads();
   server.listen(port, () => {

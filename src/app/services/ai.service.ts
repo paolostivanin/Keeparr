@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { environment } from 'src/environments/environment';
-import { KeptAIContext, KeptActionPlan, KeptPlanExecution, KeptPlanValidation, NoteSummary } from '../interfaces/ai';
+import { KeeparrAIContext, KeeparrActionPlan, KeeparrPlanExecution, KeeparrPlanValidation, NoteSummary } from '../interfaces/ai';
 import { AuthService } from './auth.service';
 import { ShareUserI } from '../interfaces/users';
 import { LabelI } from '../interfaces/labels';
@@ -17,14 +17,14 @@ export class AiService {
     const params: Record<string, string> = {};
     if (query) params['query'] = query;
     if (currentOpenNoteId) params['currentOpenNoteId'] = String(currentOpenNoteId);
-    return await firstValueFrom(this.http.get<KeptAIContext>(`${this.apiUrl}/ai/context`, {
+    return await firstValueFrom(this.http.get<KeeparrAIContext>(`${this.apiUrl}/ai/context`, {
       headers: this.auth.authHeaders(),
       params
     }));
   }
 
-  async validatePlan(transcript: string, actionPlan: KeptActionPlan) {
-    return await firstValueFrom(this.http.post<KeptPlanValidation>(
+  async validatePlan(transcript: string, actionPlan: KeeparrActionPlan) {
+    return await firstValueFrom(this.http.post<KeeparrPlanValidation>(
       `${this.apiUrl}/ai/action-plan/validate`,
       { transcript, actionPlan },
       { headers: this.auth.authHeaders() }
@@ -33,10 +33,10 @@ export class AiService {
 
   async executePlan(
     transcript: string,
-    actionPlan: KeptActionPlan,
+    actionPlan: KeeparrActionPlan,
     executeOptions: { allowPartial?: boolean; confirmed?: boolean; selectedActionIndexes?: number[] } = {}
   ) {
-    return await firstValueFrom(this.http.post<KeptPlanExecution>(
+    return await firstValueFrom(this.http.post<KeeparrPlanExecution>(
       `${this.apiUrl}/ai/action-plan/execute`,
       { transcript, actionPlan, executeOptions },
       { headers: this.auth.authHeaders() }

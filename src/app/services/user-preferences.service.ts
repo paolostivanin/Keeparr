@@ -29,7 +29,7 @@ export function changedPreferences(previous: UserPreferences, next: UserPreferen
 
 @Injectable({ providedIn: 'root' })
 export class UserPreferencesService {
-  private readonly storageKey = 'kept_user_preferences';
+  private readonly storageKey = 'keeparr_user_preferences';
   readonly preferences$ = new BehaviorSubject<UserPreferences>(this.load());
   private loadedServerPreferenceToken = '';
 

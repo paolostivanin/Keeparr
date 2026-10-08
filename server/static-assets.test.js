@@ -8,10 +8,10 @@ const compression = require('compression');
 const { mountStaticAssets } = require('./static-assets');
 
 async function withApp(run) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kept-static-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'keeparr-static-'));
   fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><script src="main-ABCDEF12.js"></script>');
   fs.writeFileSync(path.join(dir, 'main-ABCDEF12.js'), 'console.log("x");'.repeat(200));
-  fs.writeFileSync(path.join(dir, 'kept-push-sw.js'), 'self.skipWaiting();');
+  fs.writeFileSync(path.join(dir, 'keeparr-push-sw.js'), 'self.skipWaiting();');
   fs.writeFileSync(path.join(dir, 'manifest.webmanifest'), '{}');
   const app = express();
   app.use(compression());
@@ -26,7 +26,7 @@ test('hashed assets are immutable and entry points always revalidate', () => wit
   assert.equal(asset.status, 200);
   assert.equal(asset.headers.get('cache-control'), 'public, max-age=31536000, immutable');
   assert.equal(asset.headers.get('content-encoding'), 'gzip', 'responses are compressed for clients that accept gzip');
-  for (const entry of ['/', '/kept-push-sw.js', '/manifest.webmanifest', '/settings']) {
+  for (const entry of ['/', '/keeparr-push-sw.js', '/manifest.webmanifest', '/settings']) {
     const response = await fetch(origin + entry);
     assert.equal(response.status, 200, entry);
     assert.equal(response.headers.get('cache-control'), 'no-cache', entry);
@@ -43,5 +43,5 @@ test('client routes fall back to the shell but missing assets and API paths are 
 }));
 
 test('a missing build directory leaves the app unmounted', () => {
-  assert.equal(mountStaticAssets(express(), path.join(os.tmpdir(), 'kept-no-such-dir')), false);
+  assert.equal(mountStaticAssets(express(), path.join(os.tmpdir(), 'keeparr-no-such-dir')), false);
 });

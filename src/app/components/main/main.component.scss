@@ -112,14 +112,14 @@
   }
 }
 
-:host-context(body.kept-reminder-active) .main-section.native-phone-layout {
+:host-context(body.keeparr-reminder-active) .main-section.native-phone-layout {
   .mobile-compose-fab,
   .smart-capture-fab {
-    transform: translateY(calc((var(--kept-reminder-banner-height, 0px) + 16px) * -1));
+    transform: translateY(calc((var(--keeparr-reminder-banner-height, 0px) + 16px) * -1));
   }
 
   .mobile-compose-fab:active {
-    transform: translateY(calc((var(--kept-reminder-banner-height, 0px) + 16px) * -1)) scale(0.95);
+    transform: translateY(calc((var(--keeparr-reminder-banner-height, 0px) + 16px) * -1)) scale(0.95);
   }
 }
 
@@ -328,14 +328,14 @@
     }
   }
 
-  :host-context(body.kept-reminder-active) {
+  :host-context(body.keeparr-reminder-active) {
     .mobile-compose-fab,
     .smart-capture-fab {
-      transform: translateY(calc((var(--kept-reminder-banner-height, 0px) + 16px) * -1));
+      transform: translateY(calc((var(--keeparr-reminder-banner-height, 0px) + 16px) * -1));
     }
 
     .mobile-compose-fab:active {
-      transform: translateY(calc((var(--kept-reminder-banner-height, 0px) + 16px) * -1)) scale(0.95);
+      transform: translateY(calc((var(--keeparr-reminder-banner-height, 0px) + 16px) * -1)) scale(0.95);
     }
   }
 

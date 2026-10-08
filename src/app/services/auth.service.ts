@@ -109,7 +109,7 @@ export class AuthService {
 
   canonicalImageUrl(value: string) {
     const raw = String(value || '').trim();
-    const offlineMap = (window as typeof window & { __keptOfflineMediaCanonical?: Map<string, string> }).__keptOfflineMediaCanonical;
+    const offlineMap = (window as typeof window & { __keeparrOfflineMediaCanonical?: Map<string, string> }).__keeparrOfflineMediaCanonical;
     const offlineCanonical = offlineMap?.get(raw);
     if (offlineCanonical) return offlineCanonical;
     if (!raw || raw.startsWith('data:')) return raw;
@@ -128,7 +128,7 @@ export class AuthService {
 
   authenticatedImageUrl(value: string) {
     const raw = String(value || '').trim();
-    const offlineMap = (window as typeof window & { __keptOfflineMediaCanonical?: Map<string, string> }).__keptOfflineMediaCanonical;
+    const offlineMap = (window as typeof window & { __keeparrOfflineMediaCanonical?: Map<string, string> }).__keeparrOfflineMediaCanonical;
     if (offlineMap?.has(raw)) return raw;
     const canonical = this.canonicalImageUrl(value);
     if (!canonical.startsWith('/api/uploads/images/')) return canonical;
@@ -300,7 +300,7 @@ export class AuthService {
   }
 
   private nativeOidcReturnUrl() {
-    return Capacitor.isNativePlatform() ? 'kept://auth/oidc' : '';
+    return Capacitor.isNativePlatform() ? 'keeparr://auth/oidc' : '';
   }
 
   async updateTheme(theme: UserTheme) {

@@ -1,6 +1,6 @@
 services:
-  kept:
+  keeparr:
     build:
       context: .
       dockerfile: Dockerfile
-    image: kept-local:dev
+    image: keeparr-local:dev

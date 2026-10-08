@@ -182,7 +182,7 @@ describe('NotesComponent responsiveness', () => {
   it('recomputes the render context only after a page/search/scope/view event', () => {
     let reads = 0;
     Object.defineProperty(shared, 'searchQuery', { get: () => { reads++; return ''; } });
-    for (const name of ['maybeBackfillFilteredPage', 'observeLoadMoreSentinelIfNeeded', 'queueKeptAppReadySignal']) spyOn<any>(component, name);
+    for (const name of ['maybeBackfillFilteredPage', 'observeLoadMoreSentinelIfNeeded', 'queueKeeparrAppReadySignal']) spyOn<any>(component, name);
     spyOn(component, 'scheduleBuildMasonry');
 
     component.ngAfterViewChecked();

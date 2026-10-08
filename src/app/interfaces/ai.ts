@@ -1,7 +1,7 @@
 import { LabelI } from './labels';
 import { ShareUserI, UserI } from './users';
 
-export type KeptActionConfidence = 'low' | 'medium' | 'high';
+export type KeeparrActionConfidence = 'low' | 'medium' | 'high';
 
 export interface NoteSummary {
   id: number;
@@ -78,7 +78,7 @@ export interface TrashNoteAction extends BaseAction {
   noteId: number;
 }
 
-export type KeptAction =
+export type KeeparrAction =
   | CreateTextNoteAction
   | CreateTodoNoteAction
   | AppendToNoteAction
@@ -90,15 +90,15 @@ export type KeptAction =
   | TrashNoteAction
   | BaseAction;
 
-export interface KeptActionPlan {
+export interface KeeparrActionPlan {
   summary: string;
-  confidence: KeptActionConfidence;
+  confidence: KeeparrActionConfidence;
   requiresConfirmation: boolean;
-  actions: KeptAction[];
+  actions: KeeparrAction[];
   unresolvedQuestions?: string[];
 }
 
-export interface KeptAIContext {
+export interface KeeparrAIContext {
   currentUser: UserI;
   labels: LabelI[];
   users: ShareUserI[];
@@ -107,16 +107,16 @@ export interface KeptAIContext {
   currentOpenNote?: NoteSummary | null;
 }
 
-export interface KeptPlanValidation {
+export interface KeeparrPlanValidation {
   valid: boolean;
   ok: boolean;
   errors: string[];
   warnings?: string[];
-  normalizedPlan: KeptActionPlan;
+  normalizedPlan: KeeparrActionPlan;
   requiresConfirmation: boolean;
 }
 
-export interface KeptPlanExecution {
+export interface KeeparrPlanExecution {
   ok: boolean;
   executed: any[];
   failed: any[];

@@ -5,7 +5,7 @@ import { NoteI, UpdateKeyI } from '../interfaces/notes';
   providedIn: 'root'
 })
 export class NoteLockService {
-  private readonly unlockPrefix = 'kept_unlocked_note:';
+  private readonly unlockPrefix = 'keeparr_unlocked_note:';
   private readonly unlockMs = 5 * 60 * 1000;
 
   isLocked(note?: NoteI | null) {

@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <application android:name=".KeptApplication" android:label="Kept" android:icon="@drawable/kept_icon" android:roundIcon="@drawable/kept_icon"
+    <application android:name=".KeeparrApplication" android:label="Keeparr" android:icon="@drawable/keeparr_icon" android:roundIcon="@drawable/keeparr_icon"
         android:theme="@style/AppTheme" android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="user" android:windowSoftInputMode="adjustResize">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
@@ -23,11 +23,11 @@
                 <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
-        <receiver android:name=".widgets.NotesWidget" android:exported="false" android:label="Kept notes">
+        <receiver android:name=".widgets.NotesWidget" android:exported="false" android:label="Keeparr notes">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/notes_widget" />
         </receiver>
-        <receiver android:name=".widgets.QuickCreateWidget" android:exported="false" android:label="Kept quick create">
+        <receiver android:name=".widgets.QuickCreateWidget" android:exported="false" android:label="Keeparr quick create">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/quick_create_widget" />
         </receiver>
@@ -37,7 +37,7 @@
         <activity android:name=".widgets.WidgetConfigActivity" android:exported="true">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" /></intent-filter>
         </activity>
-        <provider android:name="androidx.core.content.FileProvider" android:authorities="dev.kept.android.files" android:exported="false" android:grantUriPermissions="true">
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="dev.keeparr.android.files" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
     </application>

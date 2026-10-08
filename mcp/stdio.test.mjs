@@ -14,17 +14,17 @@ test('stdio entrypoint completes an MCP handshake', async () => {
     cwd: repositoryRoot,
     env: {
       ...process.env,
-      KEPT_BASE_URL: 'https://kept.invalid',
-      KEPT_MCP_TOKEN: 'kept_mcp_stdio-test-token'
+      KEEPARR_BASE_URL: 'https://keeparr.invalid',
+      KEEPARR_MCP_TOKEN: 'keeparr_mcp_stdio-test-token'
     }
   });
-  const client = new Client({ name: 'kept-stdio-test', version: '1.0.0' });
+  const client = new Client({ name: 'keeparr-stdio-test', version: '1.0.0' });
 
   await client.connect(transport);
   try {
     const { tools } = await client.listTools();
     assert.equal(tools.length, 23);
-    assert(tools.some((tool) => tool.name === 'kept_create_note'));
+    assert(tools.some((tool) => tool.name === 'keeparr_create_note'));
   } finally {
     await client.close();
   }

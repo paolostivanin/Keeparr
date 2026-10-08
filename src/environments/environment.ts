@@ -3,14 +3,14 @@
 // The list of file replacements can be found in `angular.json`.
 
 // Allow the host page to override the API base URL at runtime by setting
-// `window.KEPT_API_URL` BEFORE the Angular bundle loads. This is what the
+// `window.KEEPARR_API_URL` BEFORE the Angular bundle loads. This is what the
 // native Capacitor shell (iOS/Android) uses to point the bundled web app at
-// a remote Kept server, since `capacitor://localhost` can't serve `/api`.
+// a remote Keeparr server, since `capacitor://localhost` can't serve `/api`.
 // In standard web deployments where the SPA and API live at the same origin,
 // the override is undefined and the relative `/api` path is used as before.
-declare const window: Window & { KEPT_API_URL?: string };
-const runtimeApiBase = (typeof window !== 'undefined' && typeof window.KEPT_API_URL === 'string')
-  ? window.KEPT_API_URL.replace(/\/$/, '')
+declare const window: Window & { KEEPARR_API_URL?: string };
+const runtimeApiBase = (typeof window !== 'undefined' && typeof window.KEEPARR_API_URL === 'string')
+  ? window.KEEPARR_API_URL.replace(/\/$/, '')
   : '';
 
 export const environment = {

@@ -24,7 +24,7 @@ type ShareIntent = {
   fileReferences?: ShareFileReference[];
 };
 
-type KeptShareIntentsPlugin = {
+type KeeparrShareIntentsPlugin = {
   addListener: (
     eventName: 'shareIntent',
     listenerFunc: (intent: ShareIntent) => void
@@ -42,7 +42,7 @@ type CapacitorAppPlugin = {
   ) => Promise<PluginListenerHandle>;
 };
 
-const KeptShareIntents = registerPlugin<KeptShareIntentsPlugin>('KeptShareIntents');
+const KeeparrShareIntents = registerPlugin<KeeparrShareIntentsPlugin>('KeeparrShareIntents');
 const CapacitorApp = registerPlugin<CapacitorAppPlugin>('App');
 
 @Injectable({ providedIn: 'root' })
@@ -62,7 +62,7 @@ export class ShareIntentsService {
   private processQueueInFlight = false;
   private processQueueAgain = false;
   private processingIntentIds = new Set<string>();
-  private readonly pendingNoteKeyPrefix = 'kept_share_intent_note:';
+  private readonly pendingNoteKeyPrefix = 'keeparr_share_intent_note:';
 
   constructor(
     private auth: AuthService,
@@ -72,17 +72,17 @@ export class ShareIntentsService {
 
   async init() {
     const platform = Capacitor.getPlatform();
-    const hasNativePlugin = !!(window as any).Capacitor?.Plugins?.KeptShareIntents;
+    const hasNativePlugin = !!(window as any).Capacitor?.Plugins?.KeeparrShareIntents;
     if (this.initialized || (platform !== 'ios' && platform !== 'android' && !hasNativePlugin)) return;
     this.initialized = true;
 
     try {
-      this.listenerHandle = await KeptShareIntents.addListener('shareIntent', intent => {
+      this.listenerHandle = await KeeparrShareIntents.addListener('shareIntent', intent => {
         this.zone.run(() => this.handleIntent(intent).catch(console.error));
       });
       this.listenerRetryCount = 0;
     } catch (error) {
-      console.warn('Kept share intents listener unavailable', error);
+      console.warn('Keeparr share intents listener unavailable', error);
       this.initialized = false;
       this.scheduleListenerRetry();
       return;
@@ -147,7 +147,7 @@ export class ShareIntentsService {
         this.zone.run(() => this.requestProcessQueueBurst(150));
       });
     } catch (error) {
-      console.warn('Kept share intents resume listener unavailable', error);
+      console.warn('Keeparr share intents resume listener unavailable', error);
     }
   }
 
@@ -185,9 +185,9 @@ export class ShareIntentsService {
     }
     this.processQueueInFlight = true;
     try {
-      await KeptShareIntents.processQueue();
+      await KeeparrShareIntents.processQueue();
     } catch (error) {
-      console.warn('Could not process Kept share intents queue', error);
+      console.warn('Could not process Keeparr share intents queue', error);
     } finally {
       this.processQueueInFlight = false;
       if (this.processQueueAgain) {
@@ -204,12 +204,12 @@ export class ShareIntentsService {
 
     try {
       await this.createNoteFromIntent(intent);
-      await KeptShareIntents.markProcessed({ intentId: intent.intentId });
+      await KeeparrShareIntents.markProcessed({ intentId: intent.intentId });
       this.clearPendingNoteId(intent.intentId);
-      this.showMessage('Added to Kept');
+      this.showMessage('Added to Keeparr');
     } catch (error) {
-      console.warn('Could not add shared item to Kept', error);
-      this.showMessage('Could not add shared item to Kept');
+      console.warn('Could not add shared item to Keeparr', error);
+      this.showMessage('Could not add shared item to Keeparr');
     } finally {
       this.processingIntentIds.delete(intent.intentId);
     }
@@ -298,7 +298,7 @@ export class ShareIntentsService {
   private async fileFromReference(fileRef: ShareFileReference) {
     const url = fileRef.directUrl
       ? fileRef.directUrl
-      : (await KeptShareIntents.getFileURL({ relativePath: fileRef.pathInContainer })).url;
+      : (await KeeparrShareIntents.getFileURL({ relativePath: fileRef.pathInContainer })).url;
     const response = await this.fetchSharedFile(url);
     if (!response.ok) throw new Error(`Could not read shared file: ${fileRef.filename || fileRef.pathInContainer}`);
     const blob = await response.blob();
