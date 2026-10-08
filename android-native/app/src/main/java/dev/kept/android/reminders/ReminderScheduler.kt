@@ -381,7 +381,7 @@ class ReminderLifecycleReceiver : BroadcastReceiver() {
                 app.settings.awaitReady()
                 // Reboot loses platform alarms; force regeneration from persisted data.
                 app.reminders.resetAlarmRegistry()
-                app.repository.reconcile()
+                app.repository.reconcile(EffectScope(alarms = true))
                 if (app.settings.token.isNotEmpty()) SyncWorker.schedule(context)
             } finally { result.finish() }
         }

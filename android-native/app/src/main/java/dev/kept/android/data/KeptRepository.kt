@@ -40,8 +40,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     private val noteDecodeLock = Any()
     private var noteDecodeProfile = ""
     private val decodedNotes = mutableMapOf<String, DecodedNote>()
-    private val reconcileScheduleLock = Any()
-    private var pendingReconcile: Job? = null
+    private val effects = EffectDispatcher(app.scope, alarms = { app.reminders.reconcile() }, widgets = ::publishWidgets)
     private var socket: WebSocket? = null
     private var socketConnection: ConnectionSnapshot? = null
     private var reconnect: Job? = null
@@ -105,14 +104,20 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         if (synchronize && profile != settings.profile) error("This draft belongs to a different Kept profile.")
         // Outbox reads must share the write transaction: a sync acknowledgement landing between them would leave the new
         // entry depending on a deleted operation, and it would never be sent.
-        database.withTransaction {
+        val effect = database.withTransaction {
             // Shallow: the copy is only serialized (once), so untouched nested fields need no deep copy.
             val raw = note.raw.shallowCopy().put("revision", knownRevision(profile, note))
             val payload = raw.toString()
+            val previous = store.record(profile, "note", note.syncId)
+            // An identical document that is already synced or still queued has nothing new to persist or send.
+            if (previous?.payload == payload && (note.id > 0 || store.queued(profile, "note.upsert", note.syncId) != null ||
+                    store.inFlight(profile, "note.upsert", note.syncId) != null || store.conflicted(profile, "note.upsert", note.syncId) != null))
+                return@withTransaction null
             store.put(Record(profile, "note", note.syncId, payload))
             store.enqueue(noteUpsertEntry(profile, note.syncId, raw, payload))
-        }
-        if (profile == settings.profile) changed(synchronize, reconcile = true)
+            recordEffect("note", previous?.payload, payload)
+        } ?: return@withLock
+        if (profile == settings.profile) changed(synchronize, effect)
     }
 
     // Drops a never-synced, contentless note along with its queued upsert. SYNCED means the server may already know the
@@ -134,7 +139,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             upserts.forEach { store.acknowledge(it.operationId) }
             Discard.DISCARDED
         }
-        if (outcome == Discard.DISCARDED && profile == settings.profile) changed(synchronize = false)
+        if (outcome == Discard.DISCARDED && profile == settings.profile) changed(synchronize = false, effect = EffectScope.note(syncId))
         outcome
     }
 
@@ -158,7 +163,10 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
 
     suspend fun reorder(ids: List<String>) = editMutex.withLock {
         val profile = settings.profile
-        database.withTransaction {
+        val reordered = database.withTransaction {
+            // Dropping a note where it already was leaves the relative order, and so every stored row, unchanged.
+            val current = ids.map { store.record(profile, "note", it)?.let { row -> Note(JSONObject(row.payload)).raw.optDouble("sortOrder", 0.0) } }
+            if (current.none { it == null } && current.zipWithNext().all { (a, b) -> a!! > b!! }) return@withTransaction false
             val base = System.currentTimeMillis().toDouble()
             ids.forEachIndexed { index, id ->
                 note(id)?.let { note -> store.put(Record(profile, "note", id, note.raw.copyJson().put("sortOrder", base + ids.size - index).toString())) }
@@ -170,32 +178,34 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             val payload = JSONObject().put("syncIds", JSONArray(merged)).toString()
             store.enqueue(queued?.copy(payload = payload) ?: Outbox(UUID.randomUUID().toString(), profile, "note.reorder", "order", payload,
                 dependsOnOperationId = predecessor?.operationId))
+            true
         }
-        changed()
+        if (reordered) changed(effect = EffectScope(order = true))
     }
 
     suspend fun setTrashed(syncIds: List<String>, trashed: Boolean) = editMutex.withLock {
         val profile = settings.profile
         val edited = database.withTransaction {
-            var count = 0
+            val touched = mutableSetOf<String>()
             syncIds.distinct().forEach { syncId ->
                 val row = store.record(profile, "note", syncId) ?: return@forEach
                 val note = Note(JSONObject(row.payload))
+                if (note.trashed == trashed) return@forEach
                 require(note.owner == settings.userId) { "Only notes you own can be moved to or restored from Trash." }
                 val raw = note.raw.copyJson().put("trashed", trashed).put("revision", knownRevision(profile, note))
                 store.put(Record(profile, "note", syncId, raw.toString()))
                 store.enqueue(noteUpsertEntry(profile, syncId, raw))
-                count++
+                touched += syncId
             }
-            count
+            touched
         }
-        if (edited == 0) return@withLock
-        if (profile == settings.profile) changed()
+        if (edited.isEmpty()) return@withLock
+        if (profile == settings.profile) changed(effect = EffectScope(notes = edited, alarms = true))
     }
 
     suspend fun setReminder(note: Note, due: String, timezone: String, repeat: String?) = editMutex.withLock {
         val profile = settings.profile
-        database.withTransaction {
+        val written = database.withTransaction {
             require(store.record(profile, "note", note.syncId) != null) { "This note belongs to a different Kept profile." }
             val existing = store.list(profile, "reminder").map { JSONObject(it.payload) }
                 .find { it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId }
@@ -221,6 +231,9 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             val scheduleAnchorAtUtc = if (definitionChanged) due else existing?.text("scheduleAnchorAtUtc")?.takeIf { it.isNotBlank() }
                 ?: existing?.text("dueAtUtc")?.takeIf { it.isNotBlank() } ?: due
             raw.put("scheduleVersion", scheduleVersion.coerceAtLeast(1)).put("scheduleAnchorAtUtc", scheduleAnchorAtUtc)
+            // Re-saving a synced reminder with identical values and nothing queued changes neither storage nor alarms.
+            if (previous == null && inFlight == null && existing != null && existing.optLong("id") > 0 && existing.toString() == raw.toString())
+                return@withTransaction false
             store.put(Record(profile, "reminder", id, raw.toString()))
             val dependency = previous?.dependsOnOperationId ?: inFlight?.operationId
                 ?: noteCreation?.takeIf { note.id <= 0 }?.operationId
@@ -228,14 +241,17 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                 ?: Outbox(UUID.randomUUID().toString(), profile, "reminder.upsert", id, raw.toString(),
                     baseScheduleVersion = existing?.takeIf { it.optLong("id") > 0 }?.optLong("scheduleVersion"),
                     dependsOnOperationId = dependency))
+            true
         }
-        changed()
+        if (written) changed(effect = EffectScope(notes = setOf(note.syncId), alarms = true))
     }
 
     suspend fun deleteReminder(id: String) = editMutex.withLock {
+        var noteSyncId = ""
         val found = database.withTransaction {
             val existing = store.record(settings.profile, "reminder", id) ?: return@withTransaction false
             val raw = JSONObject(existing.payload)
+            noteSyncId = raw.text("noteSyncId")
             val queued = store.queued(settings.profile, "reminder.upsert", id)
             val inFlight = store.inFlight(settings.profile, "reminder.upsert", id)
             store.remove(settings.profile, "reminder", id)
@@ -248,13 +264,16 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             }
             true
         }
-        if (found) changed()
+        if (found) changed(effect = EffectScope(notes = setOf(noteSyncId), alarms = true))
     }
 
     suspend fun dismissReminder(id: String) = editMutex.withLock {
+        var noteSyncId = ""
         val found = database.withTransaction {
             val existing = store.record(settings.profile, "reminder", id) ?: return@withTransaction false
+            if (JSONObject(existing.payload).text("status") == "dismissed") return@withTransaction false
             val raw = JSONObject(existing.payload).put("status", "dismissed")
+            noteSyncId = raw.text("noteSyncId")
             val queued = store.queued(settings.profile, "reminder.upsert", id)
             val conflicted = store.conflicted(settings.profile, "reminder.upsert", id)
             val inFlight = store.inFlight(settings.profile, "reminder.upsert", id)
@@ -266,7 +285,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                     baseScheduleVersion = raw.optLong("scheduleVersion").takeIf { it > 0 }, dependsOnOperationId = dependency))
             true
         }
-        if (found) changed()
+        if (found) changed(effect = EffectScope(notes = setOf(noteSyncId), alarms = true))
     }
 
     suspend fun occurrenceAction(occurrence: JSONObject, state: String, until: String? = null) = editMutex.withLock {
@@ -276,35 +295,45 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         val raw = occurrence.copyJson().put("state", state).put("snoozeUntil", until ?: JSONObject.NULL)
         val payload = JSONObject().put("occurrenceId", id).put("reminderSyncId", raw.getString("syncId"))
             .put("scheduleVersion", raw.optLong("scheduleVersion", 1)).put("state", state).put("snoozeUntil", until ?: JSONObject.NULL)
-        database.withTransaction {
+        val written = database.withTransaction {
+            val current = store.record(profile, "occurrence", id)?.let { JSONObject(it.payload) }
+            if (current != null && current.text("state") == state && current.opt("snoozeUntil") == raw.opt("snoozeUntil") &&
+                store.queued(profile, "reminder.action", id) != null) return@withTransaction false
             store.put(Record(profile, "occurrence", id, raw.toString()))
             val queued = store.queued(profile, "reminder.action", id)
             val inFlight = store.inFlight(profile, "reminder.action", id)
             store.enqueue(queued?.copy(payload = payload.toString()) ?: Outbox(UUID.randomUUID().toString(), profile,
                 "reminder.action", id, payload.toString(), dependsOnOperationId = inFlight?.operationId))
+            true
         }
-        if (profile == settings.profile) changed()
+        if (written && profile == settings.profile) changed(effect = EffectScope(alarms = true))
     }
 
-    private fun changed(synchronize: Boolean = true, reconcile: Boolean = true) {
+    private fun changed(synchronize: Boolean = true, effect: EffectScope) {
         status.value = "Saved on device · waiting to sync"
-        if (reconcile) synchronized(reconcileScheduleLock) {
-            pendingReconcile?.cancel()
-            pendingReconcile = app.scope.launch {
-                delay(250)
-                reconcile()
-            }
-        }
+        effects.request(effect)
         if (synchronize) app.enqueueSync(app)
+    }
+
+    private fun publishWidgets(scope: EffectScope) {
+        if (scope.full) app.refreshWidgets(app) else app.refreshWidgetScope(app, scope)
+    }
+
+    /** What a note/reminder record transition means for widgets and alarms; null sides mean the record did not/does not exist. */
+    private fun recordEffect(kind: String, before: String?, after: String?): EffectScope = when (kind) {
+        "note" -> {
+            val old = before?.let { Note(JSONObject(it)) }
+            val new = after?.let { Note(JSONObject(it)) }
+            EffectScope(notes = setOf((new ?: old)!!.syncId),
+                alarms = old == null || new == null || old.archived != new.archived || old.trashed != new.trashed)
+        }
+        // A blank note id still reaches every collection widget, and no single-note widget.
+        "reminder" -> EffectScope(notes = setOf(JSONObject(after ?: before!!).text("noteSyncId")), alarms = true)
+        else -> EffectScope()
     }
 
     /** Hands already-committed outbox work to the sync worker without rewriting or reconciling anything. */
     fun queueSync() = app.enqueueSync(app)
-
-    fun requestSync() {
-        app.scope.launch { reconcile() }
-        app.enqueueSync(app)
-    }
 
     fun authenticated() {
         connectionState.value = ConnectionState.Authenticated
@@ -312,16 +341,18 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         status.value = "Saved on device · waiting to sync"
     }
 
-    suspend fun reconcile() {
-        app.reminders.reconcile()
-        app.refreshWidgets(app)
+    /** Runs only the effects [scope] depends on; the default is the full recovery reconciliation. */
+    suspend fun reconcile(scope: EffectScope = EffectScope.FULL) {
+        if (scope.touchesAlarms) app.reminders.reconcile()
+        if (scope.touchesWidgets) publishWidgets(scope)
     }
 
     suspend fun sync() = syncMutex.withLock {
         val connection = settings.snapshot()
         if (connection.token.isBlank()) return@withLock
         val profile = connection.profile
-        var effectsChanged = false
+        // Side effects owed to what this run changed; acknowledged note writes change no rendered widget content.
+        var effect = EffectScope()
         val acceptedThisSync = mutableSetOf<String>()
         try {
             status.value = "Syncing…"
@@ -425,6 +456,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                                 val pendingSuccessor = store.dependents(profile, entry.operationId).any { it.type == "reminder.upsert" }
                                 remapReminderIdentity(profile, entry.syncId, canonicalSyncId, result.getLong("id"), reminderPayload, pendingSuccessor)
                                 acceptedThisSync += "reminder:$canonicalSyncId"
+                                effect += EffectScope(notes = setOf(JSONObject(entry.payload).text("noteSyncId")), alarms = true)
                             }
                             store.unblockDependents(profile, entry.operationId, acceptedRevision, acceptedScheduleVersion)
                             when {
@@ -443,7 +475,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                                 if (entry.type == "note.upsert") incomingNote = result.optJSONObject("latest")?.let(::Note)
                             }
                         }
-                        response.optJSONObject("snapshot")?.let { applySnapshot(profile, it, acceptedThisSync) }
+                        response.optJSONObject("snapshot")?.let { effect += applySnapshot(profile, it, acceptedThisSync) }
                     }
                     acceptedNote?.let { _acceptedNoteSnapshots.tryEmit(ProfiledNoteSnapshot(profile, it, acceptedNoteSubmission)) }
                     incomingNote?.let { _incomingNoteSnapshots.tryEmit(ProfiledNoteSnapshot(profile, it)) }
@@ -456,24 +488,24 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             val cursor = store.cursor(profile)?.cursor
             if (cursor == null) {
                 val snapshot = JSONObject(api.call("/api/sync/bootstrap", connection = connection))
-                database.withTransaction { applySnapshot(profile, snapshot, acceptedThisSync) }
-                effectsChanged = true
+                effect += database.withTransaction { applySnapshot(profile, snapshot, acceptedThisSync) }
             } else {
                 var current = cursor
                 do {
                     val response = JSONObject(api.call("/api/sync/changes?cursor=$current", connection = connection))
                     var removedNote = false
-                    var pageChanged = false
+                    var pageEffect = EffectScope()
                     val incomingNotes = mutableListOf<Note>()
                     database.withTransaction {
                         val pending = store.pending(profile)
                         for (change in response.getJSONArray("changes").objects()) {
                             val kind = change.text("resourceType"); val id = change.text("resourceSyncId")
                             if (change.text("operation") == "delete") {
-                                if (store.record(profile, kind, id) != null) {
+                                val removed = store.record(profile, kind, id)
+                                if (removed != null) {
                                     if (kind == "note") preserveRevokedNoteDrafts(profile, id)
                                     store.remove(profile, kind, id)
-                                    pageChanged = true
+                                    pageEffect += recordEffect(kind, removed.payload, null)
                                     if (kind == "note") removedNote = true
                                 }
                                 pending.filter { it.syncId == id }.forEach { store.enqueue(it.copy(state = OutboxState.CONFLICT,
@@ -481,9 +513,10 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                             } else if (pending.none { it.syncId == id }) {
                                 change.optJSONObject("payload")?.let { payload ->
                                     val encoded = payload.toString()
-                                    if (store.record(profile, kind, id)?.payload != encoded) {
+                                    val before = store.record(profile, kind, id)?.payload
+                                    if (before != encoded) {
                                         store.put(Record(profile, kind, id, encoded))
-                                        pageChanged = true
+                                        pageEffect += recordEffect(kind, before, encoded)
                                     }
                                 }
                             } else if (kind == "note") {
@@ -499,11 +532,11 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                     }
                     incomingNotes.forEach { _incomingNoteSnapshots.tryEmit(ProfiledNoteSnapshot(profile, it)) }
                     if (removedNote) Media(app).clearProfile(profile)
-                    if (pageChanged) effectsChanged = true
+                    effect += pageEffect
                 } while (response.optBoolean("hasMore"))
             }
             val occurrences = JSONArray(api.call("/api/native/reminders/occurrences", connection = connection))
-            if (database.withTransaction { applyOccurrences(profile, occurrences) }) effectsChanged = true
+            if (database.withTransaction { applyOccurrences(profile, occurrences) }) effect += EffectScope(alarms = true)
             val hasConflicts = store.pending(profile).any { it.conflict != null }
             status.value = if (hasConflicts) "An edit needs your attention" else "Synced"
             connectionState.value = ConnectionState.Authenticated
@@ -523,11 +556,12 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             }
             throw error
         } finally {
-            if (effectsChanged || acceptedThisSync.isNotEmpty()) reconcile()
+            if (!effect.isEmpty) reconcile(effect)
         }
     }
 
-    private suspend fun applySnapshot(profile: String, snapshot: JSONObject, acceptedThisSync: Set<String> = emptySet()) {
+    private suspend fun applySnapshot(profile: String, snapshot: JSONObject, acceptedThisSync: Set<String> = emptySet()): EffectScope {
+        var effect = EffectScope()
         val pending = store.pending(profile)
         var removedNote = false
         val incomingNotes = snapshot.optJSONArray("notes")?.objects().orEmpty()
@@ -543,7 +577,9 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         for ((arrayName, kind) in listOf("notes" to "note", "reminders" to "reminder", "attachments" to "attachment")) {
             val incoming = snapshot.optJSONArray(arrayName)?.objects().orEmpty()
             val ids = incoming.map { it.text("syncId") }.toSet()
-            for (row in store.list(profile, kind)) {
+            val rows = store.list(profile, kind)
+            val before = rows.associate { it.syncId to it.payload }
+            for (row in rows) {
                 val accepted = "$kind:${row.syncId}" in acceptedThisSync
                 val local = runCatching { JSONObject(row.payload) }.getOrNull()
                 val protectedByAcceptedOperation = accepted && when (kind) {
@@ -560,6 +596,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                 if (row.syncId !in ids && !protectedByAcceptedOperation && !hasQueuedWork) {
                     if (kind == "note") preserveRevokedNoteDrafts(profile, row.syncId)
                     store.remove(profile, kind, row.syncId)
+                    effect += recordEffect(kind, row.payload, null)
                     if (kind == "note") removedNote = true
                     pending.filter { it.syncId == row.syncId }.forEach { store.enqueue(it.copy(state = OutboxState.CONFLICT,
                         conflict = JSONObject().put("error", "This item is no longer accessible.").toString())) }
@@ -569,17 +606,24 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                 val id = raw.text("syncId")
                 if (kind == "note" && "$kind:$id" !in acceptedThisSync) {
                     val pendingNote = pending.firstOrNull { it.type == "note.upsert" && it.syncId == id }
-                    val local = store.record(profile, "note", id)?.let { Note(JSONObject(it.payload)) }
+                    val local = before[id]?.let { Note(JSONObject(it)) }
                     val remote = Note(raw)
                     if (pendingNote != null && local != null && remote.revision > (pendingNote.baseRevision ?: local.revision) &&
                         !EditorSnapshotPolicy.sameEditableContent(local, remote)) _incomingNoteSnapshots.tryEmit(ProfiledNoteSnapshot(profile, remote))
                 }
-                if (pending.none { it.syncId == id && it.conflict == null }) store.put(Record(profile, kind, id, raw.toString()))
+                if (pending.none { it.syncId == id && it.conflict == null }) {
+                    val encoded = raw.toString()
+                    if (before[id] != encoded) {
+                        store.put(Record(profile, kind, id, encoded))
+                        effect += recordEffect(kind, before[id], encoded)
+                    }
+                }
             }
         }
-        applyOccurrences(profile, snapshot.optJSONArray("occurrences") ?: JSONArray())
+        if (applyOccurrences(profile, snapshot.optJSONArray("occurrences") ?: JSONArray())) effect += EffectScope(alarms = true)
         store.cursor(SyncState(profile, snapshot.optLong("cursor")))
         if (removedNote) Media(app).clearProfile(profile)
+        return effect
     }
 
     private suspend fun remapReminderIdentity(profile: String, sourceSyncId: String, targetSyncId: String,
@@ -745,7 +789,13 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                 }
             }
         }
-        if (entry.profile == settings.profile) changed()
+        if (entry.profile == settings.profile) {
+            // Resolution rewrites a note, a reminder or an upload: refresh that note's widgets and re-plan alarms.
+            val note = if (entry.type == "media.upload") runCatching { JSONObject(entry.payload).text("noteSyncId") }.getOrDefault("")
+                else if (entry.type.startsWith("reminder.")) runCatching { JSONObject(entry.payload).text("noteSyncId") }.getOrDefault("")
+                else entry.syncId
+            changed(effect = EffectScope(notes = setOf(note), alarms = true))
+        }
     }
 
     private fun rebaseNoteDraft(latest: Note, draft: Note): JSONObject {
@@ -787,7 +837,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             ?: store.pending(profile).firstOrNull { it.type == "note.upsert" && it.syncId == syncId }?.payload
             ?: error("The local draft is no longer available.")
         database.withTransaction { recoverAsCopy(profile, syncId, JSONObject(raw)) }
-        changed()
+        changed(effect = EffectScope(notes = setOf(syncId), alarms = true))
     }
 
     private suspend fun recoverAsCopy(profile: String, sourceSyncId: String, original: JSONObject?, extraUploads: List<Outbox> = emptyList()) {
@@ -856,8 +906,10 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     suspend fun setChecklistCollapsed(note: Note, collapsed: Boolean, profile: String = settings.profile) = editMutex.withLock {
         val raw = note.raw.copyJson().put("completedChecklistCollapsed", collapsed)
         val payload = JSONObject().put("completedChecklistCollapsed", collapsed).toString()
-        database.withTransaction {
-            require(store.record(profile, "note", note.syncId) != null) { "This note belongs to a different Kept profile." }
+        val written = database.withTransaction {
+            val stored = store.record(profile, "note", note.syncId)
+            require(stored != null) { "This note belongs to a different Kept profile." }
+            if (JSONObject(stored.payload).optBoolean("completedChecklistCollapsed") == collapsed) return@withTransaction false
             val queued = store.queued(profile, "note.view-state", note.syncId)
             val conflicted = store.conflicted(profile, "note.view-state", note.syncId)
             val inFlight = store.inFlight(profile, "note.view-state", note.syncId)
@@ -869,8 +921,10 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             store.enqueue(previous?.copy(payload = payload, dependsOnOperationId = dependency)
                 ?: Outbox(UUID.randomUUID().toString(), profile, "note.view-state", note.syncId, payload,
                     dependsOnOperationId = dependency))
+            true
         }
-        if (profile == settings.profile) changed()
+        // Collapse state is personal view state that no widget or alarm shows.
+        if (written && profile == settings.profile) changed(effect = EffectScope())
     }
 
     suspend fun share(note: Note, userIds: List<Long>) {
@@ -901,7 +955,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             store.enqueue(Outbox(UUID.randomUUID().toString(), profile, "media.upload", key,
                 file.copyJson().put("noteSyncId", note.syncId).toString(), dependsOnOperationId = noteCreation?.operationId))
         }
-        changed()
+        changed(effect = EffectScope())
     }
 
     fun presence(noteId: Long?) {

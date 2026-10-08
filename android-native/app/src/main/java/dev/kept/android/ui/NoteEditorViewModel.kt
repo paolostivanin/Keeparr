@@ -144,7 +144,7 @@ class NoteEditorViewModel(
                     _localSaveFailed.value = false
                     if (generation == saveGeneration) _localSaving.value = false
                 }
-                else if (profile == repository.settings.profile) repository.requestSync()
+                else if (profile == repository.settings.profile) repository.queueSync()
                 if (generation == saveGeneration) {
                     break
                 }

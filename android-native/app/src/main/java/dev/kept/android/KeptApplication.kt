@@ -15,7 +15,8 @@ class KeptApplication : Application() {
     lateinit var database: KeptDatabase
     lateinit var repository: KeptRepository
     lateinit var reminders: ReminderController
-    var refreshWidgets: (Context) -> Unit = NotesWidget::refresh
+    var refreshWidgets: (Context) -> Unit = { NotesWidget.refresh(it) }
+    var refreshWidgetScope: (Context, EffectScope) -> Unit = { context, scope -> NotesWidget.refresh(context, scope) }
     var enqueueSync: (Context) -> Unit = SyncWorker::enqueue
     private var recovery: Job? = null
     /** Set when the visible activity is being recreated, so the next start does not repeat foreground work. */

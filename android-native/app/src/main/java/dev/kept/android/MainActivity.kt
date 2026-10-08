@@ -23,7 +23,7 @@ class MainActivity : ComponentActivity() {
     val incoming = MutableStateFlow<Intent?>(null)
     private val app get() = application as KeptApplication
     private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-        app.scope.launch { app.repository.reconcile() }
+        app.scope.launch { app.repository.reconcile(EffectScope(alarms = true)) }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

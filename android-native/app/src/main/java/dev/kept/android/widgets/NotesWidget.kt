@@ -50,6 +50,12 @@ class NotesWidget : AppWidgetProvider() {
             val ids = AppWidgetManager.getInstance(context).getAppWidgetIds(ComponentName(context, NotesWidget::class.java))
             ids.forEach { render(context, it) }
         }
+        /** Re-renders only the widgets whose notes, order or reminders [scope] can have changed. */
+        fun refresh(context: Context, scope: EffectScope) {
+            val ids = AppWidgetManager.getInstance(context).getAppWidgetIds(ComponentName(context, NotesWidget::class.java))
+            val preferences = context.getSharedPreferences("widgets", Context.MODE_PRIVATE)
+            ids.filter { scope.affectsWidget(preferences.getString("filter_$it", "home")!!) }.forEach { render(context, it) }
+        }
     }
 }
 
