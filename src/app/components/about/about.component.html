@@ -1,0 +1,57 @@
+<div class="about-section">
+  <div class="about-row">
+    <div class="about-label">Keeparr version</div>
+    <div class="about-value">
+      <code>{{version || '—'}}</code>
+      @if (update?.isOutdated && update?.latest) {
+        <span class="version-tag outdated">Update available: <code>{{update?.latest}}</code></span>
+      } @else if (update?.latest && !update?.isOutdated) {
+        <span class="version-tag uptodate">Up to date</span>
+      }
+    </div>
+  </div>
+  @if (update?.releaseUrl) {
+    <div class="about-row">
+      <div class="about-label">Latest release</div>
+      <div class="about-value"><a [href]="update?.releaseUrl" target="_blank" rel="noopener">View on GitHub →</a></div>
+    </div>
+  }
+  @if (update?.checkedAt) {
+    <div class="about-row">
+      <div class="about-label">Last checked</div>
+      <div class="about-value about-muted">{{update?.checkedAt | date:'medium'}}</div>
+    </div>
+  }
+  @if (update?.checkError) {
+    <div class="about-row">
+      <div class="about-label">Check error</div>
+      <div class="about-value about-muted">{{update?.checkError}}</div>
+    </div>
+  }
+  <div class="about-row">
+    <div class="about-label">Origin</div>
+    <div class="about-value about-text">
+      Keeparr is a modified derivative of
+      <a [href]="upstreamUrl" target="_blank" rel="noopener">Kept</a> by ericerkz.
+      This version contains substantial modifications and additional copyrightable work by
+      Paolo Stivanin and other contributors.
+    </div>
+  </div>
+  <div class="about-row">
+    <div class="about-label">License</div>
+    <div class="about-value about-text">
+      <a [href]="licenseUrl" target="_blank" rel="noopener">GNU Affero General Public License v3.0 only</a>
+    </div>
+  </div>
+  <div class="about-row">
+    <div class="about-label">Source code</div>
+    <div class="about-value"><a [href]="sourceUrl" target="_blank" rel="noopener">github.com/paolostivanin/Keeparr</a></div>
+  </div>
+  <div class="about-row">
+    <div class="about-label">Credits</div>
+    <div class="about-value about-text">
+      Kept's initial UI scaffolding derives from
+      <a [href]="scaffoldUrl" target="_blank" rel="noopener">google-keep-clone</a> by aBrihoum (MIT License).
+    </div>
+  </div>
+</div>

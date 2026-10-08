@@ -1,13 +1,11 @@
 import { CommonModule } from '@angular/common';
 import { Component, OnInit, NgZone } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { HttpClient } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
 import { UserI, UserRole } from 'src/app/interfaces/users';
 import { AuthService } from 'src/app/services/auth.service';
-import { environment } from 'src/environments/environment';
 import { TimepickerUI, type ConfirmEventData } from 'timepicker-ui';
 import { RouterLink } from '@angular/router';
+import { AboutComponent } from 'src/app/components/about/about.component';
 
 
 @Component({
@@ -15,7 +13,7 @@ import { RouterLink } from '@angular/router';
     templateUrl: './user-management.component.html',
     styleUrls: ['../auth-shared.scss', './user-management.component.scss'],
     standalone: true,
-    imports: [CommonModule, FormsModule, RouterLink]
+    imports: [CommonModule, FormsModule, RouterLink, AboutComponent]
 })
 export class UserManagementComponent implements OnInit {
   users: UserI[] = [];
@@ -64,28 +62,7 @@ export class UserManagementComponent implements OnInit {
 
 
 
-  // Version / update info shown in the About section
-  versionInfo: { current: string; latest: string | null; isOutdated: boolean; releaseUrl: string | null; checkedAt: string | null; checkError: string | null } | null = null;
-
-  constructor(public auth: AuthService, private zone: NgZone, private http: HttpClient) { }
-
-  async loadVersionInfo() {
-    try {
-      const data: any = await firstValueFrom(
-        this.http.get(`${environment.apiUrl}/admin/update-status`, { headers: this.auth.authHeaders() })
-      );
-      this.versionInfo = {
-        current: data.current,
-        latest: data.latest,
-        isOutdated: !!data.isOutdated,
-        releaseUrl: data.releaseUrl,
-        checkedAt: data.checkedAt,
-        checkError: data.checkError
-      };
-    } catch {
-      this.versionInfo = null;
-    }
-  }
+  constructor(public auth: AuthService, private zone: NgZone) { }
 
   onUsernameChange(value: string) {
     this.username = value;
@@ -335,7 +312,6 @@ export class UserManagementComponent implements OnInit {
   ngOnInit(): void {
     this.loadUsers();
     this.loadRegistrationSettings();
-    this.loadVersionInfo();
     this.loadBackupStatus().then(() => {
       setTimeout(() => this.initBackupTimePicker(), 500);
     });

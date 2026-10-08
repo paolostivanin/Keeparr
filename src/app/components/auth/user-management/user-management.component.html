@@ -288,38 +288,8 @@
         About
       </h2>
 
-      <section class="settings-section about-section">
-        <div class="about-row">
-          <div class="about-label">Keeparr version</div>
-          <div class="about-value">
-            <code>{{versionInfo?.current || '—'}}</code>
-            @if (versionInfo?.isOutdated && versionInfo?.latest) {
-              <span class="version-tag outdated">Update available: <code>{{versionInfo?.latest}}</code></span>
-            } @else if (versionInfo?.latest && !versionInfo?.isOutdated) {
-              <span class="version-tag uptodate">Up to date</span>
-            }
-          </div>
-        </div>
-        @if (versionInfo?.releaseUrl) {
-          <div class="about-row">
-            <div class="about-label">Latest release</div>
-            <div class="about-value">
-              <a [href]="versionInfo?.releaseUrl" target="_blank" rel="noopener">View on GitHub →</a>
-            </div>
-          </div>
-        }
-        @if (versionInfo?.checkedAt) {
-          <div class="about-row">
-            <div class="about-label">Last checked</div>
-            <div class="about-value about-muted">{{versionInfo?.checkedAt | date:'medium'}}</div>
-          </div>
-        }
-        @if (versionInfo?.checkError) {
-          <div class="about-row">
-            <div class="about-label">Check error</div>
-            <div class="about-value about-muted">{{versionInfo?.checkError}}</div>
-          </div>
-        }
+      <section class="settings-section">
+        <app-about></app-about>
       </section>
     </div>
 

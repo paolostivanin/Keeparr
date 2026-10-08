@@ -3,6 +3,7 @@ import { Component, OnDestroy, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import JSZip from 'jszip';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { AboutComponent } from 'src/app/components/about/about.component';
 import { GoogleCalendarStatusI } from 'src/app/interfaces/reminder';
 import { ReminderService } from 'src/app/services/reminder.service';
 import { NotesService, TakeoutImportResult } from 'src/app/services/notes.service';
@@ -41,7 +42,7 @@ export interface PermissionItem {
   templateUrl: './settings.component.html',
   styleUrls: ['../auth/auth-shared.scss', './settings.component.scss'],
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink]
+  imports: [CommonModule, FormsModule, RouterLink, AboutComponent]
 })
 export class SettingsComponent implements OnInit, OnDestroy {
 
