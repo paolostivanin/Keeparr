@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Line-art version of branding/keeparr-mark-mono.svg for Android 13+ themed icons. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="512" android:viewportHeight="512">
+    <group android:pivotX="256" android:pivotY="256" android:scaleX="0.78" android:scaleY="0.78">
+        <path android:strokeColor="#000000" android:strokeWidth="26" android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M176,104H312L376,168V368A40,40 0,0 1,336 408H176A40,40 0,0 1,136 368V144A40,40 0,0 1,176 104Z" />
+        <path android:strokeColor="#000000" android:strokeWidth="26" android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M312,104V168H376" />
+        <path android:strokeColor="#000000" android:strokeWidth="30" android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M190,262L232,304L318,214" />
+        <path android:strokeColor="#000000" android:strokeWidth="22" android:strokeLineCap="round"
+            android:pathData="M190,356H322" />
+    </group>
+</vector>

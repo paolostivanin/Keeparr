@@ -3087,7 +3087,7 @@ function buildReminderPushPayload(reminder) {
     title: plainText(reminder.title) || 'Reminder',
     body: plainText(reminder.body),
     imageUrl: reminder.imageUrl || null,
-    icon: '/assets/images/keep2x.png',
+    icon: '/assets/images/keeparr-icon-192.png',
     deepLink: reminder.deepLink || (reminder.noteId ? `keeparr://note/${reminder.noteId}` : null),
     url: '/'
   });

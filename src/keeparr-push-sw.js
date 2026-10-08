@@ -28,8 +28,8 @@ self.addEventListener('push', event => {
   const title = data.title || 'Reminder';
   const options = {
     body: data.body || undefined,
-    icon: data.icon || '/assets/images/keep2x.png',
-    badge: data.icon || '/assets/images/keep2x.png',
+    icon: data.icon || '/assets/images/keeparr-icon-192.png',
+    badge: data.icon || '/assets/images/keeparr-icon-192.png',
     tag: data.reminderId ? `keeparr-reminder-${data.reminderId}` : 'keeparr-reminder',
     renotify: true,
     data: {

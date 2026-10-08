@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Keeparr (monochrome line mark)</title>
+  <g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M176 104H312L376 168V368A40 40 0 0 1 336 408H176A40 40 0 0 1 136 368V144A40 40 0 0 1 176 104Z" stroke-width="26"/>
+    <path d="M312 104V168H376" stroke-width="26"/>
+    <path d="M190 262L232 304L318 214" stroke-width="30"/>
+    <path d="M190 356H322" stroke-width="22"/>
+  </g>
+</svg>

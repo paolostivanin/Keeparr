@@ -489,7 +489,7 @@ export class SharedService {
       // 5. Image Card
       await this.Notes.add({
         noteTitle: 'Our Icon (In-Situ Images!) ✨',
-        noteBody: 'This card shows how you can add beautiful images directly to your notes. <div class="inline-note-image-wrap" contenteditable="false"><img class="inline-note-image" src="/assets/images/keep2x.png" alt="logo"></div> It\'s the perfect way to save your favorite memories right in the middle of your text! 🥰',
+        noteBody: 'This card shows how you can add beautiful images directly to your notes. <div class="inline-note-image-wrap" contenteditable="false"><img class="inline-note-image" src="/assets/images/keeparr-logo.png" alt="logo"></div> It\'s the perfect way to save your favorite memories right in the middle of your text! 🥰',
         bgColor: bgColors.cornflower,
         pinned: false, archived: false, trashed: false, isCbox: false, labels: [],
         isDemo: true

@@ -323,13 +323,13 @@ class NativeContractTest {
     }
     @Test fun widgetPickerPreviewsUseTheMainAppIconAndNativeVersionIsV2() {
         val context = RuntimeEnvironment.getApplication()
-        assertEquals(R.drawable.keeparr_icon, context.packageManager.getApplicationInfo(context.packageName, 0).icon)
+        assertEquals(R.mipmap.ic_launcher, context.packageManager.getApplicationInfo(context.packageName, 0).icon)
         val androidNamespace = "http://schemas.android.com/apk/res/android"
         for (widgetXml in listOf(R.xml.notes_widget, R.xml.quick_create_widget)) {
             context.resources.getXml(widgetXml).use { parser ->
                 while (parser.eventType != org.xmlpull.v1.XmlPullParser.START_TAG &&
                     parser.eventType != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) parser.next()
-                assertEquals(R.drawable.keeparr_icon, parser.getAttributeResourceValue(androidNamespace, "previewImage", 0))
+                assertEquals(R.mipmap.ic_launcher, parser.getAttributeResourceValue(androidNamespace, "previewImage", 0))
             }
         }
         assertEquals("2.0.0", BuildConfig.VERSION_NAME)

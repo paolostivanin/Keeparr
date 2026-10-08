@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Keeparr</title>
+  <rect width="512" height="512" rx="112" fill="#FBBC04"/>
+  <path d="M176 104H312L376 168V368A40 40 0 0 1 336 408H176A40 40 0 0 1 136 368V144A40 40 0 0 1 176 104Z" fill="#FFF8E1"/>
+  <path d="M312 104V168H376Z" fill="#F2CF6B"/>
+  <path d="M190 262L232 304L318 214" fill="none" stroke="#402E00" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M190 356H322" fill="none" stroke="#402E00" stroke-width="22" stroke-linecap="round" opacity=".35"/>
+</svg>

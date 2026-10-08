@@ -88,7 +88,7 @@ export class ReminderNotificationComponent implements OnInit, OnDestroy {
     try {
       const notification = new Notification(title, {
         body: body || undefined,
-        icon: '/assets/images/keep2x.png',
+        icon: '/assets/images/keeparr-icon-192.png',
         tag: `keeparr-reminder-${payload.reminderId}`,
         data: {
           reminderId: payload.reminderId,
