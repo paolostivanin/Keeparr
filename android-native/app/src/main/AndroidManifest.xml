@@ -31,6 +31,9 @@
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/quick_create_widget" />
         </receiver>
+        <service android:name=".widgets.NotesWidgetService" android:permission="android.permission.BIND_REMOTEVIEWS" android:exported="false" />
+        <activity android:name=".widgets.WidgetActionActivity" android:exported="false" android:theme="@style/WidgetTrampoline"
+            android:excludeFromRecents="true" android:noHistory="true" android:taskAffinity="" />
         <activity android:name=".widgets.WidgetConfigActivity" android:exported="true">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" /></intent-filter>
         </activity>

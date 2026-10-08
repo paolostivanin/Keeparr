@@ -100,7 +100,10 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         .map { it?.let { row -> Note(JSONObject(row.payload)) } }
         .flowOn(Dispatchers.Default)
 
-    suspend fun save(note: Note, synchronize: Boolean = true, profile: String = settings.profile) = editMutex.withLock {
+    suspend fun save(note: Note, synchronize: Boolean = true, profile: String = settings.profile) =
+        editMutex.withLock { saveLocked(note, synchronize, profile) }
+
+    private suspend fun saveLocked(note: Note, synchronize: Boolean, profile: String) {
         if (synchronize && profile != settings.profile) error("This draft belongs to a different Kept profile.")
         // Outbox reads must share the write transaction: a sync acknowledgement landing between them would leave the new
         // entry depending on a deleted operation, and it would never be sent.
@@ -116,7 +119,7 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
             store.put(Record(profile, "note", note.syncId, payload))
             store.enqueue(noteUpsertEntry(profile, note.syncId, raw, payload))
             recordEffect("note", previous?.payload, payload)
-        } ?: return@withLock
+        } ?: return
         if (profile == settings.profile) changed(synchronize, effect)
     }
 
@@ -938,13 +941,18 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         if (settings.profile == connection.profile) sync()
     }
 
-    suspend fun toggleChecklist(id: String, itemId: Long) {
-        val note = note(id) ?: return
-        if (note.locked) return
+    // Reads the stored note inside the edit lock, so a concurrent editor save cannot be overwritten by a stale copy.
+    suspend fun toggleChecklist(id: String, itemId: Long) = editMutex.withLock {
+        val note = note(id) ?: return@withLock
+        if (note.locked) return@withLock
         val raw = note.raw.copyJson()
-        raw.optJSONArray("checkBoxes")?.objects()?.find { it.optLong("id") == itemId }?.let { it.put("done", !it.optBoolean("done")) }
-        save(Note(raw))
+        val item = raw.optJSONArray("checkBoxes")?.objects()?.find { it.optLong("id") == itemId } ?: return@withLock
+        item.put("done", !item.optBoolean("done"))
+        saveLocked(Note(raw), synchronize = true, profile = settings.profile)
     }
+
+    /** Publishes any merged widget changes now, for user actions that expect immediate feedback. */
+    fun flushWidgets() = effects.flush()
 
     suspend fun attach(note: Note, file: JSONObject) = editMutex.withLock {
         val profile = settings.profile

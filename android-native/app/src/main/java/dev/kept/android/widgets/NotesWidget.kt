@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.text.Html
 import android.view.View
 import android.widget.RemoteViews
+import android.widget.RemoteViewsService
 import dev.kept.android.KeptApplication
 import dev.kept.android.MainActivity
 import dev.kept.android.R
@@ -15,7 +16,10 @@ import dev.kept.android.data.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import androidx.core.net.toUri
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 
 class NotesWidget : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) = ids.forEach { render(context, it) }
@@ -25,44 +29,104 @@ class NotesWidget : AppWidgetProvider() {
     }
     companion object {
         const val TOGGLE = "dev.kept.android.WIDGET_TOGGLE"
+        const val CREATE = "dev.kept.android.WIDGET_CREATE"
+
+        /**
+         * Publishes the widget frame (adapter binding, click templates, status). Rows are not part of it: the system pulls
+         * them one at a time from [NotesWidgetFactory], so a large collection never has to fit in one binder transaction.
+         */
         fun render(context: Context, id: Int) {
             val app = context.applicationContext as KeptApplication
             app.scope.launch(Dispatchers.IO) {
                 app.settings.awaitReady()
-                val (rows, reminders, single) = load(app, id)
-                val items = RemoteViews.RemoteCollectionItems.Builder().setHasStableIds(true).setViewTypeCount(2)
-                rows.forEach { items.addItem(itemId(it), buildRow(app, it, reminders, single)) }
                 val views = RemoteViews(context.packageName, R.layout.notes_widget)
-                views.setRemoteAdapter(R.id.widget_list, items.build())
-                val itemAction = Intent(context, MainActivity::class.java).setAction(TOGGLE)
+                views.setRemoteAdapter(R.id.widget_list, Intent(context, NotesWidgetService::class.java)
+                    .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id).setData("keptnative://widget/list/$id".toUri()))
+                val itemAction = Intent(context, WidgetActionActivity::class.java).setAction(TOGGLE)
                     .setData("keptnative://widget/action/$id".toUri())
-                val open = PendingIntent.getActivity(context, id, itemAction, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
-                views.setPendingIntentTemplate(R.id.widget_list, open)
-                views.setOnClickPendingIntent(R.id.widget_add, PendingIntent.getActivity(context, id + 20000,
-                    Intent(context, MainActivity::class.java).putExtra("createNote", true), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-                val message = if (app.settings.token.isEmpty()) "Open Kept to sign in" else app.settings.message
-                views.setViewVisibility(R.id.widget_status, if (message.isEmpty()) View.GONE else View.VISIBLE)
-                views.setTextViewText(R.id.widget_status, message)
+                views.setPendingIntentTemplate(R.id.widget_list, PendingIntent.getActivity(context, id, itemAction,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE))
+                views.setOnClickPendingIntent(R.id.widget_add, PendingIntent.getActivity(context, id,
+                    Intent(context, MainActivity::class.java).setAction(CREATE).setData("keptnative://widget/add/$id".toUri())
+                        .putExtra("createNote", true), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                applyStatus(app, views)
                 AppWidgetManager.getInstance(context).updateAppWidget(id, views)
             }
         }
+
+        private fun applyStatus(app: KeptApplication, views: RemoteViews) {
+            val message = if (app.settings.token.isEmpty()) "Open Kept to sign in" else app.settings.message
+            views.setViewVisibility(R.id.widget_status, if (message.isEmpty()) View.GONE else View.VISIBLE)
+            views.setTextViewText(R.id.widget_status, message)
+        }
+
+        /** Full recovery: republish every widget frame and reload every collection. */
         fun refresh(context: Context) {
             val ids = AppWidgetManager.getInstance(context).getAppWidgetIds(ComponentName(context, NotesWidget::class.java))
             ids.forEach { render(context, it) }
         }
-        /** Re-renders only the widgets whose notes, order or reminders [scope] can have changed. */
+
+        /**
+         * Reloads only the widgets whose notes, order or reminders [scope] can have changed. The frame and the adapter binding
+         * stay as published, so the list keeps its scroll position and stable row ids anchor it through the change.
+         */
         fun refresh(context: Context, scope: EffectScope) {
-            val ids = AppWidgetManager.getInstance(context).getAppWidgetIds(ComponentName(context, NotesWidget::class.java))
+            val manager = AppWidgetManager.getInstance(context)
+            val ids = manager.getAppWidgetIds(ComponentName(context, NotesWidget::class.java))
             val preferences = context.getSharedPreferences("widgets", Context.MODE_PRIVATE)
-            ids.filter { scope.affectsWidget(preferences.getString("filter_$it", "home")!!) }.forEach { render(context, it) }
+            val affected = ids.filter { scope.affectsWidget(preferences.getString("filter_$it", "home")!!) }
+            if (affected.isEmpty()) return
+            val app = context.applicationContext as KeptApplication
+            app.scope.launch(Dispatchers.IO) {
+                app.settings.awaitReady()
+                val status = RemoteViews(context.packageName, R.layout.notes_widget).also { applyStatus(app, it) }
+                affected.forEach {
+                    manager.partiallyUpdateAppWidget(it, status)
+                    manager.notifyAppWidgetViewDataChanged(it, R.id.widget_list)
+                }
+            }
         }
     }
 }
 
-private data class Row(val note: Note, val item: JSONObject? = null, val itemIndex: Int = -1)
-private data class Loaded(val rows: List<Row>, val reminders: Map<String, JSONObject>, val single: Boolean)
+/** Supplies widget rows lazily; the system asks for each visible row, so IPC per call is one bounded row. */
+class NotesWidgetService : RemoteViewsService() {
+    override fun onGetViewFactory(intent: Intent): RemoteViewsFactory =
+        NotesWidgetFactory(application as KeptApplication, intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID))
+}
 
-private suspend fun load(app: KeptApplication, widgetId: Int): Loaded {
+class NotesWidgetFactory(private val app: KeptApplication, private val widgetId: Int) : RemoteViewsService.RemoteViewsFactory {
+    @Volatile private var loaded = Loaded(emptyList(), emptyMap(), false)
+    override fun onCreate() = Unit
+    // The system calls this on a binder thread and allows it to block.
+    override fun onDataSetChanged() { loaded = runBlocking(Dispatchers.IO) { app.settings.awaitReady(); load(app, widgetId) } }
+    override fun onDestroy() { loaded = Loaded(emptyList(), emptyMap(), false) }
+    override fun getCount() = loaded.rows.size
+    override fun getViewAt(position: Int): RemoteViews? {
+        val snapshot = loaded
+        val row = snapshot.rows.getOrNull(position) ?: return null
+        return buildRow(app, row, snapshot.reminders, snapshot.single)
+    }
+    override fun getLoadingView(): RemoteViews? = null
+    override fun getViewTypeCount() = 2
+    override fun getItemId(position: Int) = loaded.rows.getOrNull(position)?.id ?: position.toLong()
+    override fun hasStableIds() = true
+}
+
+internal data class Row(val note: Note, val item: JSONObject? = null, val itemIndex: Int = -1, val id: Long = widgetRowId(note.syncId))
+internal data class Loaded(val rows: List<Row>, val reminders: Map<String, JSONObject>, val single: Boolean)
+
+/**
+ * A row's identity comes from the note's syncId (and the checklist item's id), never from the numeric note id that changes
+ * when the server accepts a new note, and is a 64-bit digest so unrelated rows do not collide.
+ */
+internal fun widgetRowId(syncId: String, itemKey: String? = null): Long {
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest((if (itemKey == null) "note\u0000$syncId" else "item\u0000$syncId\u0000$itemKey").toByteArray())
+    return ByteBuffer.wrap(digest).long
+}
+
+internal suspend fun load(app: KeptApplication, widgetId: Int): Loaded {
     val preferences = app.getSharedPreferences("widgets", Context.MODE_PRIVATE)
     val filter = preferences.getString("filter_$widgetId", "home")!!
     val single = filter.startsWith("note:")
@@ -72,19 +136,20 @@ private suspend fun load(app: KeptApplication, widgetId: Int): Loaded {
     val reminders = app.database.store().list(profile, "reminder").map { JSONObject(it.payload) }
     val note = notes.singleOrNull()
     val fullChecklist = note?.let(::singleNoteWidgetChecklistItems).orEmpty()
-    val rows = if (single && fullChecklist.isNotEmpty()) listOf(Row(note!!)) + fullChecklist.mapIndexed { index, item -> Row(note, item, index) }
-        else notes.map { Row(it) }
+    val rows = if (single && fullChecklist.isNotEmpty()) {
+        val seen = HashSet<String>()
+        listOf(Row(note!!)) + fullChecklist.mapIndexed { index, item ->
+            val key = item.opt("id")?.toString()?.takeIf { seen.add(it) } ?: "#$index"
+            Row(note, item, index, widgetRowId(note.syncId, key))
+        }
+    } else notes.map { Row(it) }
     return Loaded(rows, ReminderFormat.indexByNote(notes, reminders), single)
 }
 
-private fun itemId(row: Row): Long =
-    if (row.item == null) row.note.id else "${row.note.syncId}:${row.item.optLong("id", row.itemIndex.toLong())}".hashCode().toLong()
-
-private fun buildRow(app: KeptApplication, row: Row, reminders: Map<String, JSONObject>, single: Boolean): RemoteViews {
+internal fun buildRow(app: KeptApplication, row: Row, reminders: Map<String, JSONObject>, single: Boolean): RemoteViews {
         val note = row.note
         val item = row.item
         val reminder = reminders[note.syncId]
-        val interactiveChecklistItem = item != null && item.has("id") && !note.locked
         val color = NotePalette.parse(note.raw.text("bgColor")) ?: Color.WHITE
         val foreground = widgetForegroundColor(color)
         if (item != null) {
@@ -97,8 +162,7 @@ private fun buildRow(app: KeptApplication, row: Row, reminders: Map<String, JSON
                 (if (item.optBoolean("done")) "☑  " else "☐  ") + itemLabel)
             itemRow.setContentDescription(R.id.checklist_item_row,
                 "${if (item.optBoolean("done")) "Complete" else "Incomplete"}: $itemLabel. Toggle checklist item")
-            itemRow.setOnClickFillInIntent(R.id.checklist_item_row, Intent().putExtra("noteSyncId", note.syncId)
-                .apply { if (interactiveChecklistItem) putExtra("itemId", item.optLong("id")).putExtra("widgetToggle", true) })
+            itemRow.setOnClickFillInIntent(R.id.checklist_item_row, widgetFillIn(row))
             return itemRow
         }
         return RemoteViews(app.packageName, R.layout.widget_row).apply {
@@ -120,7 +184,7 @@ private fun buildRow(app: KeptApplication, row: Row, reminders: Map<String, JSON
             } else setViewVisibility(R.id.row_reminder, View.GONE)
             setViewVisibility(R.id.row_checks, View.GONE)
             setInt(R.id.widget_card_background, "setColorFilter", color)
-            setOnClickFillInIntent(R.id.widget_row, Intent().putExtra("noteSyncId", note.syncId))
+            setOnClickFillInIntent(R.id.widget_row, widgetFillIn(row))
         }
     }
 
@@ -147,3 +211,9 @@ internal fun widgetNoteBodyText(note: Note, single: Boolean): String = when {
 
 internal fun widgetForegroundColor(background: Int): Int =
     if (Color.luminance(background) > .4f) Color.rgb(41, 39, 32) else Color.rgb(245, 243, 239)
+
+/** A tap toggles only an identifiable checklist item of an unlocked note; every other tap opens the note. */
+internal fun widgetFillIn(row: Row): Intent = Intent().putExtra("noteSyncId", row.note.syncId).apply {
+    val item = row.item
+    if (item != null && item.has("id") && !row.note.locked) putExtra("itemId", item.optLong("id")).putExtra("widgetToggle", true)
+}
