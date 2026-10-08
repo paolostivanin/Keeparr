@@ -11,7 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,11 +32,13 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -229,7 +231,6 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
     val selectedIds = home.selectedIds
     var confirmBulkTrash by remember { mutableStateOf(false) }
     var conflict by remember { mutableStateOf<Outbox?>(null) }
-    val noteBounds = remember { mutableStateMapOf<String, Rect>() }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val reorderEnabled = home.reorderEnabled
     var projection by remember { mutableStateOf(EmptyHomeProjection, referentialEqualityPolicy()) }
@@ -237,6 +238,16 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
         projection = withContext(Dispatchers.Default) { projector.project(notes, filter, search, reminders) }
     }
     val visible = projection.visibleNotes
+    // Plain holders: geometry and the latest projection are read by gestures at drag time, never during composition.
+    val latestProjection by rememberUpdatedState(projection)
+    val gridState = rememberLazyStaggeredGridState()
+    val gridCoordinates = remember { arrayOfNulls<LayoutCoordinates>(1) }
+    val reorder = remember { NoteReorderController { source, target ->
+        val notes = latestProjection.notesBySyncId
+        notes[source] != null && notes[source]?.pinned == notes[target]?.pinned
+    } }
+    val visibleIndex = remember(visible) { visible.withIndex().associate { it.value.syncId to it.index } }
+    fun moveNote(syncId: String, delta: Int) = visibleIndex[syncId]?.let { moveNoteBy(visible, it, delta) }
     val selectedNotes = selectedIds.mapNotNull(projection.notesBySyncId::get)
     val canTrashSelected = selectedNotes.isNotEmpty() && selectedNotes.all { it.owner == app.settings.userId }
     val allSelectedTrashed = selectedNotes.isNotEmpty() && selectedNotes.all { it.trashed }
@@ -274,19 +285,12 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("${selection.size} selected", Modifier.weight(1f))
                         if (selection.size == 1 && reorderEnabled) {
-                            val selectedId = selection.single()
-                            val ids = visible.map { it.syncId }.toMutableList()
-                            val index = ids.indexOf(selectedId)
-                            IconButton(onClick = {
-                                if (index > 0 && visible[index].pinned == visible[index - 1].pinned) {
-                                    java.util.Collections.swap(ids, index, index - 1); action { app.repository.reorder(ids) }
-                                }
-                            }, enabled = index > 0 && visible[index].pinned == visible[index - 1].pinned) { Icon(Icons.Outlined.ArrowUpward, "Move earlier") }
-                            IconButton(onClick = {
-                                if (index >= 0 && index + 1 < ids.size && visible[index].pinned == visible[index + 1].pinned) {
-                                    java.util.Collections.swap(ids, index, index + 1); action { app.repository.reorder(ids) }
-                                }
-                            }, enabled = index >= 0 && index + 1 < ids.size && visible[index].pinned == visible[index + 1].pinned) { Icon(Icons.Outlined.ArrowDownward, "Move later") }
+                            val earlier = moveNote(selection.single(), -1)
+                            val later = moveNote(selection.single(), 1)
+                            IconButton(onClick = { earlier?.let { ids -> action { app.repository.reorder(ids) } } }, enabled = earlier != null) {
+                                Icon(Icons.Outlined.ArrowUpward, "Move earlier") }
+                            IconButton(onClick = { later?.let { ids -> action { app.repository.reorder(ids) } } }, enabled = later != null) {
+                                Icon(Icons.Outlined.ArrowDownward, "Move later") }
                         }
                         if (canTrashSelected) IconButton(onClick = {
                             if (allSelectedTrashed) action { app.repository.setTrashed(selection.toList(), false); home.clearSelection() }
@@ -310,23 +314,24 @@ private fun HomeScreen(app: KeptApplication, notes: List<Note>, reminders: List<
             if (filter == "reminders") ReminderList(app, reminders, notes, Modifier.fillMaxSize().padding(padding), onOpenNote = { note -> if (note != null) onEdit(note) }, onError = onError)
             else if (visible.isEmpty()) Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Outlined.Lightbulb, null, Modifier.size(80.dp)); Text("Your notes appear here", Modifier.padding(16.dp)) }
-            } else LazyVerticalStaggeredGrid(columns = if (grid) StaggeredGridCells.Adaptive(170.dp) else StaggeredGridCells.Fixed(1), modifier = Modifier.fillMaxSize().padding(padding),
+            } else LazyVerticalStaggeredGrid(columns = if (grid) StaggeredGridCells.Adaptive(170.dp) else StaggeredGridCells.Fixed(1), state = gridState,
+                modifier = Modifier.fillMaxSize().padding(padding).onGloballyPositioned { gridCoordinates[0] = it }
+                    .noteReorderGestures(reorder, reorderEnabled, { gridCoordinates[0] }, { gridState.scrollBy(it) }, onDrop = { drop ->
+                        val source = latestProjection.notesBySyncId[drop.sourceId]
+                        if (source != null && selectedIds.size <= 1) moveDraggedNote(visible, source, drop.targetId)?.let { ids -> action { app.repository.reorder(ids) } }
+                    }),
                 contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp) {
                 val pinned = projection.pinnedCards; val other = projection.otherCards
                 if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(pinned, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, noteBounds,
+                items(pinned, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, reorder,
                     onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
-                    onLongClick = { selectNote(card.syncId) }, onDrop = { target ->
-                        val source = projection.notesBySyncId[card.syncId]
-                        if (source != null && reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, source, target)?.let { ids -> action { app.repository.reorder(ids) } }
-                    }) }
+                    onLongClick = { selectNote(card.syncId) }, onMove = { delta -> moveNote(card.syncId, delta)?.let { ids -> action { app.repository.reorder(ids) } } },
+                    canMove = { delta -> visibleIndex[card.syncId]?.let { canMoveNoteBy(visible, it, delta) } == true }) }
                 if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(other, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, noteBounds,
+                items(other, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, reorder,
                     onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
-                    onLongClick = { selectNote(card.syncId) }, onDrop = { target ->
-                        val source = projection.notesBySyncId[card.syncId]
-                        if (source != null && reorderEnabled && selectedIds.size <= 1) moveDraggedNote(visible, source, target)?.let { ids -> action { app.repository.reorder(ids) } }
-                    }) }
+                    onLongClick = { selectNote(card.syncId) }, onMove = { delta -> moveNote(card.syncId, delta)?.let { ids -> action { app.repository.reorder(ids) } } },
+                    canMove = { delta -> visibleIndex[card.syncId]?.let { canMoveNoteBy(visible, it, delta) } == true }) }
             }
         }
     }
@@ -447,29 +452,26 @@ private fun ReminderList(app: KeptApplication, reminders: List<JSONObject>, note
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NoteCard(app: KeptApplication, note: NoteCardUiModel, selected: Boolean, reorderEnabled: Boolean, bounds: MutableMap<String, Rect>,
-    onClick: () -> Unit, onLongClick: () -> Unit, onDrop: (String) -> Unit) {
-    var coordinates by remember(note.syncId) { mutableStateOf<LayoutCoordinates?>(null) }
-    var target by remember(note.syncId) { mutableStateOf(note.syncId) }
-    DisposableEffect(note.syncId) { onDispose { bounds.remove(note.syncId) } }
+private fun NoteCard(app: KeptApplication, note: NoteCardUiModel, selected: Boolean, reorderEnabled: Boolean, reorder: NoteReorderController,
+    onClick: () -> Unit, onLongClick: () -> Unit, onMove: (Int) -> Unit, canMove: (Int) -> Boolean) {
+    DisposableEffect(note.syncId, reorder) { onDispose { reorder.disposed(note.syncId) } }
+    // Only this card's own highlight state is observed, so a changing drop target recomposes just two cards.
+    val dragging by remember(note.syncId, reorder) { derivedStateOf { reorder.draggingId == note.syncId } }
+    val dropTarget by remember(note.syncId, reorder) { derivedStateOf { reorder.targetId == note.syncId } }
     val color = note.colorArgb?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
     val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF1F1F1)
+    val highlighted = selected || dropTarget
     Surface(shape = RoundedCornerShape(12.dp), color = color, contentColor = foreground,
-        border = BorderStroke(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.fillMaxWidth().onGloballyPositioned { coordinates = it; bounds[note.syncId] = it.boundsInWindow() }
+        border = BorderStroke(if (highlighted) 3.dp else 1.dp, if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().alpha(if (dragging) .6f else 1f)
+            .onGloballyPositioned { reorder.positioned(note.syncId, it.boundsInWindow()) }
             .combinedClickable(onClick = onClick, onLongClick = onLongClick,
                 onLongClickLabel = "Drag to reorder note".takeIf { reorderEnabled })
-            .pointerInput(note.syncId, bounds.keys.toList(), reorderEnabled) {
-                if (reorderEnabled) detectDragGesturesAfterLongPress(
-                    onDragStart = { target = note.syncId; onLongClick() },
-                    onDrag = { change, _ ->
-                        val point: Offset? = coordinates?.takeIf { it.isAttached }?.localToWindow(change.position)
-                        point?.let { location -> bounds.entries.firstOrNull { it.value.contains(location) }?.key?.let { target = it } }
-                        change.consume()
-                    },
-                    onDragEnd = { if (target != note.syncId) onDrop(target) },
-                    onDragCancel = { target = note.syncId }
-                )
+            // Dragging is not available to every user, so the same moves are exposed as accessibility actions.
+            .semantics {
+                if (reorderEnabled) customActions = listOfNotNull(
+                    CustomAccessibilityAction("Move earlier") { onMove(-1); true }.takeIf { canMove(-1) },
+                    CustomAccessibilityAction("Move later") { onMove(1); true }.takeIf { canMove(1) })
             }) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (note.locked) { Icon(Icons.Outlined.Lock, "Locked note"); Text("Locked note") }
@@ -501,6 +503,18 @@ internal fun searchVisibleNotes(notes: List<Note>, filter: String, search: Strin
         !note.locked && (note.title + " " + NoteFormat.displayText(note.body) + " " + note.items.joinToString { it.text("data") })
             .contains(search, true)
     }
+}
+
+/** Whether the note at [index] can swap one place toward [delta] (-1 earlier, +1 later) without leaving its pinned group. */
+internal fun canMoveNoteBy(visible: List<Note>, index: Int, delta: Int): Boolean {
+    val to = index + delta
+    return (delta == -1 || delta == 1) && index in visible.indices && to in visible.indices && visible[index].pinned == visible[to].pinned
+}
+
+/** The stored order after moving the note at [index] one place by [delta], or null where that is not allowed. */
+internal fun moveNoteBy(visible: List<Note>, index: Int, delta: Int): List<String>? {
+    if (!canMoveNoteBy(visible, index, delta)) return null
+    return visible.map { it.syncId }.toMutableList().also { java.util.Collections.swap(it, index, index + delta) }
 }
 
 internal fun moveDraggedNote(visible: List<Note>, source: Note, targetId: String): List<String>? {
