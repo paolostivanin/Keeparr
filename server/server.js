@@ -2,8 +2,6 @@ const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const dns = require('dns');
-const net = require('net');
 const path = require('path');
 const { AsyncLocalStorage } = require('async_hooks');
 const cors = require('cors');
@@ -22,6 +20,16 @@ const { initOAuthTables, mountOAuthAndMcpRoutes, oauthTokenCanCallApi, resolveOA
 const { mountStaticAssets } = require('./static-assets');
 const { mountClientCapabilities } = require('./client-capabilities');
 const { mountSyncMutationRoute } = require('./sync-routes');
+const { plainText, parseJson, escapeHtml, notePreviewText, noteLinkCount } = require('./note-text');
+const { searchTextFromQuery, searchTokensFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere } = require('./note-search');
+const {
+  firstDefined, normalizeLocationTrigger, normalizeRepeatRule, normalizeReminderDueAt, reminderScheduleDefinition,
+  reminderScheduleDefinitionChanged, parseRepeatRule, normalizeReminderPayload, reminderResponse
+} = require('./reminder-model');
+const { isPrivateOrLocalAddress, resolvePublicIp, publicRequestOptions } = require('./public-network');
+const {
+  serverLwwStamp, normalizeLwwStamp, rowLwwStamp, compareLwwStamp, clampClientSortOrder, parseChangesQuery
+} = require('./sync-protocol');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -371,20 +379,6 @@ function sendJsonWithPerf(res, trace, payload) {
   trace.end({ bytes: Buffer.byteLength(body) });
 }
 
-function plainText(value) {
-  return String(value || '')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 async function init() {
   await run('PRAGMA journal_mode = WAL');
@@ -1149,13 +1143,6 @@ async function createUser({ username, displayName, password, role, email, enable
   return await get('SELECT * FROM users WHERE id = ?', [result.id]);
 }
 
-function parseJson(value, fallback) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-}
 
 const PRIVATE_IMAGE_PREFIX = '/api/uploads/images/';
 
@@ -1307,46 +1294,9 @@ function dbNoteToApi(row) {
   };
 }
 
-function serverLwwStamp() {
-  return {
-    physicalMs: Date.now(),
-    logical: 0,
-    deviceId: 'server',
-    operationId: crypto.randomUUID()
-  };
-}
 
-function normalizeLwwStamp(value = {}) {
-  const now = Date.now();
-  const requested = Number(value.physicalMs || value.lwwPhysicalMs || now);
-  const fiveMinutes = 5 * 60 * 1000;
-  return {
-    physicalMs: Math.max(now - fiveMinutes, Math.min(now + fiveMinutes, Number.isFinite(requested) ? requested : now)),
-    logical: Math.max(0, Math.floor(Number(value.logical ?? value.lwwLogical ?? 0) || 0)),
-    deviceId: String(value.deviceId || value.lwwDeviceId || 'unknown').slice(0, 160),
-    operationId: String(value.operationId || value.lwwOperationId || crypto.randomUUID()).slice(0, 160)
-  };
-}
 
-function rowLwwStamp(row = {}) {
-  return {
-    physicalMs: Number(row.lwwPhysicalMs || 0),
-    logical: Number(row.lwwLogical || 0),
-    deviceId: String(row.lwwDeviceId || ''),
-    operationId: String(row.lwwOperationId || '')
-  };
-}
 
-function compareLwwStamp(left, right) {
-  const keys = ['physicalMs', 'logical'];
-  for (const key of keys) {
-    const delta = Number(left[key] || 0) - Number(right[key] || 0);
-    if (delta) return delta;
-  }
-  const device = String(left.deviceId || '').localeCompare(String(right.deviceId || ''));
-  if (device) return device;
-  return String(left.operationId || '').localeCompare(String(right.operationId || ''));
-}
 
 async function appendSyncChange(userIds, resourceType, resourceSyncId, operation, payload, stamp) {
   const changedAt = new Date().toISOString();
@@ -1407,145 +1357,13 @@ async function recordNoteSyncChange(noteId, operation, recipientIds, deletedSnap
   await appendSyncChange(recipients, 'note', syncId, operation, payload, stamp);
 }
 
-function notePreviewText(row) {
-  const bodyText = plainText(row.noteBody || '');
-  const checkBoxes = parseJson(row.checkBoxes || '[]', []);
-  const checklistText = Array.isArray(checkBoxes)
-    ? checkBoxes.map(item => plainText(item?.data || '')).filter(Boolean).join(' ')
-    : '';
-  return (bodyText || checklistText || '').slice(0, 280);
-}
 
-function noteLinkCount(row) {
-  const urls = new Set();
-  const addUrls = (value) => {
-    for (const match of String(value || '').matchAll(/https?:\/\/[^\s"'<>]+/gi)) {
-      const url = match[0].replace(/[),.;:!?]+$/, '');
-      if (url) urls.add(url);
-    }
-  };
-  addUrls(row.noteBody || '');
-  const checkBoxes = parseJson(row.checkBoxes || '[]', []);
-  if (Array.isArray(checkBoxes)) checkBoxes.forEach(item => addUrls(item?.data || ''));
-  return urls.size;
-}
 
-function searchTextFromQuery(query) {
-  return String(query || '')
-    .split(/\s+/)
-    .filter(token => token &&
-      !/^!i(?:m(?:a(?:g(?:e)?)?)?)?$/i.test(token) &&
-      !/^!l(?:a(?:b(?:e(?:l(?::[a-z0-9_-]+)?)?)?)?)?$/i.test(token) &&
-      !/^!label:[a-z0-9_-]+$/i.test(token) &&
-      !/^!d(?:r(?:a(?:w(?:ing)?)?)?)?$/i.test(token) &&
-      !/^!t(?:o(?:d(?:o)?)?)?$/i.test(token) &&
-      !/^!a(?:t(?:t(?:a(?:c(?:h(?:m(?:e(?:n(?:t)?)?)?)?)?)?)?)?)?$/i.test(token) &&
-      !/^!url?$/i.test(token)
-    )
-    .join(' ')
-    .trim();
-}
 
-function searchTokensFromQuery(query) {
-  return searchTextFromQuery(query)
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9\s/:\-]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean);
-}
 
-function searchOperatorsFromQuery(query) {
-  const operators = {
-    hasImage: false,
-    hasCheckbox: false,
-    hasDrawing: false,
-    hasAnyLabel: false,
-    hasUrl: false,
-    hasAttachment: false,
-    labels: []
-  };
-  for (const token of String(query || '').toLowerCase().split(/\s+/).filter(Boolean)) {
-    if (/^!i(?:m(?:a(?:g(?:e)?)?)?)?$/.test(token)) operators.hasImage = true;
-    else if (/^!t(?:o(?:d(?:o)?)?)?$/.test(token)) operators.hasCheckbox = true;
-    else if (/^!d(?:r(?:a(?:w(?:ing)?)?)?)?$/.test(token)) operators.hasDrawing = true;
-    else if (/^!url?$/.test(token)) operators.hasUrl = true;
-    else if (/^!a(?:t(?:t(?:a(?:c(?:h(?:m(?:e(?:n(?:t)?)?)?)?)?)?)?)?)?$/.test(token)) operators.hasAttachment = true;
-    else if (/^!label:[a-z0-9_-]+$/.test(token)) operators.labels.push(token.slice('!label:'.length));
-    else if (/^!l(?:a(?:b(?:e(?:l)?)?)?)?$/.test(token)) operators.hasAnyLabel = true;
-  }
-  return operators;
-}
 
-function noteOperatorWhere(operators) {
-  const clauses = [];
-  const params = [];
-  if (operators.hasImage) {
-    clauses.push(`(
-      COALESCE(bgImage, '') <> ''
-      OR LOWER(COALESCE(noteBody, '')) LIKE '%<img%'
-      OR (COALESCE(images, '') <> '' AND COALESCE(images, '') <> '[]' AND LOWER(COALESCE(images, '')) NOT LIKE '%"id":"drawing"%')
-    `);
-  }
-  if (operators.hasCheckbox) clauses.push(`(isCbox = 1 OR (COALESCE(checkBoxes, '') <> '' AND COALESCE(checkBoxes, '') <> '[]'))`);
-  if (operators.hasDrawing) clauses.push(`LOWER(COALESCE(images, '')) LIKE '%"id":"drawing"%'`);
-  if (operators.hasAnyLabel) clauses.push(`COALESCE(labels, '') <> '' AND COALESCE(labels, '') <> '[]'`);
-  if (operators.hasUrl) {
-    clauses.push(`(
-      LOWER(COALESCE(noteTitle, '')) LIKE '%http://%'
-      OR LOWER(COALESCE(noteTitle, '')) LIKE '%https://%'
-      OR LOWER(COALESCE(noteBody, '')) LIKE '%http://%'
-      OR LOWER(COALESCE(noteBody, '')) LIKE '%https://%'
-    )`);
-  }
-  if (operators.hasAttachment) clauses.push(`attachmentCount > 0`);
-  for (const label of operators.labels) {
-    clauses.push(`LOWER(REPLACE(COALESCE(labels, ''), ' ', '-')) LIKE ?`);
-    params.push(`%${label}%`);
-  }
-  return { clauses, params };
-}
 
-function noteSearchWhere(tokens, options = {}) {
-  const params = [];
-  const conditions = tokens.map(token => {
-    const like = `%${token}%`;
-    if (options.protectLockedContent) {
-      params.push(like, like, like, like, like, like, like, like);
-      return `(
-        (locked = 1 AND (
-          LOWER(COALESCE(noteTitle, '')) LIKE ?
-          OR LOWER(COALESCE(labels, '')) LIKE ?
-          OR LOWER(COALESCE(binder, '')) LIKE ?
-        ))
-        OR (locked = 0 AND (
-          LOWER(COALESCE(noteTitle, '')) LIKE ?
-          OR LOWER(COALESCE(noteBody, '')) LIKE ?
-          OR LOWER(COALESCE(checkBoxes, '')) LIKE ?
-          OR LOWER(COALESCE(labels, '')) LIKE ?
-          OR LOWER(COALESCE(attachmentNames, '')) LIKE ?
-        ))
-      )`;
-    }
-    params.push(like, like, like, like, like);
-    return `(LOWER(COALESCE(noteTitle, '')) LIKE ?
-      OR LOWER(COALESCE(noteBody, '')) LIKE ?
-      OR LOWER(COALESCE(checkBoxes, '')) LIKE ?
-      OR LOWER(COALESCE(labels, '')) LIKE ?
-      OR LOWER(COALESCE(attachmentNames, '')) LIKE ?)`;
-  });
-  return { clause: conditions.join(' AND '), params };
-}
 
-function escapeHtml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
 
 function cardNoteBody(row, previewText) {
   const body = row.noteBody || '';
@@ -4854,8 +4672,7 @@ app.get('/api/sync/bootstrap', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/sync/changes', requireAuth, asyncRoute(async (req, res) => {
-  const since = Math.max(0, Number(req.query.cursor || req.query.since || 0) || 0);
-  const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 2000);
+  const { since, limit } = parseChangesQuery(req.query);
   const rows = await all(
     `SELECT * FROM sync_changes
      WHERE userId = ? AND sequence > ?
@@ -6906,69 +6723,13 @@ async function reminderNoteMap(reminders) {
   return visible;
 }
 
-function firstDefined(...values) {
-  return values.find(value => value !== undefined);
-}
 
-function normalizeLocationTrigger(value) {
-  const trigger = String(value || '').trim().toLowerCase();
-  return ['leave', 'exit', 'depart', 'departure'].includes(trigger) ? 'leave' : 'arrive';
-}
 
-function normalizeRepeatRule(value) {
-  if (!value) return null;
-  let parsed = value;
-  if (typeof value === 'string') {
-    try { parsed = JSON.parse(value); } catch { return null; }
-  }
-  const type = String(parsed?.type || '').trim();
-  if (!['none', 'daily', 'weekly', 'monthly', 'custom_days'].includes(type)) return null;
-  const intervalDays = Number(parsed.intervalDays || 0);
-  if (type === 'none' && !parsed.moveToTopOnTrigger) return null;
-  return JSON.stringify({
-    type,
-    ...(type === 'custom_days' ? { intervalDays: Number.isFinite(intervalDays) && intervalDays > 0 ? Math.floor(intervalDays) : 1 } : {}),
-    moveToTopOnTrigger: !!parsed.moveToTopOnTrigger
-  });
-}
 
-function normalizeReminderDueAt(value) {
-  if (!value) return null;
-  const timestamp = Date.parse(String(value));
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : String(value);
-}
 
-function reminderScheduleDefinition(existing = {}) {
-  return {
-    dueAtUtc: normalizeReminderDueAt(existing.dueAtUtc),
-    timezone: String(existing.timezone || 'UTC'),
-    repeatRule: normalizeRepeatRule(existing.repeatRule)
-  };
-}
 
-function reminderScheduleDefinitionChanged(existing, next) {
-  const before = reminderScheduleDefinition(existing);
-  const after = reminderScheduleDefinition(next);
-  return before.dueAtUtc !== after.dueAtUtc || before.timezone !== after.timezone || before.repeatRule !== after.repeatRule;
-}
 
-function parseRepeatRule(value) {
-  if (!value) return null;
-  try {
-    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-    const normalized = normalizeRepeatRule(parsed);
-    return normalized ? JSON.parse(normalized) : null;
-  } catch {
-    return null;
-  }
-}
 
-function clampClientSortOrder(value) {
-  const now = Date.now();
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return now;
-  return Math.min(Math.max(n, now - 5 * 60 * 1000), now + 5 * 60 * 1000);
-}
 
 async function floatReminderNoteToTop(userId, noteId) {
   if (!userId || !noteId) return;
@@ -6982,95 +6743,7 @@ async function floatReminderNoteToTop(userId, noteId) {
   broadcastRealtime([userId], { type: 'notes-changed', action: 'reordered' });
 }
 
-function normalizeReminderPayload(body = {}, existing = {}) {
-  const location = body.location && typeof body.location === 'object' ? body.location : {};
-  const repeatRuleRaw = Object.prototype.hasOwnProperty.call(body, 'repeatRule') || Object.prototype.hasOwnProperty.call(body, 'repeat_rule')
-    ? firstDefined(body.repeatRule, body.repeat_rule)
-    : existing.repeatRule;
-  const noteIdRaw = firstDefined(body.noteId, body.note_id, body.noteID, body.note?.id, existing.noteId);
-  const locationNameRaw = firstDefined(
-    body.locationName,
-    body.location_name,
-    body.triggerLocationName,
-    location.displayName,
-    location.locationName,
-    location.name,
-    location.address,
-    existing.locationName
-  );
-  const latitudeRaw = firstDefined(body.latitude, body.lat, location.latitude, location.lat, existing.latitude);
-  const longitudeRaw = firstDefined(body.longitude, body.lng, body.lon, location.longitude, location.lng, location.lon, existing.longitude);
-  const radiusRaw = firstDefined(body.radiusMeters, body.radius_meters, body.radius, location.radiusMeters, location.radius_meters, location.radius, existing.radiusMeters);
-  const triggerRaw = firstDefined(body.locationTrigger, body.location_trigger, body.triggerType, body.geofenceTrigger, location.locationTrigger, location.triggerType, existing.locationTrigger);
-  const dueRaw = firstDefined(body.dueAtUtc, body.due_at_utc, body.dueAt, body.datetime, body.dateTime, existing.dueAtUtc);
 
-  const locationName = locationNameRaw ? String(locationNameRaw) : null;
-  const latitude = latitudeRaw != null ? Number(latitudeRaw) : null;
-  const longitude = longitudeRaw != null ? Number(longitudeRaw) : null;
-  const radiusMeters = radiusRaw != null ? Number(radiusRaw) : (locationName ? 120 : null);
-
-  return {
-    noteId: Number(noteIdRaw || 0) || null,
-    dueAtUtc: normalizeReminderDueAt(dueRaw),
-    timezone: String(firstDefined(body.timezone, body.timeZone, existing.timezone, 'UTC') || 'UTC'),
-    repeatRule: normalizeRepeatRule(repeatRuleRaw),
-    status: firstDefined(body.status, existing.status, 'pending'),
-    title: plainText(firstDefined(body.title, body.notificationTitle, existing.title) || '') || null,
-    body: plainText(firstDefined(body.body, body.notificationBody, body.text, existing.body) || '') || null,
-    imageUrl: String(firstDefined(body.imageUrl, body.image_url, existing.imageUrl) || '') || null,
-    locationName,
-    latitude,
-    longitude,
-    radiusMeters,
-    locationTrigger: normalizeLocationTrigger(triggerRaw)
-  };
-}
-
-function reminderResponse(reminder, notesById = new Map()) {
-  const noteId = Number(reminder.noteId || 0) || null;
-  const note = noteId ? notesById.get(`${Number(reminder.userId)}:${noteId}`) : null;
-  const inaccessibleNote = !!noteId && !note;
-  const explicitTitle = plainText(reminder.title || '');
-  const explicitBody = plainText(reminder.body || '');
-  const noteTitle = plainText(note?.noteTitle || '');
-  const noteBody = note ? notePreviewText(note).slice(0, 500) : '';
-  const useCurrentNoteContent = !!note && !note.locked;
-  const latitude = reminder.latitude != null ? Number(reminder.latitude) : null;
-  const longitude = reminder.longitude != null ? Number(reminder.longitude) : null;
-  const radiusMeters = reminder.radiusMeters != null ? Number(reminder.radiusMeters) : null;
-  const locationName = reminder.locationName || null;
-  const locationTrigger = normalizeLocationTrigger(reminder.locationTrigger);
-  return {
-    ...reminder,
-    id: Number(reminder.id),
-    syncId: reminder.syncId || '',
-    noteId,
-    dueAtUtc: reminder.dueAtUtc || null,
-    title: inaccessibleNote ? null : useCurrentNoteContent ? (noteTitle || null) : (explicitTitle || noteTitle || null),
-    body: inaccessibleNote ? null : useCurrentNoteContent ? (noteBody || null) : (explicitBody || noteBody || null),
-    imageUrl: inaccessibleNote ? null : (reminder.imageUrl || null),
-    locationName,
-    latitude,
-    longitude,
-    radiusMeters,
-    locationTrigger,
-    location: locationName && latitude != null && longitude != null ? {
-      displayName: locationName,
-      name: locationName,
-      latitude,
-      longitude,
-      radiusMeters: radiusMeters ?? 120,
-      triggerType: locationTrigger,
-      locationTrigger
-    } : null,
-    status: reminder.status || 'pending',
-    deepLink: noteId && !inaccessibleNote ? `kept://note/${noteId}` : null,
-    lwwPhysicalMs: Number(reminder.lwwPhysicalMs || 0),
-    lwwLogical: Number(reminder.lwwLogical || 0),
-    lwwDeviceId: reminder.lwwDeviceId || 'server',
-    lwwOperationId: reminder.lwwOperationId || ''
-  };
-}
 
 async function recordReminderSyncChange(reminder, operation = 'upsert') {
   if (!reminder?.syncId) return;
@@ -7809,87 +7482,11 @@ setTimeout(() => refreshLatestReleaseInBackground(), 5000).unref?.();
 
 const linkPreviewCache = new Map(); // url -> { data, fetchedAt }
 
-function normalizeIpAddress(address) {
-  if (!address) return '';
-  const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  return mapped ? mapped[1] : address;
-}
 
-function ipToLong(ip) {
-  return ip.split('.').reduce((acc, octet) => ((acc << 8) + Number(octet)) >>> 0, 0) >>> 0;
-}
 
-function inCidrV4(ip, cidrBase, prefix) {
-  const ipNum = ipToLong(ip);
-  const baseNum = ipToLong(cidrBase);
-  const mask = prefix === 0 ? 0 : ((0xffffffff << (32 - prefix)) >>> 0);
-  return (ipNum & mask) === (baseNum & mask);
-}
 
-function isPrivateOrLocalAddress(address) {
-  const normalized = normalizeIpAddress(address);
-  const family = net.isIP(normalized);
-  if (!family) return true;
-  if (family === 4) {
-    return (
-      inCidrV4(normalized, '0.0.0.0', 8) ||
-      inCidrV4(normalized, '10.0.0.0', 8) ||
-      inCidrV4(normalized, '100.64.0.0', 10) ||
-      inCidrV4(normalized, '127.0.0.0', 8) ||
-      inCidrV4(normalized, '169.254.0.0', 16) ||
-      inCidrV4(normalized, '172.16.0.0', 12) ||
-      inCidrV4(normalized, '192.0.0.0', 24) ||
-      inCidrV4(normalized, '192.0.2.0', 24) ||
-      inCidrV4(normalized, '192.168.0.0', 16) ||
-      inCidrV4(normalized, '198.18.0.0', 15) ||
-      inCidrV4(normalized, '198.51.100.0', 24) ||
-      inCidrV4(normalized, '203.0.113.0', 24) ||
-      inCidrV4(normalized, '224.0.0.0', 4) ||
-      inCidrV4(normalized, '240.0.0.0', 4)
-    );
-  }
-  const value = normalized.toLowerCase();
-  return (
-    value === '::' ||
-    value === '::1' ||
-    value.startsWith('fc') ||
-    value.startsWith('fd') ||
-    value.startsWith('fe80:') ||
-    value.startsWith('fec0:') ||
-    value.startsWith('ff')
-  );
-}
 
-async function resolvePublicIp(hostname) {
-  const lookups = await dns.promises.lookup(hostname, { all: true, verbatim: true });
-  if (!lookups.length) throw new Error('Host resolution failed');
-  const sortedLookups = [
-    ...lookups.filter(result => result.family === 4),
-    ...lookups.filter(result => result.family !== 4)
-  ];
-  for (const result of sortedLookups) {
-    if (!isPrivateOrLocalAddress(result.address)) return result;
-  }
-  throw new Error('Private network targets are blocked');
-}
 
-async function publicRequestOptions(targetUrl, baseOptions = {}) {
-  const parsed = new URL(targetUrl);
-  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Unsupported protocol');
-  const resolved = await resolvePublicIp(parsed.hostname);
-  return {
-    ...baseOptions,
-    lookup: (_hostname, options, callback) => {
-      const done = typeof options === 'function' ? options : callback;
-      const lookupOptions = typeof options === 'function' ? {} : (options || {});
-      if (lookupOptions.all) {
-        done(null, [{ address: resolved.address, family: resolved.family }]);
-        return;
-      }
-      done(null, resolved.address, resolved.family);
-    }
-  };
-}
 
 function fetchHtml(url, maxRedirects = 4) {
   return new Promise((resolve, reject) => {

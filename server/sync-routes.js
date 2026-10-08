@@ -1,25 +1,17 @@
+const { MAX_MUTATIONS_PER_REQUEST, orderMutations, validateMutationEnvelope } = require('./sync-protocol');
+
 function mountSyncMutationRoute(app, { requireAuth, asyncRoute, executeSyncMutation, syncSnapshotForUser, syncCursorForUser, testMode }) {
   app.post('/api/sync/mutations', requireAuth, asyncRoute(async (req, res) => {
     const mutations = Array.isArray(req.body?.mutations) ? req.body.mutations : [];
     if (!mutations.length) return res.json({ results: [], serverTime: Date.now() });
-    const priority = {
-      'note.upsert': 0,
-      'note.patch': 0,
-      'note.view-state': 1,
-      'note.delete': 7,
-      'note.reorder': 3,
-      'reminder.upsert': 4,
-      'reminder.delete': 5,
-      'note.merge': 6,
-      'attachment.delete': 8
-    };
-    const ordered = mutations
-      .map((mutation, index) => ({ mutation, index }))
-      .sort((left, right) =>
-        (priority[left.mutation.type] ?? 99) - (priority[right.mutation.type] ?? 99) || left.index - right.index
-      );
+    if (mutations.length > MAX_MUTATIONS_PER_REQUEST) {
+      return res.status(413).json({ error: `At most ${MAX_MUTATIONS_PER_REQUEST} mutations may be sent at once.` });
+    }
+    const ordered = orderMutations(mutations);
     const results = new Array(mutations.length);
     for (const { mutation, index } of ordered) {
+      const invalid = validateMutationEnvelope(mutation);
+      if (invalid) { results[index] = invalid; continue; }
       try {
         results[index] = await executeSyncMutation(req.user.id, mutation);
       } catch (error) {
