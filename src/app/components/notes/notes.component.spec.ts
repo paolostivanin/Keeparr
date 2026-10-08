@@ -20,7 +20,7 @@ describe('NotesComponent responsiveness', () => {
       note: { all: [preview], id: 0 },
       noteViewType: new BehaviorSubject('grid'),
       searchScope: new BehaviorSubject('all'),
-      searchQuery: '', selectedNoteIds: new BehaviorSubject([]), saveNote: new Subject(),
+      searchQuery: '', noteEditorOpen$: new BehaviorSubject(false), selectedNoteIds: new BehaviorSubject([]), saveNote: new Subject(),
     };
     notesService = { hasMoreNotes: false, get: jasmine.createSpy('get') };
     zone = new NgZone({ enableLongStackTrace: false });
@@ -48,7 +48,8 @@ describe('NotesComponent responsiveness', () => {
     notesService.get.and.returnValue(new Promise<NoteI>(r => resolve = r));
     component.openModal(null, preview);
     flushMicrotasks();
-    expect(modalContainer.style.display).toBe('block');
+    expect(component.editorOpen).toBeTrue();
+    expect(shared.noteEditorOpen$.value).toBeTrue();
     expect(component.editorLoading).toBeTrue();
     const fullNote = { ...preview, noteBody: 'The complete note', isCardPreview: false };
     resolve(fullNote);
@@ -68,7 +69,8 @@ describe('NotesComponent responsiveness', () => {
     tick(250);
     resolve({ ...preview, noteBody: 'Late response', isCardPreview: false });
     flushMicrotasks();
-    expect(modalContainer.style.display).toBe('none');
+    expect(component.editorOpen).toBeFalse();
+    expect(shared.noteEditorOpen$.value).toBeFalse();
     expect(component.clickedNoteData).toBe(preview);
     expect(component.editorLoading).toBeFalse();
   }));
@@ -83,7 +85,8 @@ describe('NotesComponent responsiveness', () => {
     component.onEscapeKey(new KeyboardEvent('keydown', { key: 'Escape' }));
     tick(250);
     expect(save).not.toHaveBeenCalled();
-    expect(modalContainer.style.display).toBe('none');
+    expect(component.editorOpen).toBeFalse();
+    expect(shared.noteEditorOpen$.value).toBeFalse();
   }));
 
   it('stops increasing the render window once all loaded notes are visible', () => {
@@ -193,4 +196,21 @@ describe('NotesComponent responsiveness', () => {
     component.ngAfterViewChecked();
     expect(reads).toBeGreaterThan(afterFirst);
   });
+
+  it('decides editor-open behavior from explicit state rather than inline styles', fakeAsync(() => {
+    notesService.get.and.returnValue(Promise.resolve({ ...preview, isCardPreview: false }));
+    const dismiss = spyOn<any>(component, 'dismissEditor');
+    component.onEscapeKey(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(dismiss).not.toHaveBeenCalled();
+
+    component.openModal(null, preview);
+    flushMicrotasks();
+    modalContainer.style.display = 'none'; // unrelated style edits must not change behavior
+    component.onEscapeKey(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect((component as any).canStartPullRefresh({ touches: [{}] } as any)).toBeFalse();
+    component.closeModal();
+    tick(250);
+    expect(component.editorOpen).toBeFalse();
+  }));
 });

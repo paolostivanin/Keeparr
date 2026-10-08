@@ -2422,7 +2422,7 @@ export class InputComponent implements OnInit {
         this.pushDrawingHistory()
       }
       this.teardownDrawingResize()
-      this.drawingResize = new ResizeObserver(() => this.resizeDrawingCanvas())
+      this.drawingResize = new ResizeObserver(() => this.zone.run(() => this.resizeDrawingCanvas()))
       this.drawingResize.observe(wrap)
     })
   }

@@ -235,6 +235,8 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private modalScrollRestoreTimers: ReturnType<typeof setTimeout>[] = []
   private modalOpenScrollY = 0
   private modalClosing = false
+  /** Whether the note editor overlay is shown; the template binds its display to this, not the reverse. */
+  editorOpen = false
   editorLoading = false
   editorLoadError = ''
   private noteOpenRequest = 0
@@ -956,7 +958,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   onWindowScroll() {
     if (Date.now() < this.suppressScrollPaginationUntil) return
-    if (this.modalContainer?.nativeElement?.style.display === 'block' || this.modalClosing) return
+    if (this.editorOpen || this.modalClosing) return
     if (this.Shared.noteViewType.value === 'list' && this.refreshListWindowRanges()) {
       this.zone.run(() => this.listWindowVersion++)
     } else if (this.isVirtualGridEnabled() && this.refreshGridWindowRanges()) {
@@ -992,7 +994,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.Shared.toggleNoteSelection(noteData.id!)
       return
     }
-    if (this.modalClosing || this.modalContainer.nativeElement.style.display === 'block') return
+    if (this.modalClosing || this.editorOpen) return
     const request = ++this.noteOpenRequest
     const canOpen = await this.noteLock.ensureUnlocked(noteData)
     if (!canOpen || this.destroyed || request !== this.noteOpenRequest) return
@@ -1008,8 +1010,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.clickedNoteData = noteData
     this.editorLoading = !!noteData.isCardPreview
     this.editorLoadError = ''
-    this.modalContainer.nativeElement.style.display = 'block'
-    this.cd.detectChanges()
+    this.setEditorOpen(true)
     this.prepareModalOpenAnimation(source)
     clickedNote?.classList.add('hide')
     document.addEventListener('mousedown', this.mouseDownEvent)
@@ -1065,7 +1066,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   onEscapeKey(event: Event) {
     if (event.defaultPrevented) return
     const isTooltipOpen = !!document.querySelector('[data-is-tooltip-open="true"]')
-    if (this.modalContainer.nativeElement.style.display === 'block') {
+    if (this.editorOpen) {
       if (!isTooltipOpen) {
         this.dismissEditor()
       }
@@ -1122,7 +1123,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.noteOpenRequest++
     this.suppressScrollPagination()
     document.removeEventListener('mousedown', this.mouseDownEvent)
-    let modalContainer = this.modalContainer.nativeElement
     const duration = this.modalAnimationDuration()
     this.prepareModalCloseAnimation()
     if (this.clickedNoteEl) {
@@ -1131,7 +1131,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       }, duration / 2)
     }
     setTimeout(() => {
-      modalContainer.style.display = 'none'
+      this.setEditorOpen(false)
       this.openImagePickerOnModal = false
       this.editorLoading = false
       this.editorLoadError = ''
@@ -1143,6 +1143,13 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.suppressScrollPagination()
       this.modalClosing = false
     }, duration)
+  }
+
+  private setEditorOpen(open: boolean) {
+    this.editorOpen = open
+    this.Shared.noteEditorOpen$.next(open)
+    // Callers measure or focus the overlay straight away, so apply the binding now.
+    this.cd.detectChanges()
   }
 
   private suppressScrollPagination(durationMs = 1200) {
@@ -1567,7 +1574,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (this.pullRefreshState === 'refreshing') return false
     if (event.touches.length !== 1) return false
     if (window.scrollY > 0) return false
-    if (this.modalContainer?.nativeElement?.style.display === 'block') return false
+    if (this.editorOpen) return false
     if (this.Shared.selectedNoteIds.value.length) return false
     if (this.touchDragNote) return false
 
@@ -3168,10 +3175,10 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   private async openWidgetComposer(type: WidgetCreateType) {
     await this.waitForAuth()
-    if (this.modalContainer?.nativeElement?.style.display === 'block') {
+    if (this.editorOpen) {
       this.Shared.saveNote.next(true)
       await new Promise(resolve => setTimeout(resolve, shouldUseFullscreenNoteEditor() ? 220 : 460))
-      if (this.modalContainer?.nativeElement?.style.display === 'block') return
+      if (this.editorOpen) return
     }
 
     this.Shared.clearNoteSelection()
@@ -3192,7 +3199,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private async openWidgetNote(noteId: number, acknowledge: boolean) {
     if (!Number.isFinite(noteId) || noteId <= 0) return
     await this.waitForAuth()
-    if (this.modalContainer?.nativeElement?.style.display === 'block') {
+    if (this.editorOpen) {
       this.Shared.saveNote.next(true)
       setTimeout(() => this.openWidgetNote(noteId, acknowledge).catch(console.error), shouldUseFullscreenNoteEditor() ? 220 : 460)
       return

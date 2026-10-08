@@ -122,9 +122,9 @@
   </div>
 }
 
-<div #modalContainer class="modal-container" [class.native-phone-modal]="nativePhoneLayout">
+<div #modalContainer class="modal-container" [class.native-phone-modal]="nativePhoneLayout" [style.display]="editorOpen ? 'block' : 'none'">
   <div #modal class="modal" [attr.aria-busy]="editorLoading">
-    @if (modalContainer.style.display == 'block') {
+    @if (editorOpen) {
       @if (editorLoading || editorLoadError) {
         <div class="note-editor-placeholder" role="status">
           <h2 [innerHTML]="clickedNoteData.noteTitle"></h2>

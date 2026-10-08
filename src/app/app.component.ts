@@ -276,9 +276,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private isNoteModalOpen() {
-    const modal = document.querySelector<HTMLElement>('app-notes .modal-container');
-    if (!modal) return false;
-    return getComputedStyle(modal).display !== 'none';
+    return this.shared.noteEditorOpen$.value;
   }
 
   private isSidebarOpen() {

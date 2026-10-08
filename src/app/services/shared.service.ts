@@ -99,6 +99,8 @@ export class SharedService {
   selectedNoteIds = new BehaviorSubject<number[]>([])
   searchScope = new BehaviorSubject<'all' | 'current'>(this.initialSearchScope())
   searchQuery = ''
+  /** True while the note editor overlay is shown; owned by the notes view. */
+  readonly noteEditorOpen$ = new BehaviorSubject<boolean>(false)
   /** Fires after every search-text change so views need not poll `searchQuery`. */
   readonly searchQueryChanged$ = new Subject<string>()
 

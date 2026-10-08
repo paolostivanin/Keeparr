@@ -1,4 +1,4 @@
-import { AfterViewInit, Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild } from '@angular/core';
+import { AfterViewInit, Component, ElementRef, HostListener, NgZone, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { SharedService } from 'src/app/services/shared.service';
 import { LabelActionsT } from 'src/app/interfaces/labels';
@@ -37,7 +37,7 @@ export class NavComponent implements OnInit, AfterViewInit, OnDestroy {
   private labelsMutationObserver?: MutationObserver;
   private subscriptions: Subscription[] = [];
 
-  constructor(public Shared: SharedService, public router: Router, public auth: AuthService) {
+  constructor(public Shared: SharedService, public router: Router, public auth: AuthService, private zone: NgZone) {
     this.Shared.initPwa();
   }
 
@@ -251,17 +251,27 @@ export class NavComponent implements OnInit, AfterViewInit, OnDestroy {
     });
   }
 
+  /**
+   * ResizeObserver callbacks are not patched by Zone.js, so a frame requested from one runs
+   * outside Angular; publish a changed cue inside the zone so the template follows it.
+   */
+  private publishLabelsOverflow(canScrollUp: boolean, canScrollDown: boolean) {
+    if (canScrollUp === this.canScrollUp && canScrollDown === this.canScrollDown) return;
+    this.zone.run(() => {
+      this.canScrollUp = canScrollUp;
+      this.canScrollDown = canScrollDown;
+    });
+  }
+
   private updateLabelsOverflowState() {
     const el = this.labelsScroll?.nativeElement;
     if (!el) {
-      this.canScrollUp = false;
-      this.canScrollDown = false;
+      this.publishLabelsOverflow(false, false);
       return;
     }
     const max = el.scrollHeight - el.clientHeight;
     // 2px tolerance to avoid sub-pixel flicker.
-    this.canScrollUp = el.scrollTop > 2;
-    this.canScrollDown = el.scrollTop < max - 2;
+    this.publishLabelsOverflow(el.scrollTop > 2, el.scrollTop < max - 2);
   }
 
   private usesDrawerSidebar() {
