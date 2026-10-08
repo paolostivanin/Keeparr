@@ -105,10 +105,10 @@
             }
           </div>
           <span class="drawing-spacer"></span>
-          <button type="button" class="drawing-icon undo" [disabled]="drawingHistoryIndex <= 0" aria-label="Undo" (click)="undoDrawing()">
+          <button type="button" class="drawing-icon undo" [disabled]="!drawingHistory.canUndo" aria-label="Undo" (click)="undoDrawing()">
             <span class="material-symbols-outlined">undo</span>
           </button>
-          <button type="button" class="drawing-icon redo" [disabled]="drawingHistoryIndex >= drawingHistory.length - 1" aria-label="Redo" (click)="redoDrawing()">
+          <button type="button" class="drawing-icon redo" [disabled]="!drawingHistory.canRedo" aria-label="Redo" (click)="redoDrawing()">
             <span class="material-symbols-outlined">redo</span>
           </button>
           <button type="button" class="drawing-icon fullscreen" aria-label="Fullscreen" (click)="toggleDrawingFullscreen()">

@@ -1526,7 +1526,21 @@ export class OfflineStoreService {
     return sessions.some(session => session.dirtyFields.length > 0);
   }
 
+  /** Revokes the object URLs minted for a partition's cached media so their blobs can be released. */
+  releaseMediaUrls(partition: string) {
+    const prefix = `${partition}|`;
+    const objects = this.offlineMediaObjectMap();
+    const canonical = this.offlineMediaCanonicalMap();
+    for (const [key, objectUrl] of [...objects]) {
+      if (!key.startsWith(prefix)) continue;
+      objects.delete(key);
+      canonical.delete(objectUrl);
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
   async purgePartition(partition: string) {
+    this.releaseMediaUrls(partition);
     const db = await this.open();
     await Promise.all(
       ['notes', 'reminders', 'attachments', 'savedPlaces', 'outbox', 'blobs'].map(name => this.clearPartitionStore(db, name, partition))

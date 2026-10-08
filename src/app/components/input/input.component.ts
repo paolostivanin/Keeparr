@@ -23,6 +23,8 @@ import { UserPreferencesService } from 'src/app/services/user-preferences.servic
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
 import { MAX_INDENT_LEVEL, descendantIndexes, normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
 import { canHideCheckboxes, checkBoxesToBodyHtml, linesToCheckBoxes, splitBodyIntoLines } from 'src/app/utils/checklist-conversion';
+import { DrawingHistory } from 'src/app/utils/drawing-history';
+import { Disposables } from 'src/app/utils/disposables';
 import { ChecklistHistory, normalizeChecklist, setChecklistIndent, toggleChecklistDone } from 'src/app/utils/checklist-model';
 import { decorateLinks, extractUrlsFromHtml, stripEditorChrome } from 'src/app/utils/editor-body';
 import { noteColorToHex } from 'src/app/utils/note-color';
@@ -103,6 +105,8 @@ export class InputComponent implements OnInit {
   private readonly textSelectionChangeHandler = () => this.scheduleSelectionFormattingUpdate()
   private readonly textSelectionRepositionHandler = () => this.scheduleSelectionFormattingUpdate()
   private cboxHistory = new ChecklistHistory()
+  private readonly lifecycle = new Disposables()
+  private bodyLengthPending = false
   private cboxSuggestionEligibleIds = new Set<number>()
   private cboxSuggestionDraftValues = new Map<number, string>()
   private dismissedCboxSuggestionIds = new Set<number>()
@@ -194,8 +198,7 @@ export class InputComponent implements OnInit {
   }
   drawingSelection?: DrawingSelection
   drawingSelectionStyle: Record<string, string> = {}
-  drawingHistory: string[] = []
-  drawingHistoryIndex = -1
+  readonly drawingHistory = new DrawingHistory()
   private isDrawing = false
   private drawingLastPoint?: DrawingPoint
   private drawingResize?: ResizeObserver
@@ -1181,8 +1184,7 @@ export class InputComponent implements OnInit {
     this.showDrawingEraserMenu = false
     this.drawingOpenToolMenu = undefined
     this.clearDrawingSelection()
-    this.drawingHistory = []
-    this.drawingHistoryIndex = -1
+    this.drawingHistory.reset()
     this.isCbox.next(false)
     this.isArchived = false
     this.isTrashed = false
@@ -2052,9 +2054,18 @@ export class InputComponent implements OnInit {
 
   onNoteBodyInput(body: HTMLDivElement) {
     this.dismissMobileNewNoteStarters()
-    const saveHtml = this.cleanEditorBodyForSave(body.innerHTML)
-    this.updateInputLength({ body: saveHtml.length })
+    this.queueBodyLengthUpdate(body)
     this.queueCoEditAutosave()
+  }
+
+  /** Serializing the body per keystroke is wasted work; the length only drives empty/non-empty cues. */
+  private queueBodyLengthUpdate(body: HTMLDivElement) {
+    if (this.bodyLengthPending) return
+    this.bodyLengthPending = true
+    this.lifecycle.frame(() => {
+      this.bodyLengthPending = false
+      this.updateInputLength({ body: this.cleanEditorBodyForSave(body.innerHTML).length })
+    })
   }
 
   onNoteTitleInput() {
@@ -2588,8 +2599,7 @@ export class InputComponent implements OnInit {
     this.isDrawing = false
     this.drawingLastPoint = undefined
     this.drawingCanvas?.nativeElement.releasePointerCapture(event.pointerId)
-    this.pushDrawingHistory()
-    this.syncDrawingImage()
+    this.syncDrawingImage(this.pushDrawingHistory())
     this.queueCoEditAutosave()
   }
 
@@ -2730,8 +2740,7 @@ export class InputComponent implements OnInit {
     this.drawingSelectionStart = undefined
     if (this.movingSelection) {
       this.movingSelection = undefined
-      this.pushDrawingHistory()
-      this.syncDrawingImage()
+      this.syncDrawingImage(this.pushDrawingHistory())
       this.queueCoEditAutosave()
       return
     }
@@ -2788,34 +2797,34 @@ export class InputComponent implements OnInit {
     }
   }
 
+  /** Snapshots the canvas once; the same encoding feeds the history and the note image. */
   private pushDrawingHistory() {
     const canvas = this.drawingCanvas?.nativeElement
-    if (!canvas) return
-    this.drawingHistory = this.drawingHistory.slice(0, this.drawingHistoryIndex + 1)
-    this.drawingHistory.push(canvas.toDataURL('image/png'))
-    this.drawingHistoryIndex = this.drawingHistory.length - 1
+    if (!canvas) return undefined
+    const dataUrl = canvas.toDataURL('image/png')
+    this.drawingHistory.push(dataUrl)
+    return dataUrl
   }
 
   undoDrawing() {
-    if (this.drawingHistoryIndex <= 0) return
-    this.drawingHistoryIndex--
-    this.restoreDrawingHistory()
-    this.syncDrawingImage()
-    this.queueCoEditAutosave()
+    this.stepDrawingHistory(this.drawingHistory.undo())
   }
 
   redoDrawing() {
-    if (this.drawingHistoryIndex >= this.drawingHistory.length - 1) return
-    this.drawingHistoryIndex++
-    this.restoreDrawingHistory()
-    this.syncDrawingImage()
+    this.stepDrawingHistory(this.drawingHistory.redo())
+  }
+
+  private stepDrawingHistory(dataUrl: string | undefined) {
+    if (!dataUrl) return
+    this.restoreDrawingHistory(dataUrl)
+    // The snapshot is exactly the canvas content, so no re-encoding is needed.
+    this.syncDrawingImage(dataUrl)
     this.queueCoEditAutosave()
   }
 
-  private restoreDrawingHistory() {
+  private restoreDrawingHistory(dataUrl = this.drawingHistory.current) {
     const canvas = this.drawingCanvas?.nativeElement
     const ctx = canvas?.getContext('2d')
-    const dataUrl = this.drawingHistory[this.drawingHistoryIndex]
     if (!canvas || !ctx || !dataUrl) return
     const image = new Image()
     image.onload = () => {
@@ -2851,8 +2860,7 @@ export class InputComponent implements OnInit {
     if (!canvas || !ctx) return
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     this.clearDrawingSelection()
-    this.pushDrawingHistory()
-    this.syncDrawingImage()
+    this.syncDrawingImage(this.pushDrawingHistory())
   }
 
   clearDrawingPage() {
@@ -2871,10 +2879,10 @@ export class InputComponent implements OnInit {
     this.showDrawingMoreMenu = false
   }
 
-  private syncDrawingImage() {
+  private syncDrawingImage(encoded?: string) {
     const canvas = this.drawingCanvas?.nativeElement
     if (!canvas) return
-    const dataUrl = this.drawingDataUrl()
+    const dataUrl = encoded ?? this.drawingDataUrl()
     const drawing = { id: 'drawing', dataUrl, name: `Drawing|bg:${this.drawingBackground}`, placement: 'top' as const }
     const index = this.images.findIndex(image => image.id === 'drawing')
     if (index >= 0) this.images[index] = drawing
@@ -3857,6 +3865,15 @@ export class InputComponent implements OnInit {
     this.unbindKeyboardOffset();
     this.unbindAndroidBackgroundLocationResume();
     this.unlockBodyScroll();
+    // Everything below is owned by this editor instance and must not outlive it.
+    this.lifecycle.dispose();
+    document.removeEventListener('mousedown', this.mouseDownEvent);
+    document.removeEventListener('mousedown', this.pickerOutsideHandler);
+    this.teardownDrawingResize();
+    this.destroyTimePicker();
+    if (this.cboxSuggestionBlurTimer) clearTimeout(this.cboxSuggestionBlurTimer);
+    this.clearCboxDragState();
+    this.drawingHistory.reset();
   }
 
   applyExternalUpdate(note: NoteI) {
@@ -3882,8 +3899,7 @@ export class InputComponent implements OnInit {
     this.attachments = note.attachments || [];
     const newDrawing = this.images.find(i => i.id === 'drawing');
     if (this.isDrawingNote && newDrawing && newDrawing.dataUrl !== oldDrawing?.dataUrl) {
-      this.drawingHistory = [newDrawing.dataUrl];
-      this.drawingHistoryIndex = 0;
+      this.drawingHistory.reset(newDrawing.dataUrl);
       this.restoreDrawingHistory();
     }
     this.isHybridNote = !!note.isCbox && this.hasMeaningfulBody(note.noteBody);
@@ -3971,7 +3987,7 @@ export class InputComponent implements OnInit {
     this.showReminderPicker = !this.showReminderPicker
     document.removeEventListener('mousedown', this.pickerOutsideHandler)
     if (this.showReminderPicker) {
-      setTimeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
+      this.lifecycle.timeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
     }
   }
 
@@ -4008,7 +4024,7 @@ export class InputComponent implements OnInit {
       } else {
         this.showReminderPicker = true
         document.removeEventListener('mousedown', this.pickerOutsideHandler)
-        setTimeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
+        this.lifecycle.timeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
       }
       return
     }
@@ -4036,7 +4052,7 @@ export class InputComponent implements OnInit {
     this.destroyTimePicker()
     this.resetLocationState()
     document.removeEventListener('mousedown', this.pickerOutsideHandler)
-    setTimeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
+    this.lifecycle.timeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
   }
 
   chooseReminderDateTime() {

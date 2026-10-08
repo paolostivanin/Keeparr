@@ -22,6 +22,7 @@ import { NoteLockService } from 'src/app/services/note-lock.service';
 import { CARD_LAYOUT_PREFERENCES, changedPreferences, UserPreferencesService, type UserPreferences } from 'src/app/services/user-preferences.service';
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
 import { descendantIndexes } from 'src/app/utils/checkbox-indent';
+import { Disposables } from 'src/app/utils/disposables';
 import { LayoutScheduler, browserLayoutClock } from 'src/app/utils/layout-scheduler';
 import { NoteBodySegment, NotePreviewMeta } from './note-card-preview.component';
 import { NoteListWindow, NoteListWindowModel } from './note-list-window';
@@ -175,6 +176,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private timePickerNote?: NoteI
   private timePickerDateInput?: HTMLInputElement
   private masonrySignatureToken = 0
+  private readonly lifecycle = new Disposables()
   private readonly layout = new LayoutScheduler(() => this.buildMasonry(), browserLayoutClock, fn => this.zone.runOutsideAngular(fn))
   private masonryPackFrame?: number
   private containerResizeObserver?: ResizeObserver
@@ -2413,7 +2415,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
         this.reschedulingPastReminderNoteId = null
         this.activePickerNoteId = note.id!
         document.removeEventListener('mousedown', this.pickerOutsideHandler)
-        setTimeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
+        this.lifecycle.timeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
       }
     } else {
       this.pendingPickerNote = note
@@ -2424,7 +2426,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       this.resetReminderRepeatState()
       this.destroyTimePicker()
       document.removeEventListener('mousedown', this.pickerOutsideHandler)
-      setTimeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
+      this.lifecycle.timeout(() => document.addEventListener('mousedown', this.pickerOutsideHandler), 0)
     }
   }
 
@@ -3237,6 +3239,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     if (this.gridResizeFrame != null) cancelAnimationFrame(this.gridResizeFrame)
     this.pendingGridResizeEntries = []
     this.layout.dispose()
+    this.lifecycle.dispose()
     // A drag in progress owns a document listener, a ghost clone, page touch-action and a frame loop.
     if (this.touchDragNote) this.endTouchDrag(false)
     if (this.longPressTimer) clearTimeout(this.longPressTimer)

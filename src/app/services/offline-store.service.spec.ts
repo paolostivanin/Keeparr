@@ -27,6 +27,26 @@ describe('OfflineStoreService indexed note access', () => {
     partition = `offline-store-test-${crypto.randomUUID()}`;
   });
 
+  it('revokes cached media object URLs for a purged partition and keeps other partitions', async () => {
+    const other = `${partition}-other`;
+    await store.putBlob(partition, 'media:/api/a.png', new Blob(['a']));
+    await store.putBlob(other, 'media:/api/a.png', new Blob(['b']));
+    const revoke = spyOn(URL, 'revokeObjectURL').and.callThrough();
+
+    const mine = await store.offlineMediaUrl(partition, '/api/a.png');
+    const theirs = await store.offlineMediaUrl(other, '/api/a.png');
+    expect(await store.offlineMediaUrl(partition, '/api/a.png')).toBe(mine);
+    expect(store.canonicalMediaUrl(mine)).toBe('/api/a.png');
+
+    await store.purgePartition(partition);
+
+    expect(revoke).toHaveBeenCalledOnceWith(mine);
+    expect(store.canonicalMediaUrl(mine)).toBe(mine);
+    expect(store.canonicalMediaUrl(theirs)).toBe('/api/a.png');
+    store.releaseMediaUrls(other);
+    expect(revoke).toHaveBeenCalledWith(theirs);
+  });
+
   it('resolves a note by partition and numeric ID and updates it without listing the partition', async () => {
     await store.replaceSnapshot(partition, [note(1, 'sync-1', 'One'), note(2, 'sync-2', 'Two')], [], [], 1, Date.now());
 
