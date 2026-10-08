@@ -73,8 +73,10 @@ internal class BodyEditorHandle {
 @Composable
 internal fun NoteEditor(activity: MainActivity, app: KeptApplication, original: Note, reminders: List<JSONObject>, onClose: () -> Unit, onError: (String) -> Unit) {
     val scope = rememberCoroutineScope()
+    val sessions: EditorSessionStores = viewModel(activity)
+    val sessionKey = "${app.settings.profile}:${original.syncId}"
     val draftViewModel: NoteEditorViewModel = viewModel(
-        key = "${app.settings.profile}:${original.syncId}", factory = NoteEditorViewModel.Factory(app, original)
+        viewModelStoreOwner = sessions.ownerFor(sessionKey), key = sessionKey, factory = NoteEditorViewModel.Factory(app, original)
     )
     val raw by draftViewModel.draft.collectAsStateWithLifecycle()
     val draftGeneration by draftViewModel.draftGeneration.collectAsStateWithLifecycle()

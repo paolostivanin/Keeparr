@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -61,7 +62,20 @@ fun KeptScreen(activity: MainActivity, app: KeptApplication) {
     val signedIn = settingsReady && StartupGate.signedIn(signedInOverride, app.settings.token)
     val dark = settingsReady && StartupGate.dark(darkOverride, app.settings.darkMode)
     var error by remember { mutableStateOf<String?>(null) }
+    val sessions: EditorSessionStores = androidx.lifecycle.viewmodel.compose.viewModel(activity)
+    // The open note survives activity re-creation (rotation, process restoration) as its syncId and is reloaded;
+    // its draft is already persisted on every change.
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<Note?>(null) }
+    fun openEditor(note: Note?) { editing = note; editingId = note?.syncId }
+    fun closeEditor() {
+        editing?.let { sessions.release("${app.settings.profile}:${it.syncId}") }
+        openEditor(null)
+    }
+    LaunchedEffect(editingId, signedIn) {
+        val id = editingId
+        if (id != null && editing == null && signedIn) openEditor(repo.note(id))
+    }
     var showSettings by remember { mutableStateOf(false) }
     val incoming by activity.incoming.collectAsStateWithLifecycle()
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { error = problem.message ?: "Could not complete this action" } } }
@@ -84,14 +98,14 @@ fun KeptScreen(activity: MainActivity, app: KeptApplication) {
                             repo.toggleChecklist(intent.getStringExtra("noteSyncId") ?: "", intent.getLongExtra("itemId", 0))
                             activity.incoming.value = null; activity.finish(); return@LaunchedEffect
                         }
-                        intent.getStringExtra("noteSyncId")?.let { id -> editing = repo.note(id) }
+                        intent.getStringExtra("noteSyncId")?.let { id -> openEditor(repo.note(id)) }
                         val createChecklist = intent.getBooleanExtra("createChecklist", false)
                         if (intent.getBooleanExtra("createNote", false) || createChecklist || intent.action in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) {
                             val note = Note.create(app.settings.userId, createChecklist)
                             val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
                             note.raw.put("noteTitle", intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty())
                                 .put("noteBody", Html.escapeHtml(text).replace("\n", "<br>"))
-                            repo.save(note); editing = note
+                            repo.save(note); openEditor(note)
                             val uris = if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
                                 else listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
                             for (uri in uris) repo.attach(note, Media(app).stage(uri))
@@ -100,9 +114,9 @@ fun KeptScreen(activity: MainActivity, app: KeptApplication) {
                     activity.incoming.value = null
                 }
                 if (editing != null) key(editing!!.syncId) {
-                    NoteEditor(activity, app, editing!!, reminders, onClose = { editing = null }, onError = { error = it })
-                } else HomeScreen(app, notes, reminders, conflicts, onEdit = { editing = it }, onCreate = { checklist ->
-                    action { val note = Note.create(app.settings.userId, checklist); repo.save(note); editing = note }
+                    NoteEditor(activity, app, editing!!, reminders, onClose = { closeEditor() }, onError = { error = it })
+                } else HomeScreen(app, notes, reminders, conflicts, onEdit = { openEditor(it) }, onCreate = { checklist ->
+                    action { val note = Note.create(app.settings.userId, checklist); repo.save(note); openEditor(note) }
                 }, onSettings = { showSettings = true }, onReauthenticate = { signedInOverride = false }, onError = { error = it })
                 if (showSettings) SettingsDialog(activity, app, reminders, occurrences, dark, onDark = { darkOverride = it; app.settings.darkMode = it },
                     onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedInOverride = false; showSettings = false } }, onError = { error = it })

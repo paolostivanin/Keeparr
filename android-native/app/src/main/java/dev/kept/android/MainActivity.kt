@@ -15,7 +15,6 @@ import androidx.lifecycle.lifecycleScope
 import dev.kept.android.data.*
 import dev.kept.android.ui.KeptScreen
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.net.URI
@@ -23,26 +22,31 @@ import java.net.URI
 class MainActivity : ComponentActivity() {
     val incoming = MutableStateFlow<Intent?>(null)
     private val app get() = application as KeptApplication
-    private var alarmRecovery: Job? = null
     private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         app.scope.launch { app.repository.reconcile() }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        incoming.value = intent
-        alarmRecovery = app.scope.launch {
-            app.settings.awaitReady()
-            app.reminders.resetAlarmRegistry()
-            app.repository.reconcile()
-            if (app.settings.token.isNotEmpty()) SyncWorker.schedule(app)
-        }
+        // A recreated activity still holds the intent that launched it; handling it again would repeat its
+        // action (a share or quick-create would add another note after every rotation).
+        if (savedInstanceState == null) incoming.value = intent
+        app.ensureStartupRecovery()
         setContent { KeptScreen(this, app) }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); incoming.value = intent }
-    override fun onStart() { super.onStart(); app.scope.launch { app.settings.awaitReady(); alarmRecovery?.join(); runCatching { app.repository.foreground(true); app.repository.sync() } } }
-    override fun onStop() { app.scope.launch { app.repository.foreground(false) }; super.onStop() }
-    override fun onResume() { super.onResume(); app.scope.launch { app.settings.awaitReady(); alarmRecovery?.join() } }
+    override fun onStart() {
+        super.onStart()
+        val recreated = app.recreatingForConfiguration
+        app.recreatingForConfiguration = false
+        app.repository.setForeground(true)
+        if (!recreated) app.scope.launch { app.settings.awaitReady(); app.ensureStartupRecovery().join(); runCatching { app.repository.sync() } }
+    }
+    override fun onStop() {
+        // The socket stays up across a configuration change; only a real background transition closes it.
+        if (isChangingConfigurations) app.recreatingForConfiguration = true else app.repository.setForeground(false)
+        super.onStop()
+    }
     fun chooseCertificate(server: String, onSelected: (String) -> Unit) {
         val uri = runCatching { URI(server) }.getOrNull()
         KeyChain.choosePrivateKeyAlias(this, { alias -> runOnUiThread {

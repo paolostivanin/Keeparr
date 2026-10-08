@@ -45,7 +45,9 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
     private var socket: WebSocket? = null
     private var socketConnection: ConnectionSnapshot? = null
     private var reconnect: Job? = null
-    private var foreground = false
+    private val reconnectLock = Any()
+    private val socketMutex = Mutex()
+    @Volatile private var foreground = false
     private var joinedNote: Long? = null
 
     fun restoreConnectionState() {
@@ -903,13 +905,32 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
         joinedNote?.let { socket?.send(JSONObject().put("type", "join-note").put("noteId", it).toString()) }
     }
 
+    /**
+     * Records whether the app is visible and reconciles the realtime socket with that. The wanted state is stored
+     * synchronously, so quick stop/start pairs resolve to the latest one whatever order the work is scheduled in.
+     */
+    fun setForeground(active: Boolean) {
+        foreground = active
+        app.scope.launch { settings.awaitReady(); applyForeground() }
+    }
+
     suspend fun foreground(active: Boolean) {
         foreground = active
-        if (!active) { reconnect?.cancel(); socket?.cancel(); socket = null; socketConnection = null; return }
+        applyForeground()
+    }
+
+    // One socket per connection snapshot: concurrent callers (start, login, reconnect) queue here and each re-reads
+    // the wanted state, instead of all seeing no socket and opening one each.
+    private suspend fun applyForeground(): Unit = socketMutex.withLock {
+        if (!foreground) {
+            reconnect?.cancel(); reconnect = null
+            socket?.cancel(); socket = null; socketConnection = null
+            return@withLock
+        }
         val connection = settings.snapshot()
-        if (connection.token.isEmpty()) return
+        if (connection.token.isEmpty()) return@withLock
         if (socket != null && socketConnection != connection) { socket?.cancel(); socket = null; socketConnection = null }
-        if (socket != null) return
+        if (socket != null) return@withLock
         withContext(Dispatchers.IO) {
             val request = api.request("/api/realtime", connection).build()
             socketConnection = connection
@@ -926,13 +947,18 @@ class KeptRepository(private val app: KeptApplication, val database: KeptDatabas
                         editors.value = editors.value + (message.optLong("noteId") to message.optJSONArray("activeEditors")?.objects().orEmpty().map { it.text("displayName", it.text("username")) })
                     }
                 }
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = disconnected()
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = disconnected()
-                private fun disconnected() {
-                    if (socketConnection != connection) return
-                    socket = null
-                    socketConnection = null
-                    if (foreground) reconnect = app.scope.launch { delay(5000); runCatching { foreground(true); sync() } }
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = disconnected(webSocket)
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = disconnected(webSocket)
+                private fun disconnected(closed: WebSocket) {
+                    synchronized(reconnectLock) {
+                        // A socket that was already replaced or cancelled must not tear down its successor.
+                        if (socket !== closed || socketConnection != connection) return
+                        socket = null
+                        socketConnection = null
+                        if (!foreground) return
+                        reconnect?.cancel()
+                        reconnect = app.scope.launch { delay(5000); runCatching { applyForeground(); sync() } }
+                    }
                 }
             })
         }

@@ -10,13 +10,28 @@ import dev.kept.android.widgets.NotesWidget
 import kotlinx.coroutines.*
 
 class KeptApplication : Application() {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     lateinit var settings: ConnectionProfile
     lateinit var database: KeptDatabase
     lateinit var repository: KeptRepository
     lateinit var reminders: ReminderController
     var refreshWidgets: (Context) -> Unit = NotesWidget::refresh
     var enqueueSync: (Context) -> Unit = SyncWorker::enqueue
+    private var recovery: Job? = null
+    /** Set when the visible activity is being recreated, so the next start does not repeat foreground work. */
+    @Volatile var recreatingForConfiguration = false
+
+    /**
+     * Process-wide startup recovery (alarm registry rebuild, reminder/widget reconciliation, sync scheduling). It runs
+     * once per process: activity re-creation (rotation, theme, locale) must not re-run it or re-register alarms.
+     */
+    @Synchronized fun ensureStartupRecovery(): Job = recovery ?: scope.launch {
+        settings.awaitReady()
+        reminders.resetAlarmRegistry()
+        repository.reconcile()
+        if (settings.token.isNotEmpty()) SyncWorker.schedule(this@KeptApplication)
+    }.also { recovery = it }
+
     override fun onCreate() {
         super.onCreate()
         settings = ConnectionSettings(this, applicationScope = scope)
