@@ -3457,3 +3457,12 @@ body.light-theme .reminder-date-dialog {
   .rp-clear { color: #f6aea9; }
   .rp-debug { color: #fbbc04; }
 }
+
+// Bullet lists in note bodies (editor, cards and previews), up to four levels.
+.note-body, .body-segments .body, .note-container .body {
+  ul { margin: 0; padding-left: 22px; list-style-type: disc; white-space: normal;
+    ul { list-style-type: circle;
+      ul { list-style-type: square;
+        ul { list-style-type: "\25AB  "; } } } }
+  li { margin: 0; }
+}

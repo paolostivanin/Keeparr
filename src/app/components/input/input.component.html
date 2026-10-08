@@ -233,6 +233,10 @@
       <button type="button" (mousedown)="applyTextFormat('h2',$event)">H2</button>
       <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)">Aa</button>
       <span></span>
+      <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)">&bull;</button>
+      <button type="button" aria-label="Indent" title="Indent (Tab)" (mousedown)="applyTextFormat('indent',$event)">&rarr;</button>
+      <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" (mousedown)="applyTextFormat('outdent',$event)">&larr;</button>
+      <span></span>
       <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)">B</button>
       <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)">I</button>
       <button type="button" class="underline" (mousedown)="applyTextFormat('underline',$event)">U</button>
@@ -253,6 +257,10 @@
           <button type="button" (mousedown)="applyTextFormat('h1',$event)">H1</button>
           <button type="button" (mousedown)="applyTextFormat('h2',$event)">H2</button>
           <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)">Aa</button>
+          <span></span>
+          <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)">&bull;</button>
+          <button type="button" aria-label="Indent" title="Indent (Tab)" (mousedown)="applyTextFormat('indent',$event)">&rarr;</button>
+          <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" (mousedown)="applyTextFormat('outdent',$event)">&larr;</button>
           <span></span>
           <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)">B</button>
           <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)">I</button>
@@ -767,7 +775,7 @@
 <!--* note template -->
 <ng-template #noteTemplate>
   <div [hidden]="noteBody.innerHTML.length" class="note-body ph">Take a note…</div>
-  <div #noteBody (input)="onNoteBodyInput(noteBody)" (paste)="pasteEvent($event)" (focus)="rememberTextHistoryTarget(noteBody)"
+  <div #noteBody (input)="onNoteBodyInput(noteBody)" (keydown)="onNoteBodyKeyDown($event)" (paste)="pasteEvent($event)" (focus)="rememberTextHistoryTarget(noteBody)"
     (click)="onNoteBodyClick($event)" (contextmenu)="downloadInlineImage($event)"
     class="note-body" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text">
   </div>

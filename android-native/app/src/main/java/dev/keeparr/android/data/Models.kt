@@ -1,6 +1,7 @@
 package dev.keeparr.android.data
 
 import android.text.Html
+import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import org.jsoup.Jsoup
@@ -133,7 +134,7 @@ object NoteOrder {
 // Only the formats represented by Android's styled text editor are editable.
 // Preserve the original HTML when the user changes another field.
 object NoteFormat {
-    private val supported = setOf("br", "p", "div", "b", "strong", "i", "em", "u", "s", "strike", "a", "span")
+    private val supported = setOf("br", "p", "div", "b", "strong", "i", "em", "u", "s", "strike", "a", "span", "ul", "li")
     private val attributePattern = Regex("""([a-zA-Z_:][a-zA-Z0-9_:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
 
     // The web renders bodies with white-space: pre-wrap, so a raw newline is a visible line break there while
@@ -153,6 +154,45 @@ object NoteFormat {
 
     // The one conversion behind the editor and every read-only view, so they cannot disagree.
     fun spanned(html: String): Spanned {
+        if (!Regex("<\\s*(ul|li)[\\s>/]", RegexOption.IGNORE_CASE).containsMatchIn(html)) return plainSpanned(html)
+        val body = Jsoup.parseBodyFragment(html).body()
+        val result = SpannableStringBuilder()
+        val levels = mutableListOf<Int?>()
+        fun appendLine(content: CharSequence, level: Int?) {
+            if (levels.isNotEmpty()) result.append('\n')
+            result.append(content); levels += level
+        }
+        val pending = StringBuilder()
+        fun flushPending() {
+            if (pending.isBlank()) { pending.clear(); return }
+            val parsed = plainSpanned(pending.toString()); pending.clear()
+            Bullets.lines(parsed).forEach { appendLine(parsed.subSequence(it[0], it[1]), null) }
+        }
+        fun walkList(list: Element, depth: Int) {
+            for (item in list.children()) {
+                if (item.tagName() != "li") continue
+                val own = StringBuilder()
+                val nested = mutableListOf<Element>()
+                for (child in item.childNodes()) {
+                    if (child is Element && child.tagName() in setOf("ul", "ol")) nested += child else own.append(child.outerHtml())
+                }
+                val content = plainSpanned(own.toString())
+                val flat = SpannableStringBuilder(content)
+                for (i in flat.indices) if (flat[i] == '\n') flat.replace(i, i + 1, " ")
+                appendLine(flat, minOf(depth, MAX_BULLET_LEVELS - 1))
+                nested.forEach { walkList(it, depth + 1) }
+            }
+        }
+        for (node in body.childNodes()) {
+            if (node is Element && node.tagName() in setOf("ul", "ol")) { flushPending(); walkList(node, 0) }
+            else pending.append(node.outerHtml())
+        }
+        flushPending()
+        Bullets.apply(result, levels)
+        return result
+    }
+
+    private fun plainSpanned(html: String): Spanned {
         val document = Jsoup.parseBodyFragment(html)
         document.outputSettings().prettyPrint(false)
         breakRawNewlines(document.body())
@@ -168,7 +208,40 @@ object NoteFormat {
 
     // One <p> per line, with <br> for blank lines: unlike the consecutive mode this round-trips blank lines. The
     // newlines toHtml puts between tags are formatting only, and the web would render them as extra blank lines.
-    fun serialize(text: Spanned): String = Html.toHtml(text, Html.TO_HTML_PARAGRAPH_LINES_INDIVIDUAL).replace("\n", "")
+    fun serialize(text: Spanned): String {
+        val levels = if (text is Spannable) Bullets.levels(text) else emptyList()
+        if (levels.none { it != null }) return plainHtml(text)
+        val out = StringBuilder()
+        val lines = Bullets.lines(text)
+        var index = 0
+        var depth = 0 // number of open <ul>
+        while (index < lines.size) {
+            val level = levels[index]
+            if (level == null) {
+                var last = index
+                while (last + 1 < lines.size && levels[last + 1] == null) last++
+                out.append(plainHtml(text.subSequence(lines[index][0], lines[last][1])))
+                index = last + 1
+                continue
+            }
+            // Bullets.apply guarantees a level is at most one deeper than the line before it.
+            if (depth == 0) { out.append("<ul><li>"); depth = 1 }
+            else if (level >= depth) { out.append("<ul><li>"); depth++ }
+            else {
+                while (depth - 1 > level) { out.append("</li></ul>"); depth-- }
+                out.append("</li><li>")
+            }
+            val line = SpannableStringBuilder(text.subSequence(lines[index][0], lines[index][1]))
+            line.getSpans(0, line.length, BulletLevelSpan::class.java).forEach(line::removeSpan)
+            out.append(plainHtml(line).replace(Regex("^<p[^>]*>"), "").removeSuffix("</p>"))
+            index++
+            if (index >= lines.size || levels[index] == null) { while (depth > 0) { out.append("</li></ul>"); depth-- } }
+        }
+        return out.toString()
+    }
+
+    private fun plainHtml(text: CharSequence): String =
+        Html.toHtml(SpannableStringBuilder(text), Html.TO_HTML_PARAGRAPH_LINES_INDIVIDUAL).replace("\n", "")
 
     fun editable(html: String): Boolean = Regex("<\\s*(/?)\\s*([a-zA-Z0-9]+)([^>]*)>").findAll(html).all { match ->
         val tag = match.groupValues[2].lowercase()
@@ -265,7 +338,7 @@ object ChecklistAdapter {
     fun setDone(items: JSONArray, index: Int, done: Boolean): JSONArray = updateItem(items, index) { it.put("done", done) }
 
     fun indent(items: JSONArray, index: Int, delta: Int): JSONArray = updateItem(items, index) { item ->
-        item.put("indentLevel", (item.optInt("indentLevel") + delta).coerceIn(0, 5))
+        item.put("indentLevel", (item.optInt("indentLevel") + delta).coerceIn(0, MAX_BULLET_LEVELS - 1))
     }
 
     fun move(items: JSONArray, from: Int, to: Int): JSONArray {

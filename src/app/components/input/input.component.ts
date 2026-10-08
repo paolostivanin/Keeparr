@@ -21,6 +21,7 @@ import { isNativePhonePlatform, shouldUseFullscreenNoteEditor } from 'src/app/ut
 import { NoteLockService } from 'src/app/services/note-lock.service';
 import { UserPreferencesService } from 'src/app/services/user-preferences.service';
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
+import { MAX_BODY_LIST_LEVELS, canIndentBodyList, canOutdentBodyList, listDepth } from 'src/app/utils/body-list';
 import { MAX_INDENT_LEVEL, descendantIndexes, normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
 import { canHideCheckboxes, checkBoxesToBodyHtml, linesToCheckBoxes, splitBodyIntoLines } from 'src/app/utils/checklist-conversion';
 import { DrawingHistory } from 'src/app/utils/drawing-history';
@@ -2372,22 +2373,55 @@ export class InputComponent implements OnInit {
     }, 0)
   }
 
-  applyTextFormat(command: 'h1' | 'h2' | 'body' | 'bold' | 'italic' | 'underline' | 'clear', event: Event) {
+  applyTextFormat(command: 'h1' | 'h2' | 'body' | 'bullet' | 'indent' | 'outdent' | 'bold' | 'italic' | 'underline' | 'clear', event: Event) {
     event.preventDefault()
     event.stopPropagation()
     if (command === 'h1') document.execCommand('formatBlock', false, 'H1')
     if (command === 'h2') document.execCommand('formatBlock', false, 'H2')
     if (command === 'body') document.execCommand('formatBlock', false, 'DIV')
+    if (command === 'bullet') document.execCommand('insertUnorderedList')
+    if (command === 'indent') this.indentBodyList(1)
+    if (command === 'outdent') this.indentBodyList(-1)
     if (command === 'bold') document.execCommand('bold')
     if (command === 'italic') document.execCommand('italic')
     if (command === 'underline') document.execCommand('underline')
-    if (command === 'clear') document.execCommand('removeFormat')
+    if (command === 'clear') { this.removeBodyBullets(); document.execCommand('removeFormat') }
     this.scheduleSelectionFormattingUpdate()
     this.updateInputLength({
       title: this.noteTitle?.nativeElement.innerHTML.length || 0,
       body: this.noteBody?.nativeElement.innerHTML.length || 0
     })
     this.queueCoEditAutosave()
+  }
+
+  private bodyListDepth(node: Node | null): number {
+    return listDepth(node instanceof Element ? node : node?.parentElement, this.noteBody?.nativeElement)
+  }
+
+  private indentBodyList(delta: 1 | -1) {
+    const selection = window.getSelection()
+    if (!selection?.rangeCount) return
+    const depth = this.bodyListDepth(selection.anchorNode)
+    if (delta === 1 ? !canIndentBodyList(depth) : !canOutdentBodyList(depth)) return
+    document.execCommand(delta === 1 ? 'indent' : 'outdent')
+  }
+
+  /** Removes bullets from the selected lines, however deeply nested. */
+  private removeBodyBullets() {
+    for (let i = 0; i < MAX_BODY_LIST_LEVELS; i++) {
+      const node = window.getSelection()?.anchorNode ?? null
+      if (this.bodyListDepth(node) === 0) break
+      document.execCommand('insertUnorderedList')
+    }
+  }
+
+  onNoteBodyKeyDown(event: KeyboardEvent) {
+    if (event.key !== 'Tab' || event.ctrlKey || event.metaKey || event.altKey) return
+    const selection = window.getSelection()
+    if (!selection?.rangeCount || this.bodyListDepth(selection.anchorNode) === 0) return
+    event.preventDefault()
+    this.indentBodyList(event.shiftKey ? -1 : 1)
+    this.scheduleTextHistoryRefresh()
   }
 
   togglePinned() {

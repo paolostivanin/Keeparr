@@ -48,6 +48,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
+import dev.keeparr.android.data.Bullets
+import dev.keeparr.android.data.MAX_BULLET_LEVELS
 import dev.keeparr.android.data.*
 import dev.keeparr.android.reminders.ReminderScheduler
 import kotlinx.coroutines.*
@@ -287,6 +289,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
             }
             BasicTextField(value = note.title, onValueChange = { title -> change("noteTitle") { it.put("noteTitle", title) } },
                 modifier = Modifier.fillMaxWidth(), singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
                 textStyle = MaterialTheme.typography.headlineSmall.copy(color = foreground), cursorBrush = SolidColor(foreground),
                 decorationBox = { inner -> Box {
                     if (note.title.isBlank()) Text("Title", style = MaterialTheme.typography.headlineSmall, color = foreground.copy(alpha = .55f))
@@ -312,6 +315,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                                 onValueChange = { text -> change("checkBoxes") {
                                     it.getJSONArray("checkBoxes").getJSONObject(index).put("data", NoteFormat.editedChecklistItem(item.opt("data"), text))
                                 } }, modifier = Modifier.weight(1f).padding(start = (item.optInt("indentLevel") * 12).dp).focusRequester(requester),
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
                                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = foreground), cursorBrush = SolidColor(foreground),
                                 decorationBox = { inner -> Box {
                                     if (item.text("data").isBlank()) Text("List item", color = foreground.copy(alpha = .55f))
@@ -448,15 +452,62 @@ private fun StyledEditor(initial: String, reset: String, textColor: Color, handl
                 editor?.let { view -> if (view.selectionStart < view.selectionEnd) view.text.setSpan(UnderlineSpan(), view.selectionStart, view.selectionEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
                 editor?.let { lastEmitted = NoteFormat.serialize(it.text); onChange(lastEmitted) }
             }) { Text("U") }
+            fun edit(transform: (List<Int?>, Int, Int) -> List<Int?>) {
+                val view = editor ?: return
+                val text = view.text
+                val lines = Bullets.lines(text)
+                val from = lines.indexOfLast { it[0] <= view.selectionStart.coerceAtLeast(0) }.coerceAtLeast(0)
+                val to = lines.indexOfLast { it[0] <= view.selectionEnd.coerceAtLeast(0) }.coerceAtLeast(from)
+                suppressTextWatcher = true
+                try { Bullets.apply(text, transform(Bullets.levels(text), from, to)) } finally { suppressTextWatcher = false }
+                lastEmitted = NoteFormat.serialize(text); onChange(lastEmitted)
+            }
+            TextButton(onClick = { edit { levels, from, to ->
+                val remove = (from..to).all { levels[it] != null }
+                levels.mapIndexed { i, level -> if (i in from..to) (if (remove) null else level ?: 0) else level }
+            } }) { Text("\u2022") }
+            TextButton(onClick = { edit { levels, from, to ->
+                levels.mapIndexed { i, level -> if (i in from..to && level != null) minOf(level + 1, MAX_BULLET_LEVELS - 1) else level }
+            } }) { Text("\u2192") }
+            TextButton(onClick = { edit { levels, from, to ->
+                levels.mapIndexed { i, level -> if (i in from..to && level != null) (if (level == 0) null else level - 1) else level }
+            } }) { Text("\u2190") }
         }
         AndroidView(factory = { context -> EditText(context).apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
             setText(NoteFormat.spanned(initial)); hint = "Note"; setTextSize(18f); background = null
             setPadding(0, 8, 0, 8); minLines = 6; gravity = android.view.Gravity.TOP
             addTextChangedListener(object : TextWatcher {
+                var typedNewline = -1
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    typedNewline = if (count == 1 && before == 0 && s?.get(start) == '\n') start else -1
+                }
                 override fun afterTextChanged(s: Editable?) {
                     if (suppressTextWatcher) return
+                    if (s != null) {
+                        suppressTextWatcher = true
+                        try {
+                            val levels = Bullets.levels(s).toMutableList()
+                            var newline = typedNewline
+                            typedNewline = -1
+                            if (newline >= 0) {
+                                // Lines are 0-based; the typed newline ends line `index`, so the new line is `index + 1`.
+                                val index = Bullets.lines(s).indexOfFirst { it[1] == newline }
+                                val level = levels.getOrNull(index)
+                                if (index >= 0 && level != null) {
+                                    if (s.substring(Bullets.lines(s)[index][0], newline).isEmpty() && Bullets.lines(s).getOrNull(index + 1)?.let { it[0] == it[1] } == true) {
+                                        // Enter on an empty bullet leaves the list.
+                                        s.delete(newline, newline + 1)
+                                        val fixed = levels.toMutableList().also { it.removeAt(index + 1); it[index] = null }
+                                        Bullets.apply(s, fixed)
+                                        newline = -2
+                                    } else if (index + 1 < levels.size) levels[index + 1] = level
+                                }
+                            }
+                            if (newline != -2) Bullets.apply(s, levels)
+                        } finally { suppressTextWatcher = false }
+                    }
                     lastEmitted = NoteFormat.serialize(s ?: return)
                     onChange(lastEmitted)
                 }
