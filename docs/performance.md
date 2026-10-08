@@ -109,6 +109,14 @@ Two defects fixed: a stale tab asking for a chunk that a newer deployment replac
 
 `web-ui-check.mjs` now also exercises the lazy admin route (`/users`) and fresh signed-out loads of `/login` and `/register` (the latter with the mock enabling self-registration), asserting a new chunk loads and the first field is focused. The service worker (`kept-push-sw.js`) only handles push and an offline navigation fallback, so no precache upgrade path exists to test; the Capacitor/native shell was not exercised (no device).
 
+## Accessibility and lifecycle acceptance, web part (M6.5)
+
+`web-ui-check.mjs` now audits the mounted home screen and the open editor: every visible control must have an accessible name (aria-label/labelledby, title, text, placeholder, label), card title/body text must reach 4.5:1 contrast against its effective background (fixture colors), and targets under 24 px are listed (none on the home screen at desktop width). With the existing keyboard open/focus-return and reduced-motion checks this is the automated floor, not a screen-reader pass.
+
+Findings fixed: the hidden file inputs (`overview-image-input`, editor `image-input`/`attachment-input`) were unnamed, keyboard-focusable controls (invisible stops in the tab order); they are now `tabindex="-1" aria-hidden="true"` (they are only opened programmatically). The realtime socket retried every 2 s forever while the server was unreachable; it now backs off 2 → 30 s with jitter and resets on connect (`utils/reconnect-backoff.ts`; in the harness, whose mock has no socket endpoint, retained `WebSocket` objects after 10 cycles went from +8 to +2).
+
+Lifecycle: 10–30 open/type/close cycles alternating a text note and an image note, with a forced GC after each: DOM nodes constant (7,118), heap plateaus within ~0.1 MB after the first ten cycles, 0 browser errors. The `jsEventListeners` counter still drifts by about one per cycle; it is not on document/window/body/visualViewport or any DOM element, and instance counts taken through the protocol are distorted by the probe itself, so it stays unattributed. Not run: screen readers, TalkBack, large-font/insets/orientation, touch-drag across virtualized rows, Android retained-session/bitmap/undo growth, frame/visual regressions (device-only).
+
 ## Reference environment and supported Android floor
 
 - The current Android minimum is **API 34**, matching `android-native/app/build.gradle.kts` (`minSdk = 34`). The build targets/compiles against API 35. API 34 is the software support floor pending explicit product-policy review.

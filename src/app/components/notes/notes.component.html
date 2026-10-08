@@ -10,7 +10,7 @@
   </div>
 }
 <section>
-  <input #overviewImageInput class="overview-image-input" type="file" accept="image/*" multiple
+  <input #overviewImageInput class="overview-image-input" type="file" accept="image/*" multiple tabindex="-1" aria-hidden="true"
     (change)="overviewImageInputChange($event)">
   <section #mainContainer class="main-container" [class.is-dragging]="!!draggedNoteId"
     [class.native-phone-layout]="nativePhoneLayout"

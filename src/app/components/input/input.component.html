@@ -1,7 +1,7 @@
 <div #main [class.main-container]="!isEditing" [class.mobile-compose-mode]="mobileComposeMode">
   <!--? placeholder -->
-  <input #imageInput class="image-input" type="file" accept="image/*" multiple (change)="imageInputChange($event)">
-  <input #attachmentInput class="attachment-input" type="file" [accept]="attachmentAccept" multiple
+  <input #imageInput class="image-input" type="file" accept="image/*" multiple tabindex="-1" aria-hidden="true" (change)="imageInputChange($event)">
+  <input #attachmentInput class="attachment-input" type="file" [accept]="attachmentAccept" multiple tabindex="-1" aria-hidden="true"
     (change)="attachmentInputChange($event)">
   <div #notePlaceholder (click)="notePhClick()" (dragover)="dragOverImages($event)" (drop)="dropImages($event)" class="placeholder">
     <input class="input" placeholder="Take a note…" type="text">

@@ -45,6 +45,7 @@ import { NotesStoreService } from './notes-store.service';
 import { withPresence } from '../utils/note-presence';
 import { sameDisplayedNote } from '../utils/note-identity';
 import { RequestGate, StaleRequestError, type RequestTicket } from '../utils/request-gate';
+import { reconnectDelay } from '../utils/reconnect-backoff';
 
 const KeptDownloads = registerPlugin<KeptDownloadsPlugin>('KeptDownloads');
 
@@ -80,6 +81,7 @@ export class NotesService {
   activeEditors$ = new BehaviorSubject<{noteId: number, editors: any[]} | null>(null);
   private realtimeSocket?: WebSocket;
   private realtimeReconnect?: ReturnType<typeof setTimeout>;
+  private realtimeFailures = 0;
   private readonly authSubscription: Subscription;
   private isLoading = false;
   private isLoadingNextPage = false;
@@ -279,6 +281,7 @@ export class NotesService {
 
     this.realtimeSocket.onopen = () => {
       console.log('[Kept WS] connected');
+      this.realtimeFailures = 0;
       // Replay any notes we'd previously asked to be present in. This covers
       // (a) joinNote() calls issued while the socket was still handshaking,
       // and (b) reconnects after a server restart or network blip.
@@ -326,7 +329,8 @@ export class NotesService {
       console.warn('[Kept WS] closed', event.code, event.reason);
       if (this.realtimeSocket !== socket) return;
       if (!this.shouldReconnectRealtime || !this.auth.token) return;
-      this.realtimeReconnect = setTimeout(() => this.connectRealtime(this.auth.token), 2000);
+      // Back off while the server is unreachable instead of retrying every two seconds indefinitely.
+      this.realtimeReconnect = setTimeout(() => this.connectRealtime(this.auth.token), reconnectDelay(this.realtimeFailures++));
     };
   }
 
@@ -466,6 +470,7 @@ export class NotesService {
 
   private disconnectRealtime() {
     this.shouldReconnectRealtime = false;
+    this.realtimeFailures = 0;
     if (this.realtimeReconnect) clearTimeout(this.realtimeReconnect);
     this.realtimeSocket?.close();
     this.realtimeSocket = undefined;

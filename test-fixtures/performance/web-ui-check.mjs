@@ -394,7 +394,9 @@ async function run() {
         await evaluate(`window.scrollTo(0, ${cycle % 2 ? 600 : 0})`);
         await sleep(150);
         const openStarted = Date.now();
-        await evaluate(`document.querySelector('app-notes .note-container[data-note-id="2"] .title').click()`);
+        // Alternate a text note with the next fixture note that carries an inline image, so the cycles also open media.
+        const noteId = cycle % 2 ? 30 : 2;
+        await evaluate(`(document.querySelector('app-notes .note-container[data-note-id="${noteId}"] .title') || document.querySelector('app-notes .note-container[data-note-id="2"] .title')).click()`);
         await waitFor(`!!document.querySelector('app-notes .modal .note-body')`);
         openMs.push(Date.now() - openStarted);
         await sleep(200);
@@ -553,6 +555,33 @@ async function run() {
     await cdp('Page.navigate', { url: `http://127.0.0.1:${port}${appPath}` });
     await sleep(700);
 
+    // Accessibility audit of the mounted home screen: accessible names, contrast of card text, and touch target size.
+    const auditExpression = (roots, includeCards) => `(() => {
+      const visible = element => { const r = element.getBoundingClientRect(); const style = getComputedStyle(element); return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && !element.closest('[aria-hidden=true]'); };
+      const nameOf = element => (element.getAttribute('aria-label') || element.getAttribute('aria-labelledby') && document.getElementById(element.getAttribute('aria-labelledby'))?.textContent || element.getAttribute('title') || element.textContent || element.getAttribute('placeholder') || element.querySelector('img[alt]')?.getAttribute('alt') || '').trim();
+      const controls = [...document.querySelectorAll(${JSON.stringify(roots)})].flatMap(root => [...root.querySelectorAll('button, a[href], input:not([type=hidden]), [role=button], [role=checkbox], [tabindex="0"]')]).filter(visible);
+      const unnamed = controls.filter(element => !nameOf(element) && !(element.id && document.querySelector('label[for="' + element.id + '"]'))).map(element => element.tagName.toLowerCase() + '.' + String(element.className).split(' ').slice(0, 2).join('.'));
+      const luminance = rgb => { const [r, g, b] = rgb.map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+      const parse = value => (value.match(/[0-9.]+/g) || []).map(Number);
+      const backgroundOf = element => { for (let node = element; node; node = node.parentElement) { const color = parse(getComputedStyle(node).backgroundColor); if (color.length >= 3 && (color[3] === undefined || color[3] > 0.5)) return color; } return [255, 255, 255]; };
+      const lowContrast = [];
+      for (const card of ${includeCards} ? [...document.querySelectorAll('app-notes .note-container')].filter(visible).slice(0, 40) : []) {
+        for (const text of card.querySelectorAll('.title, .note-body-preview, .preview, p')) {
+          if (!visible(text) || !text.textContent.trim()) continue;
+          const fg = parse(getComputedStyle(text).color), bg = backgroundOf(text);
+          const a = luminance(fg) + 0.05, b = luminance(bg) + 0.05;
+          const ratio = Math.max(a, b) / Math.min(a, b);
+          if (ratio < 4.5) lowContrast.push(card.dataset.noteId + ':' + text.className + ':' + ratio.toFixed(2));
+        }
+      }
+      const smallTargets = controls.filter(element => { const r = element.getBoundingClientRect(); return element.tagName !== 'INPUT' && (r.width < 24 || r.height < 24); }).map(element => element.tagName.toLowerCase() + '.' + String(element.className).split(' ').slice(0, 2).join('.') + ':' + Math.round(element.getBoundingClientRect().width) + 'x' + Math.round(element.getBoundingClientRect().height));
+      return { controls: controls.length, unnamed: [...new Set(unnamed)], lowContrast: lowContrast.slice(0, 10), lowContrastCount: lowContrast.length, smallTargets: [...new Set(smallTargets)].slice(0, 15) };
+    })()`;
+    const audit = await evaluate(auditExpression('app-navbar, app-sidenav, app-notes', true));
+    assert.deepEqual(audit.unnamed, [], `Controls without an accessible name: ${audit.unnamed.join(', ')}`);
+    assert.equal(audit.lowContrastCount, 0, `Card text below 4.5:1 contrast: ${audit.lowContrast.join(', ')}`);
+    smoke.push(`accessibility audit (${audit.controls} controls named, card text contrast, ${audit.smallTargets.length} targets under 24px)`);
+
     await evaluate(`document.querySelector('app-notes .note-container .title').click()`);
     await sleep(detailDelay + 150);
     assert(await evaluate(`!!document.querySelector('app-notes .modal app-input')`), 'Unchanged-note editor did not open.');
@@ -571,6 +600,9 @@ async function run() {
     const keyboardKey = await evaluate(`(() => { const card = document.querySelector('app-notes .note-container .note-preview-open'); card.focus(); const key = card.closest('.note-container').dataset.noteKey; card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return key; })()`);
     await sleep(detailDelay + 150);
     assert(await evaluate(`!!document.querySelector('app-notes .modal app-input')`), 'Enter on a focused card did not open the editor.');
+    const editorAudit = await evaluate(auditExpression('app-notes .modal', false));
+    assert.deepEqual(editorAudit.unnamed, [], `Editor controls without an accessible name: ${editorAudit.unnamed.join(', ')}`);
+    smoke.push(`editor accessibility audit (${editorAudit.controls} controls named, ${editorAudit.smallTargets.length} targets under 24px: ${editorAudit.smallTargets.slice(0, 5).join(' ')})`);
     await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
     for (let attempt = 0; attempt < 20 && await evaluate(`document.querySelector('app-notes .modal-container').style.display !== 'none'`); attempt++) await sleep(50);
     await sleep(500);
