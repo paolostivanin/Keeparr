@@ -93,14 +93,20 @@ class Media(private val app: KeeparrApplication) : MediaUploadPort {
             JSONObject(text)
         }
         if (image) {
-            val raw = note.raw.copyJson()
-            val images = raw.optJSONArray("images") ?: JSONArray()
             val imageRecord = JSONObject().put("id", "native-${entry.operationId}").put("dataUrl", response.getString("url"))
                 .put("name", payload.getString("name")).put("placement", "top")
-            images.put(imageRecord)
-            raw.put("images", images)
-            val mutation = JSONObject().put("type", "note.upsert").put("syncId", note.syncId).put("baseRevision", note.revision)
-                .put("operationId", "image-${entry.operationId}").put("payload", raw)
+            // The server keeps a receipt of this operation ID and the exact payload, so a retry after a lost response must
+            // send the same mutation, not one rebuilt from the note as it has been edited since. It is stored before the
+            // first send.
+            val mutation = payload.optJSONObject("link") ?: run {
+                val raw = note.raw.copyJson()
+                val images = raw.optJSONArray("images") ?: JSONArray()
+                images.put(imageRecord)
+                raw.put("images", images)
+                JSONObject().put("type", "note.upsert").put("syncId", note.syncId).put("baseRevision", note.revision)
+                    .put("operationId", "image-${entry.operationId}").put("payload", raw)
+                    .also { repository.store.enqueue(entry.copy(payload = payload.put("link", it).toString())) }
+            }
             val result = JSONObject(repository.api.call("/api/sync/mutations", "POST", NativeProtocol.mutationBatch(listOf(mutation), includeSnapshot = false), connection))
             val outcome = result.getJSONArray("results").getJSONObject(0)
             if (!outcome.optBoolean("ok")) throw ApiException(outcome.optInt("status", 409), outcome.text("error", "The note changed during the image upload."))

@@ -311,6 +311,10 @@
           <button type="button" (mousedown)="applyTextFormat('h2',$event)">H2</button>
           <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)">Aa</button>
           <span></span>
+          <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)">&bull;</button>
+          <button type="button" aria-label="Indent" title="Indent" (mousedown)="applyTextFormat('indent',$event)">&rarr;</button>
+          <button type="button" aria-label="Outdent" title="Outdent" (mousedown)="applyTextFormat('outdent',$event)">&larr;</button>
+          <span></span>
           <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)">B</button>
           <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)">I</button>
           <button type="button" class="underline" (mousedown)="applyTextFormat('underline',$event)">U</button>

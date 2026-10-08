@@ -598,7 +598,7 @@ export class InputComponent implements OnInit {
       if (!closeAfterSave) {
         this.coEditSaveInFlight = true
         try {
-          await this.notesService.update(noteObj, this.noteToEdit.id!)
+          await this.notesService.update(noteObj, this.noteToEdit.id!, this.editBaseForSave())
           this.saveBaselineSnapshot = this.noteSaveSnapshot(noteObj)
           this.labelsDirty = false
           this.editorSaveSucceeded(sessionGeneration)
@@ -617,7 +617,7 @@ export class InputComponent implements OnInit {
         }
       } else {
         try {
-          await this.notesService.update(noteObj, this.noteToEdit.id!)
+          await this.notesService.update(noteObj, this.noteToEdit.id!, this.editBaseForSave())
         } catch (error) {
           this.editorSaveFailed(sessionGeneration, error)
           if (this.auth.isAuthExpiredError(error)) return false
@@ -3749,7 +3749,9 @@ export class InputComponent implements OnInit {
       this.notesListSubscription = this.notesService.notesList$.subscribe(notes => {
         if (!notes) return;
         const updatedNote = notes.find(n => n.id === this.noteToEdit.id);
-        if (updatedNote && updatedNote.lastEditorUserId !== this.auth.currentUser?.id) {
+        // Also adopt a change that was held back while the editor had unsaved edits (its merged result is
+        // attributed to this user), once the editor is clean again.
+        if (updatedNote && (updatedNote.lastEditorUserId !== this.auth.currentUser?.id || this.externalUpdatePending)) {
           this.applyExternalUpdate(updatedNote);
         }
       });
@@ -3914,7 +3916,37 @@ export class InputComponent implements OnInit {
     this.drawingHistory.reset();
   }
 
+  /** A newer version arrived while the editor held unsaved edits, so it was not applied. */
+  private externalUpdatePending = false;
+
+  private hasUnsavedEdits() {
+    if (this.coEditSaveInFlight) return true;
+    try {
+      return this.noteChangedForSave(this.liveEditorNote());
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * The version the editor's content derives from, passed with a save made after a newer version was held back, so the
+   * three-way merge uses the editor's real base instead of the (newer) cache.
+   */
+  private editBaseForSave() {
+    if (!this.externalUpdatePending) return undefined;
+    const snapshot = this.saveBaselineSnapshot ?? this.noteSaveSnapshot(this.noteToEdit);
+    return { revision: this.noteToEdit.revision ?? 0, fields: JSON.parse(snapshot) };
+  }
+
   applyExternalUpdate(note: NoteI) {
+    // A card preview is a truncated projection and must never replace the editor's full content.
+    if (note.isCardPreview) return;
+    // Remote content must not overwrite what the user has typed and not yet saved; the save is merged field by field.
+    if (this.hasUnsavedEdits()) {
+      this.externalUpdatePending = true;
+      return;
+    }
+    this.externalUpdatePending = false;
     if (this.noteTitle?.nativeElement && this.noteTitle.nativeElement.innerHTML !== note.noteTitle) {
       this.updateHtmlWithCursorPreservation(this.noteTitle.nativeElement, note.noteTitle);
     }
@@ -3942,6 +3974,9 @@ export class InputComponent implements OnInit {
     }
     this.isHybridNote = !!note.isCbox && this.hasMeaningfulBody(note.noteBody);
     this.isCbox.next(note.isCbox);
+    // The editor now shows this version: it is the new base for the next save.
+    this.noteToEdit = { ...this.noteToEdit, revision: note.revision ?? this.noteToEdit.revision };
+    this.saveBaselineSnapshot = this.noteSaveSnapshot(note);
     this.cd.detectChanges();
   }
 

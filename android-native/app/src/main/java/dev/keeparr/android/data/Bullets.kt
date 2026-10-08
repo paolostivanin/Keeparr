@@ -10,12 +10,18 @@ import android.text.style.LeadingMarginSpan
 
 const val MAX_BULLET_LEVELS = 4
 
-/** Paragraph span marking a line as a bullet at [level] (0 until [MAX_BULLET_LEVELS]). */
-class BulletLevelSpan(val level: Int) : LeadingMarginSpan {
+/**
+ * Paragraph span marking a line as a bullet at [level] (0 until [MAX_BULLET_LEVELS]).
+ *
+ * [markerOnly] is used for an empty last line. Such a zero-length span sits exactly at the end of the previous line, and
+ * [android.text.Layout] counts every paragraph span touching a line, so a normal one would add its margin to the previous
+ * line too (a double indent that vanished when the next character replaced the span). A marker only records the level.
+ */
+class BulletLevelSpan(val level: Int, private val markerOnly: Boolean = false) : LeadingMarginSpan {
     private val density get() = Resources.getSystem().displayMetrics.density
     private val step get() = 20 * density
 
-    override fun getLeadingMargin(first: Boolean): Int = (step * (level + 1)).toInt()
+    override fun getLeadingMargin(first: Boolean): Int = if (markerOnly) 0 else (step * (level + 1)).toInt()
 
     override fun drawLeadingMargin(c: Canvas, p: Paint, x: Int, dir: Int, top: Int, baseline: Int, bottom: Int,
         text: CharSequence, start: Int, end: Int, first: Boolean, layout: Layout?) {
@@ -51,7 +57,10 @@ object Bullets {
             val raw = levels.getOrNull(index)
             // Never nest deeper than one level below the previous bullet line.
             val level = raw?.let { minOf(it.coerceIn(0, MAX_BULLET_LEVELS - 1), (previous ?: -1) + 1) }
-            if (level != null) text.setSpan(BulletLevelSpan(level), line[0], minOf(line[1] + 1, text.length), Spanned.SPAN_INCLUSIVE_EXCLUSIVE)
+            if (level != null) {
+                val end = minOf(line[1] + 1, text.length)
+                text.setSpan(BulletLevelSpan(level, markerOnly = end == line[0]), line[0], end, Spanned.SPAN_INCLUSIVE_EXCLUSIVE)
+            }
             previous = level
         }
     }

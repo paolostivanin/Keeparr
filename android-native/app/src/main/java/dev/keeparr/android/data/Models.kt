@@ -206,6 +206,21 @@ object NoteFormat {
 
     fun displayText(html: String): String = spanned(html).toString()
 
+    /**
+     * Read-only text with the bullets the editor draws as spans: they are not characters, so [displayText] drops them.
+     * Each bullet line gets its glyph and two spaces of indent per level; text without bullets is exactly [displayText].
+     */
+    fun previewText(html: String): String {
+        val spanned = spanned(html)
+        val text = spanned.toString()
+        val levels = Bullets.levels(spanned as? Spannable ?: return text)
+        if (levels.none { it != null }) return text
+        return Bullets.lines(text).mapIndexed { index, line ->
+            val content = text.substring(line[0], line[1])
+            levels[index]?.let { level -> "  ".repeat(level) + BulletLevelSpan.GLYPHS[level.coerceIn(0, BulletLevelSpan.GLYPHS.lastIndex)] + " " + content } ?: content
+        }.joinToString("\n")
+    }
+
     // One <p> per line, with <br> for blank lines: unlike the consecutive mode this round-trips blank lines. The
     // newlines toHtml puts between tags are formatting only, and the web would render them as extra blank lines.
     fun serialize(text: Spanned): String {
@@ -361,9 +376,12 @@ object ReminderPlanner {
     data class OccurrencePlan(val overdue: List<JSONObject>, val next: JSONObject?, val expired: ExpiredWindow?)
     private fun format(instant: Instant) = java.time.format.DateTimeFormatterBuilder().appendInstant(3).toFormatter().format(instant)
 
+    /** Leading part of every notification key of [profile]. */
+    fun profilePrefix(profile: String): String = java.security.MessageDigest.getInstance("SHA-256").digest(profile.toByteArray())
+        .take(8).joinToString("") { "%02x".format(it) }
+
     fun deliveryKey(occurrence: JSONObject, profile: String): String {
-        val profileKey = java.security.MessageDigest.getInstance("SHA-256").digest(profile.toByteArray())
-            .take(8).joinToString("") { "%02x".format(it) }
+        val profileKey = profilePrefix(profile)
         return "$profileKey/${occurrence.text("occurrenceId")}/v${occurrence.optLong("scheduleVersion", 1).coerceAtLeast(1)}"
     }
 

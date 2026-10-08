@@ -34,6 +34,8 @@ interface ReminderNotificationSink {
     suspend fun showCatchUpSummary(key: String, count: Int, firstDueAtUtc: String, lastDueAtUtc: String, note: Note?): Boolean
     fun cancel(key: String)
     fun cancelAll()
+    /** Keys of the notifications currently shown, or null when the platform cannot list them. */
+    fun activeKeys(): Set<String>? = null
 }
 
 interface ReminderController {
@@ -122,6 +124,9 @@ private class AndroidReminderNotificationSink(private val app: KeeparrApplicatio
 
     override fun cancel(key: String) = NotificationManagerCompat.from(app).cancel(key, 0)
     override fun cancelAll() = NotificationManagerCompat.from(app).cancelAll()
+    override fun activeKeys(): Set<String>? = runCatching {
+        app.getSystemService(NotificationManager::class.java).activeNotifications.mapNotNull { it.tag }.toSet()
+    }.getOrNull()
 }
 
 class ReminderScheduler(
@@ -166,6 +171,12 @@ class ReminderScheduler(
             reminder.text("status") != "dismissed" && (reminder.optLong("noteId") == 0L || notes.any { note ->
                 (note.id == reminder.optLong("noteId") || note.syncId == reminder.text("noteSyncId")) && !note.archived && !note.trashed
             })
+        }
+        // A notification that was already shown is no longer in the alarm registry, so archiving, trashing or deleting the
+        // note (or dismissing/removing its reminder) must close it here, or private text stays on the lock screen.
+        val profilePrefix = ReminderPlanner.profilePrefix(profile)
+        notifications.activeKeys()?.forEach { key ->
+            if (key.startsWith("$profilePrefix/") && valid.none { key.contains(it.text("syncId")) }) notifications.cancel(key)
         }
         for ((key, value) in summaryRegistry.all) {
             val summary = (value as? String)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: continue

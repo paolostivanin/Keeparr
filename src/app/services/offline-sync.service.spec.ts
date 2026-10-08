@@ -181,3 +181,27 @@ describe('OfflineSyncService incremental cache changes', () => {
     }]);
   });
 });
+
+describe('OfflineSyncService profile isolation', () => {
+  it('never saves one account\'s edit into another account\'s partition when the profile changes mid-save', async () => {
+    let release!: (value: { serverOffsetMs: number }) => void;
+    const persistNoteMutation = jasmine.createSpy('persistNoteMutation');
+    const service = Object.create(OfflineSyncService.prototype) as OfflineSyncService;
+    Object.assign(service, {
+      currentPartition: 'account-A',
+      state$: { next: () => undefined },
+      store: {
+        getSyncState: () => new Promise(resolve => release = resolve),
+        nextStamp: () => ({}),
+        persistNoteMutation
+      }
+    });
+
+    const saving = service.persistNote({ syncId: 'private-A', noteBody: 'A private draft' } as NoteI);
+    (service as any).currentPartition = 'account-B';
+    release({ serverOffsetMs: 0 });
+
+    await expectAsync(saving).toBeRejectedWithError(/profile changed/);
+    expect(persistNoteMutation).not.toHaveBeenCalled();
+  });
+});

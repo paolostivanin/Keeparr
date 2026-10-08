@@ -206,6 +206,9 @@ internal fun widgetNoteBodyText(note: Note, single: Boolean): String = when {
     note.checklist -> note.items.take(8).joinToString("\n") {
         (if (it.optBoolean("done")) "☑ " else "☐ ") + boundedWidgetText(widgetPlainText(it.text("data"), 512), 128)
     }
+    // Bullets are spans, not characters, so only a body with a list needs the bullet-aware conversion; every other body
+    // keeps the widget's own whitespace handling.
+    "<li" in note.body -> NoteFormat.previewText(boundedWidgetText(note.body, 8192)).trim()
     else -> widgetPlainText(note.body, 8192)
 }
 

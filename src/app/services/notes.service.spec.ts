@@ -226,7 +226,7 @@ describe('NotesService local persistence errors', () => {
       id: 1,
       syncId: 'note-1',
       noteTitle: 'Changed'
-    }));
+    }), undefined);
     expect(remoteWrite).not.toHaveBeenCalled();
     expect((service as any).mergeNoteIntoList).toHaveBeenCalled();
   });
@@ -279,7 +279,7 @@ describe('NotesService local persistence errors', () => {
 
     await service.update({ ...note, id: -17, syncId: note.syncId, noteTitle: 'Recovered draft' }, -17);
 
-    expect(persistNote).toHaveBeenCalledOnceWith(jasmine.objectContaining({ id: 42, syncId: note.syncId, noteTitle: 'Recovered draft' }));
+    expect(persistNote).toHaveBeenCalledOnceWith(jasmine.objectContaining({ id: 42, syncId: note.syncId, noteTitle: 'Recovered draft' }), undefined);
   });
 
   it('distinguishes offline document-and-outbox commit failures', async () => {

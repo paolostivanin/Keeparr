@@ -578,6 +578,9 @@ app-input .mobile-format-toolbar {
   right: 8px;
   justify-content: center;
   max-width: calc(100vw - 16px);
+  // The row is wider than a phone once bullets are included; wrap instead of overflowing off-screen.
+  flex-wrap: wrap;
+  row-gap: 2px;
 }
 
 @media (max-width: 599px), (max-height: 500px) and (orientation: landscape) {

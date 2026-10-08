@@ -38,7 +38,7 @@ import { NoteAttachmentI, NoteI, UpdateKeyI } from './../interfaces/notes';
 import { AuthService } from './auth.service';
 import { ShareUserI } from '../interfaces/users';
 import { ReminderService } from './reminder.service';
-import { OfflineStoreService } from './offline-store.service';
+import { EditBase, OfflineStoreService } from './offline-store.service';
 import { OfflineSyncService } from './offline-sync.service';
 import { UserPreferencesService } from './user-preferences.service';
 import { NotesStoreService } from './notes-store.service';
@@ -548,7 +548,7 @@ export class NotesService {
     return localId;
   }
 
-  async update(object: NoteI, id: number) {
+  async update(object: NoteI, id: number, base?: EditBase) {
     if (id === -1) return;
     let existing = await this.cachedOrLoadedNote(id);
     if (!existing && object.syncId) {
@@ -561,7 +561,7 @@ export class NotesService {
     const local = { ...existing, ...object, id, isCardPreview: false, updatedAt: new Date().toISOString(), lastEditorUserId: this.auth.currentUser?.id } as NoteI;
     this.offlineStore.ensureNoteIdentity(local);
     if (id < 0 || !navigator.onLine || this.offlineSync.isConnectionDegraded()) {
-      const { note: persisted } = await this.persistOfflineNote(local);
+      const { note: persisted } = await this.persistOfflineNote(local, base);
       this.cacheNoteMedia(persisted).catch(console.error);
       this.mergeNoteIntoList(persisted);
       await this.refreshLocalReminderContent(persisted);
@@ -570,7 +570,7 @@ export class NotesService {
     // Commit the document and replayable operation together before reporting a
     // successful close. OfflineSyncService owns the remote write from here, so
     // editor latency no longer depends on the network or a request retry window.
-    const { note: persisted } = await this.persistOfflineNote(local);
+    const { note: persisted } = await this.persistOfflineNote(local, base);
     this.cacheNoteMedia(persisted).catch(console.error);
     this.mergeNoteIntoList(persisted);
     await this.refreshLocalReminderContent(persisted);
@@ -663,9 +663,9 @@ export class NotesService {
     };
   }
 
-  private async persistOfflineNote(note: NoteI) {
+  private async persistOfflineNote(note: NoteI, base?: EditBase) {
     try {
-      return await this.offlineSync.persistNote(note);
+      return await this.offlineSync.persistNote(note, base);
     } catch (error) {
       throw new LocalNotePersistenceError(error);
     }

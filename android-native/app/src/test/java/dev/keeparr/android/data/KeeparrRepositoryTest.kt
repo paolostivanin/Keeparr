@@ -19,7 +19,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.collect
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
@@ -1353,6 +1355,130 @@ class KeeparrRepositoryTest {
 
         assertEquals(2L, repository.store.pending(profile.profile).single().baseRevision)
         assertEquals(2L, repository.note(note.syncId)?.revision)
+    }
+
+
+    @Test fun aReminderEditAfterALostResponseChainsBehindTheSentOperationInsteadOfRewritingIt() = runBlocking {
+        val note = Note(Note.create(profile.userId).raw.put("id", 55).put("revision", 4))
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.toString()))
+        val api = FakeNativeApi().apply { callHandler = { _, _, _ -> throw ApiException(-1, "Accepted response was lost") } }
+        repository = KeeparrRepository(app, app.database, profile, api)
+        app.repository = repository
+        profile.token = "test-token"
+        repository.setReminder(note, "2030-01-01T09:00:00Z", "UTC", null)
+        val sent = repository.store.pending(profile.profile).single()
+        assertNotNull(runCatching { repository.sync() }.exceptionOrNull())
+        assertTrue("the first send was attempted", repository.store.pending(profile.profile).single().attempted)
+
+        repository.setReminder(note, "2030-01-02T09:00:00Z", "UTC", null)
+
+        val entries = repository.store.pending(profile.profile).sortedBy { it.createdAt }
+        assertEquals(2, entries.size)
+        assertEquals("the sent operation keeps its ID and payload for replay", sent.operationId, entries[0].operationId)
+        assertEquals(sent.payload, entries[0].payload)
+        assertEquals("the edit waits for it", sent.operationId, entries[1].dependsOnOperationId)
+        assertNotEquals(sent.payload, entries[1].payload)
+    }
+
+    @Test fun aConnectionFailureWhileLinkingAnImageIsRetriedNotParkedAsAConflict() = runBlocking {
+        val note = Note(Note.create(profile.userId).raw.put("id", 55).put("revision", 4))
+        val api = FakeNativeApi().apply { callHandler = { route, _, _ -> error("Unexpected route: $route") } }
+        val uploader = object : MediaUploadPort {
+            override suspend fun upload(entry: Outbox, repository: KeeparrRepository): JSONObject =
+                throw ApiException(-1, "The server did not respond in time")
+        }
+        repository = KeeparrRepository(app, app.database, profile, api, uploader)
+        app.repository = repository
+        profile.token = "test-token"
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.toString()))
+        repository.attach(note, JSONObject().put("file", "synthetic-image").put("mime", "image/png").put("name", "image.png"))
+
+        assertNotNull("the failure is reported so the sync is retried", runCatching { repository.sync() }.exceptionOrNull())
+
+        val upload = repository.store.pending(profile.profile).single()
+        assertEquals(OutboxState.QUEUED, upload.state)
+        assertNull(upload.conflict)
+        assertEquals(upload.operationId, repository.store.nextSendable(profile.profile)?.operationId)
+    }
+
+    @Test fun saveAsCopyKeepsTheNewestDraftWhenOlderOperationsConflicted() = runBlocking {
+        val first = Note(Note.create(profile.userId).raw.put("id", 55).put("revision", 4).put("noteTitle", "earlier draft"))
+        repository.save(first, synchronize = false)
+        val sent = repository.store.pending(profile.profile).single()
+        repository.store.markInFlight(sent.operationId)
+        repository.save(Note(first.raw.copyJson().put("noteTitle", "latest draft typed during send")), synchronize = false)
+        val rejection = JSONObject().put("error", "Concurrent revision conflict").put("latest", first.raw).toString()
+        repository.store.pending(profile.profile).forEach { repository.store.enqueue(it.copy(state = OutboxState.CONFLICT, conflict = rejection)) }
+
+        repository.resolve(repository.store.pending(profile.profile).first { it.operationId == sent.operationId }, ConflictResolution.SAVE_AS_COPY)
+
+        val copies = repository.store.list(profile.profile, "note").filter { it.syncId != first.syncId }.map { Note(JSONObject(it.payload)) }
+        assertEquals(listOf("latest draft typed during send"), copies.map { it.title })
+        assertTrue("every retired operation for the original is gone", repository.store.pending(profile.profile).none { it.syncId == first.syncId })
+    }
+
+    @Test fun anImageLinkRetryReplaysTheStoredMutationEvenAfterTheNoteWasEdited() = runBlocking {
+        val note = Note(Note.create(profile.userId).raw.put("id", 55).put("revision", 4).put("noteTitle", "before upload"))
+        val mutations = mutableListOf<JSONObject>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("OK")
+                .body("{\"url\":\"/api/uploads/images/replay.png\"}".toResponseBody("application/json".toMediaType())).build()
+        }.build()
+        val api = object : NativeApi by FakeNativeApi() {
+            override fun client(connection: ConnectionSnapshot?) = http
+            override fun request(path: String, connection: ConnectionSnapshot?) = Request.Builder().url(profile.origin + path)
+            override suspend fun call(path: String, method: String, body: JSONObject?, connection: ConnectionSnapshot?): String {
+                mutations += body!!.getJSONArray("mutations").getJSONObject(0).copyJson()
+                throw ApiException(-1, "Response lost after link acceptance")
+            }
+        }
+        repository = KeeparrRepository(app, app.database, profile, api)
+        app.repository = repository
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.toString()))
+        val folder = java.io.File(app.filesDir, "pending-media").apply { mkdirs() }
+        val staged = java.io.File(folder, "audit-image").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val queued = Outbox("audit-image-operation", profile.profile, "media.upload", "${note.syncId}:audit-image",
+            JSONObject().put("file", staged.name).put("name", "image.png").put("mime", "image/png").put("noteSyncId", note.syncId).toString())
+        repository.store.enqueue(queued)
+        try {
+            assertNotNull(runCatching { Media(app).upload(repository.store.pending(profile.profile).single(), repository) }.exceptionOrNull())
+            repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.copyJson().put("noteTitle", "later local draft").toString()))
+            // The sync loop reloads the entry from storage before every attempt.
+            assertNotNull(runCatching { Media(app).upload(repository.store.pending(profile.profile).single(), repository) }.exceptionOrNull())
+
+            assertEquals(mutations[0].getString("operationId"), mutations[1].getString("operationId"))
+            assertEquals("the same operation ID always carries the same payload", mutations[0].toString(), mutations[1].toString())
+            assertEquals("before upload", mutations[1].getJSONObject("payload").getString("noteTitle"))
+        } finally { staged.delete() }
+    }
+
+    @Test fun aShownNotificationIsClosedWhenItsNoteIsArchived() = runBlocking {
+        profile.token = "test-token"
+        val note = Note(Note.create(profile.userId).raw.put("id", 55).put("noteTitle", "Private note"))
+        val reminder = JSONObject().put("id", 2).put("syncId", "audit-reminder").put("noteId", note.id)
+            .put("noteSyncId", note.syncId).put("dueAtUtc", "2030-01-01T09:00:00Z")
+            .put("scheduleAnchorAtUtc", "2030-01-01T09:00:00Z").put("scheduleVersion", 1).put("timezone", "UTC").put("status", "pending")
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.toString()))
+        repository.store.put(Record(profile.profile, "reminder", reminder.text("syncId"), reminder.toString()))
+        val visible = mutableSetOf<String>()
+        val sink = object : ReminderNotificationSink by FakeNotifications() {
+            override suspend fun show(occurrence: JSONObject, key: String, note: Note?): Boolean { visible += key; return true }
+            override fun cancel(key: String) { visible -= key }
+            override fun cancelAll() { visible.clear() }
+            override fun activeKeys(): Set<String> = visible.toSet()
+        }
+        val scheduler = ReminderScheduler(app, Clock.fixed(Instant.parse("2030-01-01T09:01:00Z"), ZoneOffset.UTC), FakeAlarms(), sink)
+        val registry = app.getSharedPreferences("scheduled_alarms", android.content.Context.MODE_PRIVATE)
+        registry.edit().clear().commit()
+        scheduler.reconcile()
+        val key = registry.all.keys.single()
+        scheduler.deliver(key, JSONObject(registry.getString(key, null)!!))
+        assertEquals(setOf(key), visible)
+
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.copyJson().put("archived", true).toString()))
+        scheduler.reconcile()
+
+        assertTrue("the delivered notification must not outlive the note's visibility", visible.isEmpty())
     }
 
     private class FakeProfile(override var origin: String, override var userId: Long) : ConnectionProfile {

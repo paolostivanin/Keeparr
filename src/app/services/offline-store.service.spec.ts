@@ -572,6 +572,23 @@ describe('OfflineStoreService guarded note saves', () => {
     expect(entry.guard?.after).toBeUndefined();
   });
 
+  it('judges a save from an editor older than the cache against the editor\'s own base', async () => {
+    // The cache holds revision 8 (a remote edit arrived); the editor still shows revision 7 content.
+    await store.replaceSnapshot(partition, [server(5, 'n5', 'Remote title', 8)], [], [], 1, Date.now());
+    const base = { revision: 7, fields: { noteTitle: 'Title the editor opened with' } };
+    const { entry } = await store.persistNoteMutation(partition, server(5, 'n5', 'My edit', 7), store.nextStamp(), base);
+    expect(entry.guard?.baseRevision).toBe(7);
+    expect(entry.guard?.baseFields.noteTitle).toBe('Title the editor opened with');
+  });
+
+  it('ignores an editor base that is not older than the cache', async () => {
+    await store.replaceSnapshot(partition, [server(5, 'n5', 'Server title', 7)], [], [], 1, Date.now());
+    const { entry } = await store.persistNoteMutation(partition, server(5, 'n5', 'Edited', 7), store.nextStamp(),
+      { revision: 7, fields: { noteTitle: 'unused' } });
+    expect(entry.guard?.baseRevision).toBe(7);
+    expect(entry.guard?.baseFields.noteTitle).toBe('Server title');
+  });
+
   it('does not guard notes that do not exist on the server yet', async () => {
     const { entry } = await store.persistNoteMutation(partition, note(-4, 'local-only', 'New'), store.nextStamp());
     expect(entry.guard).toBeUndefined();

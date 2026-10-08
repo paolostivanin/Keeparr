@@ -364,10 +364,10 @@ private fun HomeScreen(app: KeeparrApplication, notes: List<Note>, reminders: Li
                 if (entry.type == "note.upsert") {
                     val draft = JSONObject(entry.payload)
                     Text("Your draft: ${draft.text("noteTitle")}", Modifier.padding(top = 12.dp))
-                    Text(NoteFormat.displayText(draft.text("noteBody")))
+                    Text(NoteFormat.previewText(draft.text("noteBody")))
                     latest?.let { server ->
                         Text("Server version: ${server.text("noteTitle")}", Modifier.padding(top = 12.dp))
-                        Text(NoteFormat.displayText(server.text("noteBody")))
+                        Text(NoteFormat.previewText(server.text("noteBody")))
                         val localItems = draft.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
                         val serverItems = server.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
                         val differing = (localItems.keys + serverItems.keys).filter { id ->

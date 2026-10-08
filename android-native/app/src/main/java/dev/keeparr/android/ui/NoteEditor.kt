@@ -229,7 +229,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                             moreMenuExpanded = false
                             val text = note.title + "\n" + if (note.checklist) note.items.joinToString("\n") {
                                 (if (it.optBoolean("done")) "[x] " else "[ ] ") + NoteFormat.displayText(it.text("data"))
-                            } else NoteFormat.displayText(note.body)
+                            } else NoteFormat.previewText(note.body)
                             activity.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                                 .putExtra(Intent.EXTRA_TEXT, text), "Share note"))
                         })
@@ -530,7 +530,11 @@ private fun StyledEditor(initial: String, reset: String, textColor: Color, handl
 @Composable
 private fun ReminderDialog(activity: MainActivity, app: KeeparrApplication, existing: JSONObject?, onClose: () -> Unit,
     onSave: (String, String, String?) -> Unit, onRemove: () -> Unit) {
-    val systemZone = ZoneId.systemDefault()
+    // An existing reminder keeps its own time zone: re-saving it (for any reason) must not silently move a repeating
+    // schedule to wherever the phone is today. A new reminder uses the phone's zone.
+    val systemZone = remember(existing?.text("timezone")) {
+        existing?.text("timezone")?.takeIf { it.isNotBlank() }?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: ZoneId.systemDefault()
+    }
     val timezone = systemZone.id
     var time by remember(existing?.text("syncId"), existing?.text("dueAtUtc"), timezone) {
         mutableStateOf(runCatching { Instant.parse(existing?.let { ReminderFormat.displayDueAt(it) }) }.getOrNull()?.atZone(systemZone)
@@ -569,7 +573,7 @@ private fun ReminderDialog(activity: MainActivity, app: KeeparrApplication, exis
             Text("Move note to top when it fires", Modifier.weight(1f))
             Switch(moveToTop, { moveToTop = it })
         }
-        Text("Phone time · $timezone", style = MaterialTheme.typography.bodySmall)
+        Text((if (systemZone == ZoneId.systemDefault()) "Phone time" else "Reminder time zone") + " · $timezone", style = MaterialTheme.typography.bodySmall)
         if (!scheduler.notificationsAllowed()) TextButton(onClick = activity::requestNotifications) { Text("Allow reminder notifications") }
         if (!scheduler.precise()) TextButton(onClick = activity::requestPreciseAlarms) { Text("Allow precise delivery (otherwise may be delayed)") }
     } }, confirmButton = { TextButton(onClick = { onSave(time.toInstant().toString(), timezone, if (repeat == "none") null else JSONObject()

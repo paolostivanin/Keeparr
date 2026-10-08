@@ -6,6 +6,9 @@ import type { LocationSavedPlace } from './location-saved-places.service';
 import type { EditorSessionRecord } from '../utils/editor-session';
 import { pickGuardFields, type GuardFields } from '../utils/note-merge';
 
+/** The server revision and field values an editor's content actually derives from, when that is older than the cache. */
+export interface EditBase { revision: number; fields: GuardFields }
+
 export type SyncResourceType = 'note' | 'reminder' | 'attachment';
 export type SyncMutationType =
   | 'note.upsert'
@@ -821,7 +824,7 @@ export class OfflineStoreService {
     return entry;
   }
 
-  async persistNoteMutation(partition: string, note: NoteI, stamp: LwwStamp) {
+  async persistNoteMutation(partition: string, note: NoteI, stamp: LwwStamp, base?: EditBase) {
     const syncId = this.ensureNoteIdentity(note);
     const persisted: NoteI = {
       ...note,
@@ -875,7 +878,7 @@ export class OfflineStoreService {
             queued.continue();
             return;
           }
-          const guard = this.noteGuardFor(cachedNote, pending, coalesced, coalescedGuard);
+          const guard = this.noteGuardFor(cachedNote, pending, coalesced, coalescedGuard, base);
           if (guard) entry.guard = guard;
           notes.put({
             key: this.resourceKey(partition, syncId),
@@ -899,7 +902,7 @@ export class OfflineStoreService {
    * applied operation chains after it; otherwise it is based on the accepted
    * cached note. Notes that do not exist on the server yet are unguarded.
    */
-  private noteGuardFor(cached: NoteI | undefined, pending: OutboxEntry[], coalesced: boolean, coalescedGuard?: NoteGuard): NoteGuard | undefined {
+  private noteGuardFor(cached: NoteI | undefined, pending: OutboxEntry[], coalesced: boolean, coalescedGuard?: NoteGuard, base?: EditBase): NoteGuard | undefined {
     const last = [...pending].sort((left, right) => this.compareLwwStamp(left.lww, right.lww)).pop();
     if (coalesced) {
       // The cache already holds the replaced save's edits, so only its own base is a valid merge base.
@@ -909,6 +912,10 @@ export class OfflineStoreService {
     if (!cached || cached.id == null || cached.id <= 0 || cached.revision == null) return undefined;
     const baseFields = pickGuardFields(cached);
     if (last) return { baseFields, after: last.operationId };
+    // An editor still showing an older version than the cache must be judged against that version: the server then
+    // reports the newer revision and the three-way merge uses the editor's real base, instead of treating the
+    // newer server values as unchanged and silently overwriting them.
+    if (base && base.revision < cached.revision) return { baseRevision: base.revision, baseFields: base.fields };
     return { baseRevision: cached.revision, baseFields };
   }
 

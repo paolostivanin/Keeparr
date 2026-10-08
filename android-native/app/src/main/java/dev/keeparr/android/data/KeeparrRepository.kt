@@ -161,6 +161,14 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
             baseRevision = raw.optLong("revision"), dependsOnOperationId = pendingMedia?.operationId ?: predecessor?.operationId)
     }
 
+    // An operation that was sent once may already be applied by the server, which then holds a receipt for its ID and
+    // payload. It is immutable from then on: later edits chain behind it (like behind an in-flight one) instead of rewriting
+    // it, or a replay would be rejected for reusing the ID with a different payload.
+    private suspend fun unsent(profile: String, type: String, syncId: String) =
+        store.queued(profile, type, syncId)?.takeIf { !it.attempted }
+    private suspend fun sentOrInFlight(profile: String, type: String, syncId: String) =
+        store.inFlight(profile, type, syncId) ?: store.queued(profile, type, syncId)?.takeIf { it.attempted }
+
     // The editor's copy can trail an acknowledgement this repository already applied.
     private fun knownRevision(profile: String, note: Note) = maxOf(note.revision, acceptedRevisions["$profile\u0000${note.syncId}"] ?: 0L)
 
@@ -174,8 +182,8 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
             if (plan.isEmpty()) return@withTransaction false
             val byId = rows.toMap()
             plan.forEach { (id, position) -> store.put(Record(profile, "note", id, byId.getValue(id).raw.copyJson().put("sortOrder", position).toString())) }
-            val queued = store.queued(profile, "note.reorder", "order")
-            val predecessor = store.inFlight(profile, "note.reorder", "order")
+            val queued = unsent(profile, "note.reorder", "order")
+            val predecessor = sentOrInFlight(profile, "note.reorder", "order")
             val queuedPayload = queued?.let { JSONObject(it.payload) }
             // `syncIds` is the whole order for servers that predate `positions`; newer servers store just the moved positions.
             val previous = queuedPayload?.optJSONArray("syncIds")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty()
@@ -228,8 +236,8 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                 .put("title", if (note.locked) "Keeparr reminder" else note.title).put("body", if (note.locked) "" else NoteFormat.displayText(note.body).take(500))
             val id = raw.getString("syncId")
             val conflicted = store.conflicted(profile, "reminder.upsert", id)
-            val queued = store.queued(profile, "reminder.upsert", id)
-            val inFlight = store.inFlight(profile, "reminder.upsert", id)
+            val queued = unsent(profile, "reminder.upsert", id)
+            val inFlight = sentOrInFlight(profile, "reminder.upsert", id)
             val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == note.syncId }
             val previous = conflicted ?: queued
             val baseScheduleVersion = previous?.baseScheduleVersion
@@ -261,8 +269,8 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
             val existing = store.record(settings.profile, "reminder", id) ?: return@withTransaction false
             val raw = JSONObject(existing.payload)
             noteSyncId = raw.text("noteSyncId")
-            val queued = store.queued(settings.profile, "reminder.upsert", id)
-            val inFlight = store.inFlight(settings.profile, "reminder.upsert", id)
+            val queued = unsent(settings.profile, "reminder.upsert", id)
+            val inFlight = sentOrInFlight(settings.profile, "reminder.upsert", id)
             store.remove(settings.profile, "reminder", id)
             if (raw.optLong("id") < 0 && inFlight == null) {
                 queued?.let { store.acknowledge(it.operationId) }
@@ -283,9 +291,9 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
             if (JSONObject(existing.payload).text("status") == "dismissed") return@withTransaction false
             val raw = JSONObject(existing.payload).put("status", "dismissed")
             noteSyncId = raw.text("noteSyncId")
-            val queued = store.queued(settings.profile, "reminder.upsert", id)
+            val queued = unsent(settings.profile, "reminder.upsert", id)
             val conflicted = store.conflicted(settings.profile, "reminder.upsert", id)
-            val inFlight = store.inFlight(settings.profile, "reminder.upsert", id)
+            val inFlight = sentOrInFlight(settings.profile, "reminder.upsert", id)
             val previous = conflicted ?: queued
             store.put(Record(settings.profile, "reminder", id, raw.toString()))
             val dependency = previous?.dependsOnOperationId ?: inFlight?.operationId
@@ -309,8 +317,8 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
             if (current != null && current.text("state") == state && current.opt("snoozeUntil") == raw.opt("snoozeUntil") &&
                 store.queued(profile, "reminder.action", id) != null) return@withTransaction false
             store.put(Record(profile, "occurrence", id, raw.toString()))
-            val queued = store.queued(profile, "reminder.action", id)
-            val inFlight = store.inFlight(profile, "reminder.action", id)
+            val queued = unsent(profile, "reminder.action", id)
+            val inFlight = sentOrInFlight(profile, "reminder.action", id)
             store.enqueue(queued?.copy(payload = payload.toString()) ?: Outbox(UUID.randomUUID().toString(), profile,
                 "reminder.action", id, payload.toString(), dependsOnOperationId = inFlight?.operationId))
             true
@@ -383,7 +391,8 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                     if (entry.type == "media.upload") {
                         val uploaded = try { mediaUploader.upload(entry, this) }
                         catch (error: ApiException) {
-                            if (error.code == 401 || error.code == 429 || error.code >= 500) throw error
+                            // Negative codes are connection failures (TLS, DNS, timeout): nothing was decided, so retry later.
+                            if (error.code <= 0 || error.code == 401 || error.code == 408 || error.code == 429 || error.code >= 500) throw error
                             database.withTransaction {
                                 val conflict = JSONObject().put("error", error.message.ifBlank {
                                     "The file could not be attached. Save the note and file as a copy to recover it."
@@ -744,7 +753,10 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                         store.remove(entry.profile, "recovery", entry.syncId)
                     }
                     ConflictResolution.SAVE_AS_COPY -> {
-                        recoverAsCopy(entry.profile, entry.syncId, JSONObject(entry.payload))
+                        // The stored note is the newest local draft; the entry's own payload is only the version that was
+                        // sent, and edits typed after it are queued behind it. All of them are retired with the copy.
+                        val latestDraft = store.record(entry.profile, "note", entry.syncId)?.payload ?: entry.payload
+                        recoverAsCopy(entry.profile, entry.syncId, JSONObject(latestDraft))
                     }
                     ConflictResolution.USE_SERVER, ConflictResolution.DISCARD -> {
                         store.acknowledge(entry.operationId)
@@ -785,7 +797,9 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                 "media.upload" -> when (resolution) {
                     ConflictResolution.SAVE_AS_COPY -> {
                         val source = JSONObject(entry.payload).text("noteSyncId")
-                        val draft = store.pending(entry.profile).firstOrNull { it.type == "note.upsert" && it.syncId == source }?.payload
+                        // While an edit is still queued, the stored note is the newest local draft.
+                        val hasPendingDraft = store.pending(entry.profile).any { it.type == "note.upsert" && it.syncId == source }
+                        val draft = (if (hasPendingDraft) store.record(entry.profile, "note", source)?.payload else null)
                             ?: store.record(entry.profile, "recovery", source)?.payload
                         recoverAsCopy(entry.profile, source, draft?.let(::JSONObject), listOf(entry))
                     }
@@ -919,9 +933,9 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
             val stored = store.record(profile, "note", note.syncId)
             require(stored != null) { "This note belongs to a different Keeparr profile." }
             if (JSONObject(stored.payload).optBoolean("completedChecklistCollapsed") == collapsed) return@withTransaction false
-            val queued = store.queued(profile, "note.view-state", note.syncId)
+            val queued = unsent(profile, "note.view-state", note.syncId)
             val conflicted = store.conflicted(profile, "note.view-state", note.syncId)
-            val inFlight = store.inFlight(profile, "note.view-state", note.syncId)
+            val inFlight = sentOrInFlight(profile, "note.view-state", note.syncId)
             val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == note.syncId }
             val previous = conflicted ?: queued
             val dependency = previous?.dependsOnOperationId ?: inFlight?.operationId

@@ -11,6 +11,7 @@ import { OfflineSyncService } from './offline-sync.service';
 import { NoteI } from '../interfaces/notes';
 import { UserPreferencesService } from './user-preferences.service';
 import { planNoteOrder } from '../utils/note-order';
+import { nextRepeatDueAt } from '../utils/reminder-recurrence';
 
 type ReminderCreateData = {
   noteId?: number;
@@ -142,12 +143,19 @@ export class ReminderService {
   }
 
   async load() {
+    // The response belongs to the profile that requested it; a slow request must not show or cache it for the next one.
+    const partition = this.offlineSync.partition;
     try {
       const reminders = await firstValueFrom(
         this.http.get<ReminderI[]>(`${this.apiUrl}/reminders`, { headers: this.auth.authHeaders() })
       );
-      if (this.offlineSync.partition) {
-        for (const reminder of reminders) await this.offlineStore.putReminder(this.offlineSync.partition, reminder);
+      if (this.offlineSync.partition !== partition) return;
+      if (partition) {
+        for (const reminder of reminders) {
+          if (this.offlineSync.partition !== partition) return;
+          await this.offlineStore.putReminder(partition, reminder);
+        }
+        if (this.offlineSync.partition !== partition) return;
       }
       this.setReminders(reminders);
       this.offlineSync.syncNow({ bootstrapIfEmpty: true }).catch(console.error);
@@ -228,11 +236,27 @@ export class ReminderService {
         return local;
       }
     }
-    const reminder = await firstValueFrom(
-      this.http.patch<ReminderI>(`${this.apiUrl}/reminders/${id}`, payload, { headers: this.auth.authHeaders() })
-    );
+    let reminder: ReminderI;
+    try {
+      reminder = await firstValueFrom(
+        this.http.patch<ReminderI>(`${this.apiUrl}/reminders/${id}`, payload, { headers: this.auth.authHeaders() })
+      );
+    } catch (error) {
+      // navigator.onLine stays true when the network is up but the server is not. The change is already in the local
+      // cache, so keep it durable and let the outbox deliver it instead of losing it on the next refresh.
+      const local = this.reminders$.value.find(item => item.id === id);
+      if (this.isUnreachable(error) && local?.syncId) {
+        await this.offlineSync.enqueue('reminder.upsert', local.syncId, local);
+        return local;
+      }
+      throw error;
+    }
     await this.load();
     return reminder;
+  }
+
+  private isUnreachable(error: unknown) {
+    return (error as { status?: number } | null)?.status === 0;
   }
 
   async delete(id: number) {
@@ -245,9 +269,18 @@ export class ReminderService {
       if (existing?.syncId) await this.offlineSync.enqueue('reminder.delete', existing.syncId, existing);
       return;
     }
-    await firstValueFrom(
-      this.http.delete(`${this.apiUrl}/reminders/${id}`, { headers: this.auth.authHeaders() })
-    );
+    try {
+      await firstValueFrom(
+        this.http.delete(`${this.apiUrl}/reminders/${id}`, { headers: this.auth.authHeaders() })
+      );
+    } catch (error) {
+      // Removed locally above; deliver the removal once the server is reachable again.
+      if (this.isUnreachable(error) && existing?.syncId) {
+        await this.offlineSync.enqueue('reminder.delete', existing.syncId, existing);
+        return;
+      }
+      throw error;
+    }
     await this.load();
   }
 
@@ -558,7 +591,9 @@ export class ReminderService {
     const reminder = this.reminders$.value.find(r => r.id === reminderId);
     if (!reminder || reminder.status !== 'pending') return;
     const repeat = this.parseRepeatRule(reminder.repeatRule);
-    const nextDueAtUtc = repeat ? this.nextRepeatDueAt(reminder.dueAtUtc, repeat) : null;
+    const nextDueAtUtc = repeat
+      ? nextRepeatDueAt(reminder.dueAtUtc, repeat, reminder.timezone, Date.now(), (reminder as ReminderI & { scheduleAnchorAtUtc?: string }).scheduleAnchorAtUtc || reminder.dueAtUtc)
+      : null;
 
     this.firedReminder$.next({
       reminderId: reminder.id,
@@ -610,23 +645,6 @@ export class ReminderService {
 
   private isRepeatingRule(repeat: ReminderRepeatRule | null) {
     return !!repeat && repeat.type !== 'none';
-  }
-
-  private nextRepeatDueAt(dueAtUtc: string | null, repeat: ReminderRepeatRule) {
-    if (!dueAtUtc) return null;
-    if (repeat.type === 'none') return null;
-    const next = new Date(dueAtUtc);
-    if (Number.isNaN(next.getTime())) return null;
-    const now = Date.now();
-    let guard = 0;
-    while (next.getTime() <= now && guard < 730) {
-      guard += 1;
-      if (repeat.type === 'daily') next.setUTCDate(next.getUTCDate() + 1);
-      else if (repeat.type === 'weekly') next.setUTCDate(next.getUTCDate() + 7);
-      else if (repeat.type === 'monthly') next.setUTCMonth(next.getUTCMonth() + 1);
-      else next.setUTCDate(next.getUTCDate() + Math.max(1, Number(repeat.intervalDays || 1)));
-    }
-    return next.toISOString();
   }
 
   private async floatNoteToTop(noteId: number | null) {

@@ -93,7 +93,7 @@ internal class HomeProjector {
     private fun buildCard(note: Note, reminderText: String?) = NoteCardUiModel(
         syncId = note.syncId,
         title = NoteFormat.displayText(note.title),
-        bodyText = if (note.checklist) "" else NoteFormat.displayText(note.body),
+        bodyText = if (note.checklist) "" else NoteFormat.previewText(note.body),
         colorArgb = dev.keeparr.android.data.NotePalette.parse(note.raw.text("bgColor")),
         locked = note.locked,
         checklist = note.checklist,

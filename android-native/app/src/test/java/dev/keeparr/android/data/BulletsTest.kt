@@ -41,6 +41,31 @@ class BulletsTest {
         val html = "<p dir=\"ltr\">hello</p>"
         assertEquals(html, NoteFormat.serialize(NoteFormat.spanned(html)).replace(" style=\"margin-top:0; margin-bottom:0;\"", ""))
     }
+    private fun margins(text: android.text.Spannable): List<Int> {
+        val layout = android.text.StaticLayout.Builder.obtain(text, 0, text.length, android.text.TextPaint().apply { textSize = 18f }, 1000).build()
+        return (0 until layout.lineCount).map { layout.getParagraphLeft(it) }
+    }
+    @Test fun pressingEnterOnABulletDoesNotIndentThePreviousLineTwice() {
+        val text = android.text.SpannableStringBuilder("abc")
+        Bullets.apply(text, listOf(0))
+        val single = margins(text).single()
+        // What the editor does when Enter is typed at the end of a bullet: a new, still empty, bullet line.
+        text.insert(3, "\n")
+        Bullets.apply(text, listOf(0, 0))
+        assertEquals("the previous line keeps its own margin", single, margins(text)[0])
+        assertEquals("the empty line still remembers it is a bullet", listOf(0, 0), Bullets.levels(text))
+        text.insert(4, "x")
+        Bullets.apply(text, Bullets.levels(text))
+        assertEquals(listOf(single, single), margins(text))
+    }
+    @Test fun previewTextShowsBulletsAndIndentWhileDisplayTextDoesNot() {
+        val html = "<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>"
+        assertEquals("a\nb\nc", NoteFormat.displayText(html))
+        assertEquals("\u2022 a\n  \u25E6 b\n\u2022 c", NoteFormat.previewText(html))
+        assertEquals("x\n\u2022 a\ny", NoteFormat.previewText("<p>x</p><ul><li>a</li></ul><p>y</p>"))
+        assertEquals("plain text keeps its exact display text", NoteFormat.displayText("<p>a</p><p><br></p><p>b</p>"),
+            NoteFormat.previewText("<p>a</p><p><br></p><p>b</p>"))
+    }
     @Test fun orderedListsAreNotEditableButBulletsAre() {
         assertTrue(NoteFormat.editable("<ul><li>x</li></ul>"))
         assertTrue(!NoteFormat.editable("<ol><li>x</li></ol>"))

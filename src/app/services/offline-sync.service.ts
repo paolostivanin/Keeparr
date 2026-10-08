@@ -5,7 +5,7 @@ import { environment } from 'src/environments/environment';
 import { NoteAttachmentI, NoteI } from '../interfaces/notes';
 import { ReminderI } from '../interfaces/reminder';
 import { AuthService } from './auth.service';
-import { OfflineResourceChange, OfflineStoreService, OutboxEntry } from './offline-store.service';
+import { EditBase, OfflineResourceChange, OfflineStoreService, OutboxEntry } from './offline-store.service';
 import { changedNoteFields, mergeGuardedNote, overlayNoteFields, pickGuardFields } from '../utils/note-merge';
 
 export type OfflineSyncState = 'offline' | 'syncing' | 'saved' | 'error' | 'auth-required';
@@ -126,23 +126,40 @@ export class OfflineSyncService {
     this.degradedUntil = 0;
   }
 
+  /**
+   * The profile an operation was started for. A write is committed to that profile or not at all: the active account
+   * can change while storage is read, and the work of one account must never land in another account's partition.
+   */
+  private requirePartition() {
+    const partition = this.currentPartition;
+    if (!partition) throw new Error('No active offline partition.');
+    return partition;
+  }
+
+  private assertPartition(partition: string) {
+    if (this.currentPartition !== partition) throw new Error('The active profile changed before the change could be saved.');
+  }
+
   async enqueue(type: OutboxEntry['type'], syncId: string, payload: unknown) {
-    if (!this.currentPartition) throw new Error('No active offline partition.');
-    const syncState = await this.store.getSyncState(this.currentPartition);
+    const partition = this.requirePartition();
+    const syncState = await this.store.getSyncState(partition);
+    this.assertPartition(partition);
     const stamp = this.store.nextStamp(syncState.serverOffsetMs);
-    await this.store.enqueue(this.currentPartition, type, syncId, payload, stamp);
+    await this.store.enqueue(partition, type, syncId, payload, stamp);
     this.state$.next(navigator.onLine ? 'syncing' : 'offline');
     if (navigator.onLine) this.syncNow().catch(console.error);
     return stamp;
   }
 
-  async persistNote(note: NoteI) {
-    if (!this.currentPartition) throw new Error('No active offline partition.');
-    const syncState = await this.store.getSyncState(this.currentPartition);
+  async persistNote(note: NoteI, base?: EditBase) {
+    const partition = this.requirePartition();
+    const syncState = await this.store.getSyncState(partition);
+    this.assertPartition(partition);
     const { note: persisted, entry } = await this.store.persistNoteMutation(
-      this.currentPartition,
+      partition,
       note,
-      this.store.nextStamp(syncState.serverOffsetMs)
+      this.store.nextStamp(syncState.serverOffsetMs),
+      base
     );
     this.state$.next(navigator.onLine ? 'syncing' : 'offline');
     if (navigator.onLine) this.syncNow().catch(console.error);
@@ -150,10 +167,11 @@ export class OfflineSyncService {
   }
 
   async persistNotePatch(note: NoteI, patch: Partial<NoteI>) {
-    if (!this.currentPartition) throw new Error('No active offline partition.');
-    const syncState = await this.store.getSyncState(this.currentPartition);
+    const partition = this.requirePartition();
+    const syncState = await this.store.getSyncState(partition);
+    this.assertPartition(partition);
     const result = await this.store.persistNotePatchMutation(
-      this.currentPartition,
+      partition,
       note,
       patch,
       this.store.nextStamp(syncState.serverOffsetMs)
@@ -188,10 +206,11 @@ export class OfflineSyncService {
     note: NoteI,
     payload: { noteSyncId: string; filename: string; syncId: string }
   ) {
-    if (!this.currentPartition) throw new Error('No active offline partition.');
-    const syncState = await this.store.getSyncState(this.currentPartition);
+    const partition = this.requirePartition();
+    const syncState = await this.store.getSyncState(partition);
+    this.assertPartition(partition);
     const persisted = await this.store.persistAttachmentUpload(
-      this.currentPartition,
+      partition,
       blobKey,
       blob,
       attachment,
