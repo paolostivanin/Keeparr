@@ -1,3 +1,9 @@
+@use "./assets/fonts/fonts.scss";
+@use "./assets/scss/checkboxes.scss";
+@use "./assets/scss/icons.scss";
+@use "./assets/scss/labels.scss";
+@use "./assets/scss/tooltips.scss";
+
 @import "timepicker-ui/main.css";
 
 :root {
@@ -1179,8 +1185,6 @@ body.light-theme [data-tooltip="true"].collaboratorMenu .owner-pill {
   width: 14px;
 }
 
-//? fonts
-@import "./assets/fonts/fonts.scss";
 
 //? snackbar AKA toast
 @import "node-snackbar/dist/snackbar.css";
@@ -1207,17 +1211,9 @@ body.light-theme [data-tooltip="true"].collaboratorMenu .owner-pill {
   cursor: pointer !important;
 }
 
-//? cbox
-@import "./assets/scss/checkboxes.scss";
 
-//? icons
-@import "./assets/scss/icons.scss";
 
-//? labels
-@import "./assets/scss/labels.scss";
 
-//? tooltips
-@import "./assets/scss/tooltips.scss";
 
 .icons-container .icons > .undo.r {
   transform: none;
