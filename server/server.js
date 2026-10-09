@@ -29,7 +29,7 @@ const {
   firstDefined, normalizeLocationTrigger, normalizeRepeatRule, normalizeReminderDueAt, reminderScheduleDefinition,
   reminderScheduleDefinitionChanged, reminderScheduleChanged, parseRepeatRule, normalizeReminderPayload, reminderResponse
 } = require('./reminder-model');
-const { isPrivateOrLocalAddress, resolvePublicIp, publicRequestOptions } = require('./public-network');
+const { isPrivateOrLocalAddress, resolvePublicIp, publicRequestOptions, integrationRequestOptions } = require('./public-network');
 const {
   serverLwwStamp, normalizeLwwStamp, rowLwwStamp, compareLwwStamp, clampClientSortOrder, parseChangesQuery
 } = require('./sync-protocol');
@@ -3065,7 +3065,7 @@ function buildVCalendar(reminder) {
   ].join('\r\n');
 }
 
-function caldavRequest(settings, reminderId, method, body) {
+async function caldavRequest(settings, reminderId, method, body) {
   const https = require('https');
   const http = require('http');
   let base = settings.calendarUrl;
@@ -3074,8 +3074,11 @@ function caldavRequest(settings, reminderId, method, body) {
   const proto = url.protocol === 'https:' ? https : http;
   const auth = Buffer.from(`${settings.username}:${settings.password}`).toString('base64');
   const bodyBuf = body ? Buffer.from(body, 'utf8') : null;
+  // Resolved once and pinned, so a link-local address cannot be reached by rebinding the name after the check.
+  const { lookup } = await integrationRequestOptions(url.href);
   return new Promise((resolve, reject) => {
     const req = proto.request({
+      lookup,
       hostname: url.hostname,
       port: url.port || (url.protocol === 'https:' ? 443 : 80),
       path: url.pathname,
@@ -3147,14 +3150,16 @@ async function sendReminderPush(reminder) {
   }));
 }
 
-function testCaldavConnection(settings) {
+async function testCaldavConnection(settings) {
   const https = require('https');
   const http = require('http');
   const url = new URL(settings.calendarUrl);
   const proto = url.protocol === 'https:' ? https : http;
   const auth = Buffer.from(`${settings.username}:${settings.password}`).toString('base64');
+  const { lookup } = await integrationRequestOptions(url.href);
   return new Promise((resolve, reject) => {
     const req = proto.request({
+      lookup,
       hostname: url.hostname,
       port: url.port || (url.protocol === 'https:' ? 443 : 80),
       path: url.pathname,

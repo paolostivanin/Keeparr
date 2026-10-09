@@ -118,6 +118,21 @@ test('note HTML with active content is neutralized and clean HTML is left byte f
   assert.equal(neutralizeChecklist(undefined), undefined);
 });
 
+test('integrations may reach the local network but never link-local or unspecified addresses', async () => {
+  const { isNeverReachableAddress, integrationRequestOptions } = require('./public-network');
+  for (const address of ['169.254.169.254', '0.0.0.0', 'fe80::1', '::', '::ffff:169.254.169.254', 'fd00:ec2::254', 'not-an-ip']) {
+    assert.equal(isNeverReachableAddress(address), true, address);
+  }
+  for (const address of ['127.0.0.1', '192.168.1.5', '10.0.0.2', '172.16.4.4', '::1', '93.184.216.34']) {
+    assert.equal(isNeverReachableAddress(address), false, address);
+  }
+  await assert.rejects(integrationRequestOptions('http://169.254.169.254/latest/meta-data/'), /cannot be used/);
+  await assert.rejects(integrationRequestOptions('ftp://192.168.1.5/'), /Unsupported protocol/);
+  const local = await integrationRequestOptions('http://192.168.1.5:5232/dav/');
+  assert.equal(typeof local.lookup, 'function');
+  await new Promise(resolve => local.lookup('anything.example', {}, (error, address) => { assert.equal(address, '192.168.1.5'); resolve(); }));
+});
+
 test('reminder schedules normalize the same way for comparison and storage', () => {
   assert.equal(normalizeRepeatRule(null), null);
   assert.equal(normalizeRepeatRule({ type: 'none' }), null);

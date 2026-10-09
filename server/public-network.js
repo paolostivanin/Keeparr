@@ -54,7 +54,18 @@ function isPrivateOrLocalAddress(address) {
   );
 }
 
-async function resolvePublicIp(hostname) {
+// Addresses that no integration may reach even on a self-hosted setup: unspecified and link-local ones, which include the
+// cloud metadata endpoint (169.254.169.254, fd00:ec2::254). LAN and loopback addresses stay reachable for them.
+function isNeverReachableAddress(address) {
+  const normalized = normalizeIpAddress(address);
+  const family = net.isIP(normalized);
+  if (!family) return true;
+  if (family === 4) return inCidrV4(normalized, '0.0.0.0', 8) || inCidrV4(normalized, '169.254.0.0', 16);
+  const value = normalized.toLowerCase();
+  return value === '::' || value.startsWith('fe80:') || value === 'fd00:ec2::254';
+}
+
+async function resolveAllowedIp(hostname, isBlocked, blockedMessage) {
   const lookups = await dns.promises.lookup(hostname, { all: true, verbatim: true });
   if (!lookups.length) throw new Error('Host resolution failed');
   const sortedLookups = [
@@ -62,15 +73,28 @@ async function resolvePublicIp(hostname) {
     ...lookups.filter(result => result.family !== 4)
   ];
   for (const result of sortedLookups) {
-    if (!isPrivateOrLocalAddress(result.address)) return result;
+    if (!isBlocked(result.address)) return result;
   }
-  throw new Error('Private network targets are blocked');
+  throw new Error(blockedMessage);
+}
+
+function resolvePublicIp(hostname) {
+  return resolveAllowedIp(hostname, isPrivateOrLocalAddress, 'Private network targets are blocked');
 }
 
 async function publicRequestOptions(targetUrl, baseOptions = {}) {
+  return pinnedRequestOptions(targetUrl, baseOptions, isPrivateOrLocalAddress, 'Private network targets are blocked');
+}
+
+/** For integrations that may talk to a server on the local network (e.g. CalDAV), but never to link-local addresses. */
+async function integrationRequestOptions(targetUrl, baseOptions = {}) {
+  return pinnedRequestOptions(targetUrl, baseOptions, isNeverReachableAddress, 'That address cannot be used');
+}
+
+async function pinnedRequestOptions(targetUrl, baseOptions, isBlocked, blockedMessage) {
   const parsed = new URL(targetUrl);
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Unsupported protocol');
-  const resolved = await resolvePublicIp(parsed.hostname);
+  const resolved = await resolveAllowedIp(parsed.hostname, isBlocked, blockedMessage);
   return {
     ...baseOptions,
     lookup: (_hostname, options, callback) => {
@@ -85,4 +109,4 @@ async function publicRequestOptions(targetUrl, baseOptions = {}) {
   };
 }
 
-module.exports = { isPrivateOrLocalAddress, resolvePublicIp, publicRequestOptions };
+module.exports = { isPrivateOrLocalAddress, isNeverReachableAddress, resolvePublicIp, publicRequestOptions, integrationRequestOptions };
