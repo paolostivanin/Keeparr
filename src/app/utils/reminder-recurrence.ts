@@ -3,7 +3,7 @@ import type { ReminderRepeatRule } from '../interfaces/reminder';
 /**
  * Next occurrence of a repeating reminder, in the reminder's own time zone. This is the same algorithm as
  * `server/reminder-recurrence.js` and the Android `Recurrence` (shared fixtures: `test-fixtures/native-contract.json`),
- * so a reminder advanced on any client lands on the same instant: wall-clock time is kept across DST changes, a missing
+ * so a reminder advanced on any client lands on the same instant: the anchor's wall-clock time is kept across DST changes, a missing
  * local time moves forward, a repeated one takes the earlier instant, and monthly repeats keep the anchor's day of
  * month (clamped to short months) instead of overflowing into the next one.
  */
@@ -58,6 +58,7 @@ export function nextRepeatDueAt(
   anchorAtUtc: string | null | undefined = dueAtUtc
 ): string | null {
   if (!dueAtUtc || !repeatRule || repeatRule.type === 'none') return null;
+  if (!Number.isFinite(nowMs)) nowMs = Date.now();
   const due = new Date(dueAtUtc);
   if (Number.isNaN(due.getTime())) return null;
   const anchor = new Date(anchorAtUtc || dueAtUtc);
@@ -71,21 +72,42 @@ export function nextRepeatDueAt(
   if (!['daily', 'weekly', 'monthly', 'custom_days'].includes(type)) return null;
   const interval = type === 'daily' ? 1 : type === 'weekly' ? 7 : type === 'custom_days'
     ? Math.max(1, Math.floor(Number(repeatRule.intervalDays) || 1)) : 0;
-  for (let guard = 0; guard < 100000; guard += 1) {
+  // Every occurrence is a calendar date plus the schedule anchor's own time of day, so the occurrences that are certainly
+  // in the past can be skipped in one step instead of walked one by one.
+  local = skipPastOccurrences(local, type, interval, partsAt(nowMs, zone));
+  for (let guard = 0; guard < 1000; guard += 1) {
     if (type === 'monthly') {
       const firstOfNextMonth = new Date(Date.UTC(local.year, local.month, 1));
       const lastDay = new Date(Date.UTC(firstOfNextMonth.getUTCFullYear(), firstOfNextMonth.getUTCMonth() + 1, 0)).getUTCDate();
       local = {
         ...local, year: firstOfNextMonth.getUTCFullYear(), month: firstOfNextMonth.getUTCMonth() + 1,
-        day: Math.min(anchorLocal.day, lastDay), hour: anchorLocal.hour, minute: anchorLocal.minute, second: anchorLocal.second
+        day: Math.min(anchorLocal.day, lastDay)
       };
     } else {
       const nextDate = new Date(Date.UTC(local.year, local.month - 1, local.day + interval));
       local = { ...local, year: nextDate.getUTCFullYear(), month: nextDate.getUTCMonth() + 1, day: nextDate.getUTCDate() };
     }
+    // The time of day always comes from the anchor, not from the previous occurrence: a time skipped by a DST change
+    // moves that one day only and the schedule returns to its own time afterwards.
+    local = { ...local, hour: anchorLocal.hour, minute: anchorLocal.minute, second: anchorLocal.second };
     const next = instantAt(local, milliseconds, zone);
     if (next.getTime() > nowMs) return next.toISOString();
-    local = partsAt(next.getTime(), zone);
   }
   throw new RangeError('Reminder recurrence exceeded the catch-up limit.');
+}
+
+// Moves `local` forward to just before `now` in whole repeat steps, never past an occurrence that is still in the future:
+// the skipped date is at least one calendar day (or one month) before today's local date.
+function skipPastOccurrences(local: LocalParts, type: string, interval: number, nowLocal: LocalParts): LocalParts {
+  if (type === 'monthly') {
+    const months = (nowLocal.year - local.year) * 12 + (nowLocal.month - local.month) - 1;
+    if (months <= 0) return local;
+    const target = new Date(Date.UTC(local.year, local.month - 1 + months, 1));
+    return { ...local, year: target.getUTCFullYear(), month: target.getUTCMonth() + 1, day: 1 };
+  }
+  const days = Math.floor((localScalar(nowLocal) - localScalar(local)) / 86400000);
+  const steps = Math.floor(days / interval) - 1;
+  if (steps <= 0) return local;
+  const target = new Date(Date.UTC(local.year, local.month - 1, local.day + steps * interval));
+  return { ...local, year: target.getUTCFullYear(), month: target.getUTCMonth() + 1, day: target.getUTCDate() };
 }

@@ -39,6 +39,7 @@ function instantAt(parts, milliseconds, timezone) {
 
 function nextRepeatDueAt(dueAtUtc, repeatRule, timezone = 'UTC', nowMs = Date.now(), anchorAtUtc = dueAtUtc) {
   if (!dueAtUtc || !repeatRule || repeatRule.type === 'none') return null;
+  if (!Number.isFinite(nowMs)) nowMs = Date.now();
   const due = new Date(dueAtUtc);
   if (Number.isNaN(due.getTime())) return null;
   const anchor = new Date(anchorAtUtc || dueAtUtc);
@@ -52,21 +53,43 @@ function nextRepeatDueAt(dueAtUtc, repeatRule, timezone = 'UTC', nowMs = Date.no
   if (!['daily', 'weekly', 'monthly', 'custom_days'].includes(type)) return null;
   const interval = type === 'daily' ? 1 : type === 'weekly' ? 7 : type === 'custom_days'
     ? Math.max(1, Math.floor(Number(repeatRule.intervalDays) || 1)) : 0;
-  for (let guard = 0; guard < 100000; guard += 1) {
+  // Every occurrence is a calendar date plus the schedule anchor's own time of day, so the occurrences that are certainly
+  // in the past can be skipped in one step instead of walked one by one. A very old due date would otherwise block the
+  // event loop for seconds (each step resolves a wall-clock time).
+  local = skipPastOccurrences(local, type, interval, partsAt(nowMs, zone));
+  for (let guard = 0; guard < 1000; guard += 1) {
     if (type === 'monthly') {
       const firstOfNextMonth = new Date(Date.UTC(local.year, local.month, 1));
       const lastDay = new Date(Date.UTC(firstOfNextMonth.getUTCFullYear(), firstOfNextMonth.getUTCMonth() + 1, 0)).getUTCDate();
       local = { ...local, year: firstOfNextMonth.getUTCFullYear(), month: firstOfNextMonth.getUTCMonth() + 1,
-        day: Math.min(anchorLocal.day, lastDay), hour: anchorLocal.hour, minute: anchorLocal.minute, second: anchorLocal.second };
+        day: Math.min(anchorLocal.day, lastDay) };
     } else {
       const nextDate = new Date(Date.UTC(local.year, local.month - 1, local.day + interval));
       local = { ...local, year: nextDate.getUTCFullYear(), month: nextDate.getUTCMonth() + 1, day: nextDate.getUTCDate() };
     }
+    // The time of day always comes from the anchor, not from the previous occurrence: a time skipped by a DST change
+    // moves that one day only and the schedule returns to its own time afterwards.
+    local = { ...local, hour: anchorLocal.hour, minute: anchorLocal.minute, second: anchorLocal.second };
     const next = instantAt(local, milliseconds, zone);
     if (next.getTime() > nowMs) return next.toISOString();
-    local = partsAt(next.getTime(), zone);
   }
   throw new RangeError('Reminder recurrence exceeded the catch-up limit.');
+}
+
+// Moves `local` forward to just before `now` in whole repeat steps, never past an occurrence that is still in the future:
+// the skipped date is at least one calendar day (or one month) before today's local date.
+function skipPastOccurrences(local, type, interval, nowLocal) {
+  if (type === 'monthly') {
+    const months = (nowLocal.year - local.year) * 12 + (nowLocal.month - local.month) - 1;
+    if (months <= 0) return local;
+    const target = new Date(Date.UTC(local.year, local.month - 1 + months, 1));
+    return { ...local, year: target.getUTCFullYear(), month: target.getUTCMonth() + 1, day: 1 };
+  }
+  const days = Math.floor((localScalar(nowLocal) - localScalar(local)) / 86400000);
+  const steps = Math.floor(days / interval) - 1;
+  if (steps <= 0) return local;
+  const target = new Date(Date.UTC(local.year, local.month - 1, local.day + steps * interval));
+  return { ...local, year: target.getUTCFullYear(), month: target.getUTCMonth() + 1, day: target.getUTCDate() };
 }
 
 function isRepeatOccurrence(anchorAtUtc, occurrenceAtUtc, repeatRule, timezone = 'UTC') {
@@ -74,18 +97,10 @@ function isRepeatOccurrence(anchorAtUtc, occurrenceAtUtc, repeatRule, timezone =
   const target = new Date(occurrenceAtUtc);
   if (Number.isNaN(anchor.getTime()) || Number.isNaN(target.getTime())) return false;
   if (anchor.getTime() === target.getTime()) return true;
-  if (!repeatRule || repeatRule.type === 'none') return false;
-  let cursor = anchor;
-  for (let step = 0; step < 100000; step += 1) {
-    const next = nextRepeatDueAt(cursor.toISOString(), repeatRule, timezone, cursor.getTime() + 1, anchor.toISOString());
-    if (!next) return false;
-    const instant = new Date(next);
-    if (instant.getTime() <= cursor.getTime()) throw new RangeError('Reminder recurrence did not advance time.');
-    if (instant.getTime() === target.getTime()) return true;
-    if (instant.getTime() > target.getTime()) return false;
-    cursor = instant;
-  }
-  throw new RangeError('Reminder occurrence validation exceeded the supported catch-up limit.');
+  if (!repeatRule || repeatRule.type === 'none' || target.getTime() < anchor.getTime()) return false;
+  // The first occurrence at or after the target is the target itself exactly when the target is an occurrence.
+  const first = nextRepeatDueAt(anchor.toISOString(), repeatRule, timezone, target.getTime() - 1, anchor.toISOString());
+  return !!first && new Date(first).getTime() === target.getTime();
 }
 
 module.exports = { nextRepeatDueAt, isRepeatOccurrence };

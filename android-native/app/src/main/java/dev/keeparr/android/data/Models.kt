@@ -528,13 +528,16 @@ object Recurrence {
         val timezone = runCatching { ZoneId.of(zone) }.getOrDefault(ZoneId.of("UTC"))
         val time = ZonedDateTime.ofInstant(Instant.parse(due), timezone)
         val anchorTime = runCatching { ZonedDateTime.ofInstant(Instant.parse(anchor), timezone) }.getOrDefault(time)
+        // The time of day always comes from the anchor, not from the previous occurrence: a time skipped by a DST change
+        // moves that one day only and the schedule returns to its own time afterwards (same as the server and the web).
+        fun at(date: java.time.LocalDate) = date.atTime(anchorTime.toLocalTime()).atZone(timezone)
         val next = when (json.text("type")) {
-            "daily" -> time.plusDays(1)
-            "weekly" -> time.plusWeeks(1)
+            "daily" -> at(time.toLocalDate().plusDays(1))
+            "weekly" -> at(time.toLocalDate().plusWeeks(1))
             "monthly" -> time.toLocalDate().plusMonths(1).withDayOfMonth(1)
                 .withDayOfMonth(minOf(anchorTime.dayOfMonth, time.toLocalDate().plusMonths(1).lengthOfMonth()))
                 .atTime(anchorTime.toLocalTime()).atZone(timezone)
-            "custom_days" -> time.plusDays(json.optLong("intervalDays", 1).coerceAtLeast(1))
+            "custom_days" -> at(time.toLocalDate().plusDays(json.optLong("intervalDays", 1).coerceAtLeast(1)))
             else -> null
         }?.toInstant()
         return next?.let { java.time.format.DateTimeFormatterBuilder().appendInstant(3).toFormatter().format(it) }
