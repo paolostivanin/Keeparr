@@ -1,7 +1,7 @@
 # Keeparr maintainability and smoothness implementation plan
 
 Created: 2026-10-06 · Scope consolidated with user approval: 2026-10-07
-Status: v2.0.x shipped; M6.4–M6.6 still wait on device hardware and a signing decision; current release line **v2.1.0**.
+Status: v2.0.x shipped; M6.4–M6.6 still wait on device hardware and a signing decision; current release line **v2.1.1**.
 
 The active backlog contains **32 implementation work items across six milestones**, including the widget-icon fix and version bump. Release gates and deferred options are recorded separately, rather than counted again as unfinished implementation tasks. Consolidation reduces duplication and required scope; it does not imply that unfinished work has been implemented or verified.
 
