@@ -56,7 +56,7 @@ function noteOperatorWhere(operators) {
       COALESCE(bgImage, '') <> ''
       OR LOWER(COALESCE(noteBody, '')) LIKE '%<img%'
       OR (COALESCE(images, '') <> '' AND COALESCE(images, '') <> '[]' AND LOWER(COALESCE(images, '')) NOT LIKE '%"id":"drawing"%')
-    `);
+    )`);
   }
   if (operators.hasCheckbox) clauses.push(`(isCbox = 1 OR (COALESCE(checkBoxes, '') <> '' AND COALESCE(checkBoxes, '') <> '[]'))`);
   if (operators.hasDrawing) clauses.push(`LOWER(COALESCE(images, '')) LIKE '%"id":"drawing"%'`);

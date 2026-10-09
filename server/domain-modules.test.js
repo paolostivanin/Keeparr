@@ -34,6 +34,52 @@ test('search operators are separated from the text and become SQL predicates', (
   assert.deepEqual(noteSearchWhere([]), { clause: '', params: [] });
 });
 
+test('every search operator compiles in SQLite and selects the right notes', async () => {
+  const sqlite3 = require('sqlite3');
+  const db = new sqlite3.Database(':memory:');
+  const run = (sql, params = []) => new Promise((resolve, reject) => db.run(sql, params, error => (error ? reject(error) : resolve())));
+  const all = (sql, params = []) => new Promise((resolve, reject) => db.all(sql, params, (error, rows) => (error ? reject(error) : resolve(rows))));
+  try {
+    await run(`CREATE TABLE notes (id INTEGER PRIMARY KEY, noteTitle TEXT, noteBody TEXT, bgImage TEXT, images TEXT, isCbox INTEGER,
+      checkBoxes TEXT, labels TEXT, attachmentCount INTEGER, attachmentNames TEXT, binder TEXT, locked INTEGER)`);
+    const insert = (id, fields) => run(
+      `INSERT INTO notes (id, noteTitle, noteBody, images, labels, attachmentCount, locked) VALUES (?, ?, ?, ?, ?, ?, 0)`,
+      [id, fields.title || '', fields.body || '', fields.images || '[]', fields.labels || '[]', fields.attachments || 0]
+    );
+    await insert(1, { title: 'plain' });
+    await insert(2, { images: '[{"id":"photo"}]' });
+    await insert(3, { images: '[{"id":"drawing"}]' });
+    await insert(4, { body: '<p>hi</p><img src="/api/uploads/images/a.png">' });
+    await insert(5, { body: 'see https://example.test', labels: '["Work"]', attachments: 1 });
+    const ids = async query => {
+      const { clauses, params } = noteOperatorWhere(searchOperatorsFromQuery(query));
+      return (await all(`SELECT id FROM notes WHERE ${clauses.join(' AND ')} ORDER BY id`, params)).map(row => row.id);
+    };
+    assert.deepEqual(await ids('!image'), [2, 4]);
+    assert.deepEqual(await ids('!draw'), [3]);
+    assert.deepEqual(await ids('!url'), [5]);
+    assert.deepEqual(await ids('!att'), [5]);
+    assert.deepEqual(await ids('!label:work'), [5]);
+    assert.deepEqual(await ids('!l'), [5]);
+    assert.deepEqual(await ids('!todo'), []);
+    // Combined, as a user can type them: each must still be valid SQL next to the others.
+    assert.deepEqual(await ids('!image !draw !todo !url !att !label:work !l'), []);
+  } finally {
+    await new Promise(resolve => db.close(resolve));
+  }
+});
+
+test('release versions compare by major, minor and patch', () => {
+  const { compareVersion } = require('./version-compare');
+  assert.equal(compareVersion('2.0.2', '2.0.1'), 1, 'a patch release is an update');
+  assert.equal(compareVersion('v2.0.1', '2.0.2'), -1);
+  assert.equal(compareVersion('2.1', '2.0.9'), 1);
+  assert.equal(compareVersion('3.0.0', '2.9.9'), 1);
+  assert.equal(compareVersion('2.0', '2.0.0'), 0);
+  assert.equal(compareVersion('2.0.2-rc1', '2.0.2'), 0);
+  assert.equal(compareVersion('', '0.0.1'), -1);
+});
+
 test('reminder schedules normalize the same way for comparison and storage', () => {
   assert.equal(normalizeRepeatRule(null), null);
   assert.equal(normalizeRepeatRule({ type: 'none' }), null);
