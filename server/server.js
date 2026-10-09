@@ -24,6 +24,7 @@ const { orderedAccessibleIds, parseOrderPositions } = require('./note-order');
 const { plainText, parseJson, escapeHtml, notePreviewText, noteLinkCount } = require('./note-text');
 const { searchTextFromQuery, searchTokensFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere } = require('./note-search');
 const { compareVersion } = require('./version-compare');
+const { neutralizeActiveHtml, neutralizeChecklist } = require('./html-safety');
 const {
   firstDefined, normalizeLocationTrigger, normalizeRepeatRule, normalizeReminderDueAt, reminderScheduleDefinition,
   reminderScheduleDefinitionChanged, reminderScheduleChanged, parseRepeatRule, normalizeReminderPayload, reminderResponse
@@ -1225,7 +1226,9 @@ function canonicalizeNotePayload(payload) {
   return {
     ...payload,
     extraFields: noteExtraFields(payload),
-    noteBody: canonicalizeNoteHtmlImages(payload.noteBody || ''),
+    ...(payload.noteTitle !== undefined ? { noteTitle: neutralizeActiveHtml(payload.noteTitle) } : {}),
+    ...(payload.checkBoxes !== undefined ? { checkBoxes: neutralizeChecklist(payload.checkBoxes) } : {}),
+    noteBody: canonicalizeNoteHtmlImages(neutralizeActiveHtml(payload.noteBody || '')),
     images: canonicalizeNoteImages(payload.images || []),
     labels: appliedNoteLabels(payload.labels || []),
     binder: String(payload.binder || '').trim().slice(0, 80),
@@ -3472,7 +3475,7 @@ app.use('/api', (_req, res, next) => {
 app.use(express.json({ limit: '25mb' }));
 
 mountOAuthAndMcpRoutes(app, {
-  get, all, run, asyncRoute, requireAuth, resolveSessionFromToken, createSession,
+  get, all, run, withDatabaseTransaction, asyncRoute, requireAuth, resolveSessionFromToken, createSession,
   oauthRegistrationLimiter, internalBaseUrl: `http://127.0.0.1:${port}`
 });
 

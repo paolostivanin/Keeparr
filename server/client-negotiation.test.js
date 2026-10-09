@@ -80,6 +80,20 @@ test('older and newer clients negotiate through optional request fields', { time
     assert.equal(unknownReminder.results[0].ok, false);
     assert.equal(unknownReminder.results[0].status, 400);
     assert.equal((await request('/reminders', { token })).length, 0, 'an unknown reminder type must not create a reminder');
+
+    // Active content is removed when a note is stored, whichever API wrote it; clean content is kept exactly.
+    const created = await request('/notes', { token, method: 'POST', body: {
+      noteTitle: '<img src=x onerror=alert(1)>title', noteBody: '<p>keep<br>this</p><script>steal()</script>',
+      checkBoxes: [{ id: 1, data: '<b onclick=steal()>item</b>', done: false }], images: [], labels: []
+    } });
+    const stored = (await request('/sync/bootstrap', { token })).notes.find(note => note.syncId === created.syncId);
+    assert.ok(stored, 'the note is stored');
+    assert.ok(!JSON.stringify(stored).match(/onerror|onclick|<script|steal/i), JSON.stringify(stored));
+    assert.match(stored.noteBody, /<p>keep/);
+    assert.match(stored.noteTitle, /title/);
+    const clean = await request('/notes', { token, method: 'POST', body: { noteTitle: 'plain', noteBody: '<p>a&nbsp;b<br></p>', checkBoxes: [], images: [], labels: [] } });
+    const storedClean = (await request('/sync/bootstrap', { token })).notes.find(note => note.syncId === clean.syncId);
+    assert.equal(storedClean.noteBody, '<p>a&nbsp;b<br></p>', 'clean HTML is stored exactly as written');
   } finally {
     await new Promise(resolve => { if (server.exitCode !== null) return resolve(); server.once('exit', resolve); server.kill('SIGKILL'); });
     fs.rmSync(dbPath, { force: true });

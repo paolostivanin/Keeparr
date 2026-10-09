@@ -252,7 +252,7 @@ async function resolveClient(clientId, { get }) {
 }
 
 function mountOAuthAndMcpRoutes(app, dependencies) {
-  const { get, all, run, asyncRoute, requireAuth, resolveSessionFromToken, createSession, oauthRegistrationLimiter, internalBaseUrl } = dependencies;
+  const { get, all, run, withDatabaseTransaction, asyncRoute, requireAuth, resolveSessionFromToken, createSession, oauthRegistrationLimiter, internalBaseUrl } = dependencies;
   const urlencoded = express.urlencoded({ extended: false, limit: '32kb' });
 
   app.use('/oauth/authorize', (_req, res, next) => {
@@ -368,8 +368,9 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
     if (!client) return res.status(400).json({ error: 'This OAuth client is no longer available.' });
     const code = randomToken('keeparr_code_');
     const now = new Date().toISOString();
-    await run('BEGIN IMMEDIATE');
-    try {
+    // One transaction on the shared connection: nothing else can run between these statements, and a failure rolls back
+    // only this grant.
+    await withDatabaseTransaction(async () => {
       await run(
         `INSERT INTO oauth_grants (userId, clientId, clientName, resource, scope, authorizedAt)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -392,8 +393,7 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
         [sha256(code), pending.clientId, user.id, grant.id, pending.redirectUri, pending.codeChallenge, pending.resource, pending.scope, now, addSeconds(AUTHORIZATION_CODE_TTL_SECONDS)]
       );
       await run('DELETE FROM oauth_pending_authorizations WHERE requestHash = ?', [sha256(requestId)]);
-      await run('COMMIT');
-    } catch (error) { await run('ROLLBACK'); throw error; }
+    });
     res.json({ redirect: appendRedirect(pending.redirectUri, { code, state: pending.state, iss: baseUrlFor(req) }) });
   }));
 
@@ -422,26 +422,26 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
       const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
       if (!verifier || challenge !== code.codeChallenge) return oauthError(res, 400, 'invalid_grant', 'PKCE verification failed.');
       if (req.body?.resource && String(req.body.resource).replace(/\/+$/, '') !== code.resource) return oauthError(res, 400, 'invalid_target', 'The requested resource does not match the authorization grant.');
-      await run('BEGIN IMMEDIATE');
       try {
-        const used = await run('UPDATE oauth_authorization_codes SET usedAt = ? WHERE codeHash = ? AND usedAt IS NULL', [new Date().toISOString(), code.codeHash]);
-        if (!used.changes) throw Object.assign(new Error('Authorization code was already used.'), { status: 400 });
-        const result = await issueTokens(code);
-        await run('COMMIT');
+        const result = await withDatabaseTransaction(async () => {
+          const used = await run('UPDATE oauth_authorization_codes SET usedAt = ? WHERE codeHash = ? AND usedAt IS NULL', [new Date().toISOString(), code.codeHash]);
+          if (!used.changes) throw Object.assign(new Error('Authorization code was already used.'), { status: 400 });
+          return issueTokens(code);
+        });
         return res.json(result);
-      } catch (error) { await run('ROLLBACK'); if (error.status === 400) return oauthError(res, 400, 'invalid_grant', error.message); throw error; }
+      } catch (error) { if (error.status === 400) return oauthError(res, 400, 'invalid_grant', error.message); throw error; }
     }
     if (grantType === 'refresh_token') {
       const refresh = await get('SELECT * FROM oauth_refresh_tokens WHERE tokenHash = ? AND revokedAt IS NULL AND expiresAt > ?', [sha256(req.body?.refresh_token), new Date().toISOString()]);
       if (!refresh || refresh.clientId !== clientId) return oauthError(res, 400, 'invalid_grant', 'Refresh token is invalid or expired.');
-      await run('BEGIN IMMEDIATE');
       try {
-        const revoked = await run('UPDATE oauth_refresh_tokens SET revokedAt = ? WHERE tokenHash = ? AND revokedAt IS NULL', [new Date().toISOString(), refresh.tokenHash]);
-        if (!revoked.changes) throw Object.assign(new Error('Refresh token was already used.'), { status: 400 });
-        const result = await issueTokens(refresh);
-        await run('COMMIT');
+        const result = await withDatabaseTransaction(async () => {
+          const revoked = await run('UPDATE oauth_refresh_tokens SET revokedAt = ? WHERE tokenHash = ? AND revokedAt IS NULL', [new Date().toISOString(), refresh.tokenHash]);
+          if (!revoked.changes) throw Object.assign(new Error('Refresh token was already used.'), { status: 400 });
+          return issueTokens(refresh);
+        });
         return res.json(result);
-      } catch (error) { await run('ROLLBACK'); if (error.status === 400) return oauthError(res, 400, 'invalid_grant', error.message); throw error; }
+      } catch (error) { if (error.status === 400) return oauthError(res, 400, 'invalid_grant', error.message); throw error; }
     }
     return oauthError(res, 400, 'unsupported_grant_type', 'Supported grants are authorization_code and refresh_token.');
   }));

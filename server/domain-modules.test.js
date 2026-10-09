@@ -80,6 +80,44 @@ test('release versions compare by major, minor and patch', () => {
   assert.equal(compareVersion('', '0.0.1'), -1);
 });
 
+test('note HTML with active content is neutralized and clean HTML is left byte for byte', () => {
+  const { neutralizeActiveHtml, neutralizeChecklist, hasActiveContent } = require('./html-safety');
+  const clean = [
+    '<p>Hi&nbsp;<b>there</b><br>again &amp; <a href="https://example.test/?a=1&amp;b=2">link</a></p>',
+    '<ul><li>one</li><ul><li>two</li></ul></ul>',
+    '<div><img src="/api/uploads/images/a.png" class="inline-note-image"><br></div>',
+    '<div class="inline-note-image-wrap" data-id="x" contenteditable="false"><img src="data:image/png;base64,YWJj"></div>',
+    'use the onload= option in a plain sentence'
+  ];
+  for (const html of clean) assert.equal(neutralizeActiveHtml(html), html, html);
+
+  const hostile = {
+    '<p>a</p><img src=x onerror=alert(1)>': ['onerror'],
+    '<p>x</p><script>steal()</script>': ['<script', 'steal'],
+    '<a href="javascript:steal()">click</a>': ['javascript'],
+    '<a href="  JaVaScRiPt:steal()">click</a>': ['script:'],
+    '<iframe src="https://evil.test"></iframe>text': ['iframe'],
+    '<svg onload=alert(1)><circle/></svg>': ['onload', '<svg'],
+    '<div style="x" onclick="steal()">kept text</div>': ['onclick']
+  };
+  for (const [html, forbidden] of Object.entries(hostile)) {
+    assert.equal(hasActiveContent(html), true, html);
+    const result = neutralizeActiveHtml(html).toLowerCase();
+    for (const fragment of forbidden) assert.ok(!result.includes(fragment), `${html} -> ${result}`);
+  }
+  assert.match(neutralizeActiveHtml('<div style="x" onclick="steal()">kept text</div>'), /kept text/);
+  assert.match(neutralizeActiveHtml('<p>a</p><img src=x onerror=alert(1)>'), /<p>a<\/p>/);
+
+  const items = [{ id: 1, data: 'fine', done: false }, { id: 2, data: '<img src=x onerror=alert(1)>', done: true }];
+  const neutral = neutralizeChecklist(items);
+  assert.equal(neutral[0], items[0], 'a clean item is not copied');
+  assert.ok(!neutral[1].data.includes('onerror'));
+  assert.equal(neutral[1].done, true);
+  assert.ok(!neutralizeChecklist(JSON.stringify(items)).includes('onerror'));
+  assert.equal(neutralizeActiveHtml(undefined), undefined);
+  assert.equal(neutralizeChecklist(undefined), undefined);
+});
+
 test('reminder schedules normalize the same way for comparison and storage', () => {
   assert.equal(normalizeRepeatRule(null), null);
   assert.equal(normalizeRepeatRule({ type: 'none' }), null);
