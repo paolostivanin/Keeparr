@@ -8,6 +8,8 @@ Use HTTPS for public access, PWA installs, OAuth redirects and push notification
 
 Realtime presence and collaborative editing use WebSockets at `/api/realtime`, so proxy that path with WebSocket upgrade support.
 
+Keeparr trusts one proxy hop for `X-Forwarded-For` by default, which is what the login rate limit uses to tell clients apart. Set `KEEPARR_TRUST_PROXY=0` if you publish port 6767 directly without a proxy (otherwise a client can spoof its address), or a larger number or a comma-separated list of proxy addresses if there is more than one proxy in front.
+
 ### Apache
 
 ```apache

@@ -214,8 +214,9 @@ export class AuthService {
     return await firstValueFrom(this.http.post<{ success: boolean, backupCodes: string[] }>(`${this.apiUrl}/auth/2fa/enable`, { secret, token }, { headers: this.authHeaders() }));
   }
 
-  async disable2fa() {
-    return await firstValueFrom(this.http.delete(`${this.apiUrl}/auth/2fa/disable`, { headers: this.authHeaders() }));
+  /** Needs a current authenticator code or a backup code; a session alone cannot remove the second factor. */
+  async disable2fa(token: string) {
+    return await firstValueFrom(this.http.delete(`${this.apiUrl}/auth/2fa/disable`, { headers: this.authHeaders(), body: { token } }));
   }
 
   async login(username: string, password: string, totpToken?: string) {

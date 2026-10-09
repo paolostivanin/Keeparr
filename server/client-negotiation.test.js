@@ -72,6 +72,14 @@ test('older and newer clients negotiate through optional request fields', { time
     assert.equal((await order()).length, ids.length, 'an unknown note type must not create a note');
     assert.equal(future.results[1].ok, true, JSON.stringify(future.results[1]));
     assert.ok(future.serverCursor > 0);
+
+    // The same holds for reminders: an unknown type is rejected instead of being applied as an upsert.
+    const unknownReminder = await mutate([
+      { type: 'reminder.teleport', syncId: 'reminder-future', operationId: crypto.randomUUID(), payload: { dueAtUtc: '2030-01-01T09:00:00.000Z', timezone: 'UTC' } }
+    ], { includeSnapshot: false });
+    assert.equal(unknownReminder.results[0].ok, false);
+    assert.equal(unknownReminder.results[0].status, 400);
+    assert.equal((await request('/reminders', { token })).length, 0, 'an unknown reminder type must not create a reminder');
   } finally {
     await new Promise(resolve => { if (server.exitCode !== null) return resolve(); server.once('exit', resolve); server.kill('SIGKILL'); });
     fs.rmSync(dbPath, { force: true });

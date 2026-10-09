@@ -1,5 +1,6 @@
 // Reminder input normalization and response shaping. Pure: no database or network access.
 const { plainText, notePreviewText } = require('./note-text');
+const { isRepeatOccurrence } = require('./reminder-recurrence');
 
 function firstDefined(...values) {
   return values.find(value => value !== undefined);
@@ -45,6 +46,22 @@ function reminderScheduleDefinitionChanged(existing, next) {
   const before = reminderScheduleDefinition(existing);
   const after = reminderScheduleDefinition(next);
   return before.dueAtUtc !== after.dueAtUtc || before.timezone !== after.timezone || before.repeatRule !== after.repeatRule;
+}
+
+// Like reminderScheduleDefinitionChanged, except that moving a repeating reminder to a later occurrence of its own
+// schedule is not an edit: a client rolling it over after it fired keeps the anchor and the version, so a monthly
+// reminder on the 31st stays on the 31st instead of settling on the 28th.
+function reminderScheduleChanged(existing, next) {
+  if (!reminderScheduleDefinitionChanged(existing, next)) return false;
+  const before = reminderScheduleDefinition(existing);
+  const after = reminderScheduleDefinition(next);
+  if (!before.repeatRule || before.repeatRule !== after.repeatRule || before.timezone !== after.timezone) return true;
+  if (!(Date.parse(after.dueAtUtc) > Date.parse(before.dueAtUtc))) return true;
+  try {
+    return !isRepeatOccurrence(existing.scheduleAnchorAtUtc || before.dueAtUtc, after.dueAtUtc, parseRepeatRule(before.repeatRule), before.timezone);
+  } catch {
+    return true;
+  }
 }
 
 function parseRepeatRule(value) {
@@ -148,4 +165,4 @@ function reminderResponse(reminder, notesById = new Map()) {
   };
 }
 
-module.exports = { firstDefined, normalizeLocationTrigger, normalizeRepeatRule, normalizeReminderDueAt, reminderScheduleDefinition, reminderScheduleDefinitionChanged, parseRepeatRule, normalizeReminderPayload, reminderResponse };
+module.exports = { firstDefined, normalizeLocationTrigger, normalizeRepeatRule, normalizeReminderDueAt, reminderScheduleDefinition, reminderScheduleDefinitionChanged, reminderScheduleChanged, parseRepeatRule, normalizeReminderPayload, reminderResponse };

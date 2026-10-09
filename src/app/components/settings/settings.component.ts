@@ -541,12 +541,9 @@ export class SettingsComponent implements OnInit, OnDestroy {
       }
     } else {
       if (this.totpEnabled) {
-        if (confirm('Are you sure you want to disable Two-Factor Authentication?')) {
-          await this.remove2fa();
-        } else {
-          // Revert checkbox state visually if they cancelled
-          (event.target as HTMLInputElement).checked = true;
-        }
+        const code = (prompt('To disable Two-Factor Authentication, enter a current code from your authenticator app or one of your backup codes.') || '').trim();
+        // Revert the checkbox when cancelled or when the code was not accepted.
+        if (!code || !(await this.remove2fa(code))) (event.target as HTMLInputElement).checked = true;
       } else {
         // Just cancel the setup process
         this.qrCodeUrl = '';
@@ -592,12 +589,12 @@ export class SettingsComponent implements OnInit, OnDestroy {
     }
   }
 
-  async remove2fa() {
+  async remove2fa(code: string): Promise<boolean> {
     this.isRemoving2fa = true;
     this.error = '';
     this.success = '';
     try {
-      await this.authService.disable2fa();
+      await this.authService.disable2fa(code);
       this.totpEnabled = false;
       this.hasBackupCodes = false;
       this.qrCodeUrl = '';
@@ -612,8 +609,10 @@ export class SettingsComponent implements OnInit, OnDestroy {
         localStorage.setItem('gk_session', JSON.stringify(session));
         this.authService.currentUser$.next(session);
       }
+      return true;
     } catch (e: any) {
       this.error = e?.error?.error || 'Could not disable 2FA.';
+      return false;
     } finally {
       this.isRemoving2fa = false;
     }

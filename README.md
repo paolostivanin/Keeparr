@@ -77,6 +77,7 @@ Set environment variables in `docker-compose.yml` (commented examples are includ
 | `UPLOAD_DIR`, `ATTACHMENT_DIR`, `TAKEOUT_TMP_DIR` | Override where uploads, attachments and Takeout temp files are stored. |
 | `PUID` / `PGID` | Run the container as a specific Linux user/group. `KEEPARR_SKIP_CHOWN=1` skips the ownership fix at start. |
 | `KEEPARR_SESSION_TTL_DAYS` | Login session lifetime. Defaults to 30. |
+| `KEEPARR_TRUST_PROXY` | Reverse proxies in front of Keeparr: a hop count (default 1), or a list of proxy addresses/subnets. Use 0 when the port is reachable directly, so clients cannot spoof their address and bypass the login rate limit. |
 | `KEEPARR_CORS_ALLOW_ALL` / `KEEPARR_CORS_ORIGINS` | CORS for remote clients. See [deployment](docs/deployment.md#vpn-tailscale-wireguard-and-multiple-domains). |
 | `KEEPARR_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_NAME`, `_SCOPES` | Optional OIDC single sign-on. See [oidc.md](docs/oidc.md). |
 | `KEEPARR_ALLOW_RESTORE` | Temporarily enables restore from backup during setup. |

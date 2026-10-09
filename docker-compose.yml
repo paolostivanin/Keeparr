@@ -47,6 +47,11 @@ services:
       # damage-control if a token is stolen.
       # - KEEPARR_SESSION_TTL_DAYS=30
 
+      # Reverse proxies in front of Keeparr (default 1). Set to 0 if you publish
+      # the port directly with no proxy, otherwise a client can spoof its address
+      # (X-Forwarded-For) and bypass the login rate limit.
+      # - KEEPARR_TRUST_PROXY=1
+
       # ── CORS (cross-origin requests) ─────────────────────────────────────
       # Keeparr uses Bearer tokens instead of cookies, so the default compose
       # config allows browser API calls from any origin. This avoids remote

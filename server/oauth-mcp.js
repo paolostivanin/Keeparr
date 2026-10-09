@@ -213,19 +213,29 @@ function oidcReturnTarget(flow, params) {
 }
 
 let oidcModulePromise;
-let oidcConfigPromise;
+let oidcConfigCache = null; // { key, promise }
 async function oidcClient(settings) {
   oidcModulePromise ||= import('openid-client');
   const client = await oidcModulePromise;
   const issuerUrl = new URL(settings.issuer);
   const isLoopback = issuerUrl.hostname === 'localhost' || issuerUrl.hostname === '127.0.0.1' || issuerUrl.hostname === '::1';
-  oidcConfigPromise ||= client.discovery(
-    issuerUrl, settings.clientId,
-    settings.clientSecret || undefined,
-    undefined,
-    isLoopback ? { execute: [client.allowInsecureRequests] } : undefined
-  );
-  return { client, config: await oidcConfigPromise };
+  // Discovery is reused for the same settings only, and a failed one is forgotten so the next sign-in retries it
+  // (a provider that was briefly down must not need a server restart).
+  const key = JSON.stringify([settings.issuer, settings.clientId, settings.clientSecret || '']);
+  if (!oidcConfigCache || oidcConfigCache.key !== key) {
+    const entry = {
+      key,
+      promise: client.discovery(
+        issuerUrl, settings.clientId,
+        settings.clientSecret || undefined,
+        undefined,
+        isLoopback ? { execute: [client.allowInsecureRequests] } : undefined
+      )
+    };
+    oidcConfigCache = entry;
+    entry.promise.catch(() => { if (oidcConfigCache === entry) oidcConfigCache = null; });
+  }
+  return { client, config: await oidcConfigCache.promise };
 }
 
 async function resolveClient(clientId, { get }) {

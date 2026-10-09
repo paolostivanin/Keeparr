@@ -26,7 +26,7 @@ const { searchTextFromQuery, searchTokensFromQuery, searchOperatorsFromQuery, no
 const { compareVersion } = require('./version-compare');
 const {
   firstDefined, normalizeLocationTrigger, normalizeRepeatRule, normalizeReminderDueAt, reminderScheduleDefinition,
-  reminderScheduleDefinitionChanged, parseRepeatRule, normalizeReminderPayload, reminderResponse
+  reminderScheduleDefinitionChanged, reminderScheduleChanged, parseRepeatRule, normalizeReminderPayload, reminderResponse
 } = require('./reminder-model');
 const { isPrivateOrLocalAddress, resolvePublicIp, publicRequestOptions } = require('./public-network');
 const {
@@ -34,7 +34,12 @@ const {
 } = require('./sync-protocol');
 
 const app = express();
-app.set('trust proxy', 1);
+// How many reverse proxies sit in front of Keeparr (default 1, e.g. Caddy or nginx). Client addresses for rate limits come
+// from X-Forwarded-For only that many hops deep; use 0 when the port is reachable directly, or a comma-separated list of
+// proxy addresses/subnets. See docs/deployment.md.
+const trustProxySetting = String(process.env.KEEPARR_TRUST_PROXY ?? '1').trim();
+app.set('trust proxy', /^\d+$/.test(trustProxySetting) ? Number(trustProxySetting)
+  : trustProxySetting === 'true' ? true : trustProxySetting === 'false' ? false : trustProxySetting);
 app.disable('etag');
 app.use(compression());
 const server = http.createServer(app);
@@ -2476,6 +2481,22 @@ function recordTotpFailure(userId) {
 }
 function clearTotpFailures(userId) { totpFailures.delete(userId); }
 
+// A current authenticator code (6 digits) or an unused backup code (8 characters, consumed on use).
+async function verifySecondFactor(user, token) {
+  if (token.length === 6) return verifyTotpToken(token, user.totpSecret);
+  if (token.length === 8 && user.totpBackupCodes) {
+    let backupCodes = [];
+    try { backupCodes = JSON.parse(user.totpBackupCodes); } catch {}
+    const codeIndex = backupCodes.indexOf(token.toUpperCase());
+    if (codeIndex > -1) {
+      backupCodes.splice(codeIndex, 1);
+      await run('UPDATE users SET totpBackupCodes = ? WHERE id = ?', [JSON.stringify(backupCodes), user.id]);
+      return true;
+    }
+  }
+  return false;
+}
+
 async function resolveSessionFromToken(token) {
   if (!token) return null;
   return await get(
@@ -3554,21 +3575,7 @@ app.post('/api/auth/login', loginLimiter, asyncRoute(async (req, res) => {
       return res.status(401).json({ error: '2FA required', requires2FA: true });
     }
 
-    let isValid = false;
-    // Check if it's a standard 6-digit TOTP
-    if (token.length === 6) {
-      isValid = verifyTotpToken(token, user.totpSecret);
-    } else if (token.length === 8 && user.totpBackupCodes) {
-      // Check backup codes
-      let backupCodes = [];
-      try { backupCodes = JSON.parse(user.totpBackupCodes); } catch {}
-      const codeIndex = backupCodes.indexOf(token.toUpperCase());
-      if (codeIndex > -1) {
-        isValid = true;
-        backupCodes.splice(codeIndex, 1);
-        await run('UPDATE users SET totpBackupCodes = ? WHERE id = ?', [JSON.stringify(backupCodes), user.id]);
-      }
-    }
+    const isValid = await verifySecondFactor(user, token);
 
     if (!isValid) {
       recordTotpFailure(user.id);
@@ -3621,6 +3628,21 @@ app.post('/api/auth/2fa/enable', requireAuth, asyncRoute(async (req, res) => {
 }));
 
 app.delete('/api/auth/2fa/disable', requireAuth, asyncRoute(async (req, res) => {
+  // A session alone must not be enough to remove the second factor: it needs a current code or a backup code.
+  const user = await get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+  if (user?.totpEnabled) {
+    const lockedFor = checkTotpLock(user.id);
+    if (lockedFor > 0) {
+      return res.status(429).json({ error: `Too many invalid 2FA attempts. Try again in ${Math.ceil(lockedFor / 60)} minutes.` });
+    }
+    const token = String(req.body?.token || '').trim();
+    if (!token) return res.status(401).json({ error: 'Enter a current authenticator code or a backup code to disable 2FA.', requires2FA: true });
+    if (!(await verifySecondFactor(user, token))) {
+      recordTotpFailure(user.id);
+      return res.status(401).json({ error: 'Invalid 2FA code or backup code.' });
+    }
+    clearTotpFailures(user.id);
+  }
   await run('UPDATE users SET totpSecret = NULL, totpEnabled = 0, totpBackupCodes = NULL WHERE id = ?', [req.user.id]);
   res.json({ success: true });
 }));
@@ -5260,7 +5282,7 @@ async function applySyncReminderMutation(userId, mutation) {
     }
   }
   const now = new Date().toISOString();
-  let scheduleChanged = existing ? reminderScheduleDefinitionChanged(existing, normalized) : false;
+  let scheduleChanged = existing ? reminderScheduleChanged(existing, normalized) : false;
   if (existing && mutation.baseScheduleVersion !== undefined) {
     const currentVersion = Number(existing.scheduleVersion || 1);
     const requestedVersion = payload.scheduleVersion === undefined ? currentVersion : Number(payload.scheduleVersion);
@@ -5450,7 +5472,7 @@ async function executeSyncMutation(userId, mutation) {
       let result;
       if (type === 'reminder.action') result = await applyReminderOccurrenceAction(userId, mutation.payload || {});
       else if (type.startsWith('note.')) result = await applySyncNoteMutation(userId, mutation);
-      else if (type.startsWith('reminder.')) result = await applySyncReminderMutation(userId, mutation);
+      else if (type === 'reminder.upsert' || type === 'reminder.delete') result = await applySyncReminderMutation(userId, mutation);
       else if (type.startsWith('attachment.')) result = await applySyncAttachmentMutation(userId, mutation);
       else result = { ok: false, status: 400, error: 'Unsupported mutation type.', type };
       await hitTestFault('after-mutation-before-receipt');
@@ -6863,7 +6885,7 @@ app.post('/api/reminders/ics-token', requireAuth, asyncRoute(async (req, res) =>
 // at the end means users see the token as the default calendar name.
 // Putting keeparr-reminders.ics at the end gives them a friendly default.
 const handleIcsFeed = asyncRoute(async (req, res) => {
-  const user = await get('SELECT id FROM users WHERE icsFeedToken = ?', [req.params.token]);
+  const user = await get('SELECT id FROM users WHERE icsFeedToken = ? AND enabled = 1', [req.params.token]);
   if (!user) return res.status(404).type('text').send('Feed not found.');
   const reminders = await all(
     `SELECT reminders.* FROM reminders
@@ -7124,7 +7146,7 @@ app.patch('/api/reminders/:id', requireAuth, asyncRoute(async (req, res) => {
   const locationTrigger = payload.locationTrigger;
   const repeatRule = payload.repeatRule;
   if (dueAtUtc && !Number.isFinite(Date.parse(dueAtUtc))) return res.status(400).json({ error: 'dueAtUtc must be a valid date.' });
-  const scheduleChanged = reminderScheduleDefinitionChanged(reminder, { dueAtUtc, timezone, repeatRule });
+  const scheduleChanged = reminderScheduleChanged(reminder, { dueAtUtc, timezone, repeatRule });
   const scheduleVersion = Number(reminder.scheduleVersion || 1) + (scheduleChanged ? 1 : 0);
   const scheduleAnchorAtUtc = scheduleChanged ? dueAtUtc : (reminder.scheduleAnchorAtUtc || reminder.dueAtUtc || dueAtUtc);
   const repeat = status === 'fired' ? parseRepeatRule(repeatRule) : null;
@@ -7464,6 +7486,7 @@ setTimeout(() => refreshLatestReleaseInBackground(), 5000).unref?.();
 // ─── Link preview ────────────────────────────────────────────────────────────
 
 const linkPreviewCache = new Map(); // url -> { data, fetchedAt }
+const LINK_PREVIEW_CACHE_MAX = 500;
 
 
 
@@ -7737,6 +7760,8 @@ app.get('/api/link-preview', requireAuth, asyncRoute(async (req, res) => {
     const meta = parseOgMeta(html, url);
     const domain = parsed.hostname.replace(/^www\./, '');
     const data = { title: meta.title || domain, description: meta.description, image: meta.image, url, domain };
+    // Bounded: the oldest preview is dropped first (a Map iterates in insertion order).
+    if (linkPreviewCache.size >= LINK_PREVIEW_CACHE_MAX) linkPreviewCache.delete(linkPreviewCache.keys().next().value);
     linkPreviewCache.set(url, { data, fetchedAt: Date.now() });
     res.json(data);
   } catch (err) {
@@ -7798,9 +7823,12 @@ app.get('/api/proxy-image', requireAuthOrQueryToken, asyncRoute(async (req, res)
         return;
       }
 
+      // Remote content is served from this origin: an SVG opened directly (not through <img>) must not run script here.
       res.writeHead(proxyRes.statusCode, {
         'Content-Type': proxyRes.headers['content-type'] || 'image/jpeg',
-        'Cache-Control': 'public, max-age=86400'
+        'Cache-Control': 'public, max-age=86400',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox"
       });
       proxyRes.pipe(res);
     });

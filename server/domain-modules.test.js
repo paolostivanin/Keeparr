@@ -4,7 +4,7 @@ const { plainText, parseJson, escapeHtml, notePreviewText, noteLinkCount } = req
 const { searchTextFromQuery, searchTokensFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere } = require('./note-search');
 const {
   normalizeRepeatRule, normalizeReminderDueAt, normalizeLocationTrigger, reminderScheduleDefinitionChanged, parseRepeatRule,
-  normalizeReminderPayload, reminderResponse
+  reminderScheduleChanged, normalizeReminderPayload, reminderResponse
 } = require('./reminder-model');
 const { isPrivateOrLocalAddress, resolvePublicIp, publicRequestOptions } = require('./public-network');
 
@@ -96,6 +96,19 @@ test('reminder schedules normalize the same way for comparison and storage', () 
   assert.equal(reminderScheduleDefinitionChanged(base, { ...base, dueAtUtc: '2030-01-01T08:00:00.000Z' }), false);
   assert.equal(reminderScheduleDefinitionChanged(base, { ...base, timezone: 'Europe/Rome' }), true);
   assert.equal(reminderScheduleDefinitionChanged(base, { ...base, repeatRule: { type: 'daily' } }), true);
+});
+
+test('rolling a repeating reminder over to its next occurrence is not a schedule edit', () => {
+  const monthly = { dueAtUtc: '2030-02-28T09:00:00.000Z', scheduleAnchorAtUtc: '2030-01-31T09:00:00.000Z', timezone: 'UTC', repeatRule: '{"type":"monthly","moveToTopOnTrigger":false}' };
+  const next = (changes) => ({ dueAtUtc: monthly.dueAtUtc, timezone: monthly.timezone, repeatRule: monthly.repeatRule, ...changes });
+  assert.equal(reminderScheduleChanged(monthly, next({ dueAtUtc: '2030-03-31T09:00:00.000Z' })), false, 'the next occurrence keeps the 31st anchor');
+  assert.equal(reminderScheduleChanged(monthly, next({ dueAtUtc: '2030-03-30T09:00:00.000Z' })), true, 'any other time is an edit');
+  assert.equal(reminderScheduleChanged(monthly, next({ dueAtUtc: '2030-01-31T09:00:00.000Z' })), true, 'moving backwards is an edit');
+  assert.equal(reminderScheduleChanged(monthly, next({ dueAtUtc: '2030-03-31T09:00:00.000Z', timezone: 'Europe/Rome' })), true);
+  assert.equal(reminderScheduleChanged(monthly, next({ dueAtUtc: '2030-03-31T09:00:00.000Z', repeatRule: '{"type":"weekly","moveToTopOnTrigger":false}' })), true);
+  assert.equal(reminderScheduleChanged(monthly, next({})), false, 'nothing changed');
+  const single = { dueAtUtc: '2030-02-28T09:00:00.000Z', timezone: 'UTC', repeatRule: null };
+  assert.equal(reminderScheduleChanged(single, { ...single, dueAtUtc: '2030-03-01T09:00:00.000Z' }), true, 'a one-off reminder is always edited');
 });
 
 test('reminder payloads accept every client spelling and fall back to the existing reminder', () => {
