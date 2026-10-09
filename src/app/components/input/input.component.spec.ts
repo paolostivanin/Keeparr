@@ -259,3 +259,124 @@ describe('InputComponent list editing and keyboard handling', () => {
     expect(body.querySelectorAll('br').length).toBe(1);
   });
 });
+
+describe('InputComponent formatting bars', () => {
+  let host: HTMLElement;
+  beforeEach(() => { host = document.createElement('div'); document.body.appendChild(host); });
+  afterEach(() => host.remove());
+
+  function editorWithText() {
+    const noteMain = document.createElement('div');
+    noteMain.style.cssText = 'position:relative;height:500px;padding-top:140px;width:600px';
+    const title = document.createElement('div');
+    title.contentEditable = 'true';
+    const body = document.createElement('div');
+    body.contentEditable = 'true';
+    body.style.cssText = 'font:16px/24px sans-serif';
+    body.innerHTML = '<div>first line of text</div><div>second line of text</div><div>third line of text</div>';
+    noteMain.append(title, body);
+    host.append(noteMain);
+    const toolbar = document.createElement('div');
+    toolbar.className = 'text-format-toolbar';
+    const trigger = document.createElement('button');
+    trigger.className = 'text-format-trigger';
+    host.append(toolbar, trigger);
+    const editor = Object.create(InputComponent.prototype) as any;
+    Object.assign(editor, {
+      noteMain: { nativeElement: noteMain }, noteTitle: { nativeElement: title }, noteBody: { nativeElement: body },
+      isCbox: { value: false }, isDrawingNote: false, destroyed: false, showTextFormatting: false, showSelectionFormatting: false,
+      pointerSelecting: false, shouldUseMobileFormattingBar: () => false, canFormatText: () => true
+    });
+    return { editor, body, noteMain, toolbar, trigger, outside: noteMain };
+  }
+
+  const mouseDown = (target: Element, button = 0) => ({ target, button }) as unknown as MouseEvent;
+
+  describe('the bar opened with the A button', () => {
+    it('closes on a click outside it, but not on the bar or on its A buttons', () => {
+      const { editor, toolbar, trigger, body } = editorWithText();
+      const mobileTrigger = document.createElement('button');
+      mobileTrigger.className = 'mobile-icon format';
+      host.append(mobileTrigger);
+
+      for (const inside of [toolbar, trigger, mobileTrigger]) {
+        editor.showTextFormatting = true;
+        editor.onDocumentMouseDown(mouseDown(inside));
+        expect(editor.showTextFormatting).withContext(inside.className).toBeTrue();
+      }
+      editor.onDocumentMouseDown(mouseDown(body));
+      expect(editor.showTextFormatting).toBeFalse();
+    });
+
+    it('closes on Escape before the note sees it, and leaves Escape alone when it is closed', () => {
+      const { editor } = editorWithText();
+      const event = { preventDefault: jasmine.createSpy('preventDefault'), stopPropagation: jasmine.createSpy('stopPropagation') } as unknown as Event;
+
+      editor.onEditorEscape(event);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+
+      editor.showTextFormatting = true;
+      editor.onEditorEscape(event);
+      expect(editor.showTextFormatting).toBeFalse();
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(event.stopPropagation).toHaveBeenCalled();
+    });
+  });
+
+  describe('the floating bar over a selection', () => {
+    function selectLines(body: HTMLElement, from: 'top' | 'bottom') {
+      const first = body.children[0].firstChild!;
+      const last = body.children[1].firstChild!;
+      const selection = window.getSelection()!;
+      // Dragging from the second line up to the first is a backward selection.
+      if (from === 'top') selection.setBaseAndExtent(first, 2, last, 6);
+      else selection.setBaseAndExtent(last, 6, first, 2);
+    }
+
+    it('is above the first line when the selection is extended downwards', () => {
+      const { editor, body, noteMain } = editorWithText();
+      selectLines(body, 'top');
+
+      editor.updateSelectionFormatting();
+
+      const firstLine = body.children[0].getBoundingClientRect();
+      expect(editor.showSelectionFormatting).toBeTrue();
+      expect(parseFloat(editor.selectionFormattingStyle.top)).toBeLessThan(firstLine.top - noteMain.getBoundingClientRect().top);
+    });
+
+    it('is below the last line when the selection is extended upwards, so the first line stays reachable', () => {
+      const { editor, body, noteMain } = editorWithText();
+      selectLines(body, 'bottom');
+
+      editor.updateSelectionFormatting();
+
+      const secondLine = body.children[1].getBoundingClientRect();
+      expect(editor.showSelectionFormatting).toBeTrue();
+      expect(parseFloat(editor.selectionFormattingStyle.top)).toBeGreaterThanOrEqual(secondLine.bottom - noteMain.getBoundingClientRect().top);
+    });
+
+    it('stays hidden while the mouse button is held and appears when it is released', () => {
+      const { editor, body } = editorWithText();
+      selectLines(body, 'bottom');
+
+      editor.onDocumentMouseDown(mouseDown(body.children[0]));
+      editor.updateSelectionFormatting();
+      expect(editor.showSelectionFormatting).toBeFalse();
+
+      spyOn(editor, 'scheduleSelectionFormattingUpdate').and.callFake(() => editor.updateSelectionFormatting());
+      editor.onDocumentMouseUp();
+      expect(editor.showSelectionFormatting).toBeTrue();
+    });
+
+    it('is not waiting for a drag that did not start in the text', () => {
+      const { editor, toolbar } = editorWithText();
+      spyOn(editor, 'scheduleSelectionFormattingUpdate');
+
+      editor.onDocumentMouseDown(mouseDown(toolbar));
+      editor.onDocumentMouseUp();
+
+      expect(editor.pointerSelecting).toBeFalse();
+      expect(editor.scheduleSelectionFormattingUpdate).not.toHaveBeenCalled();
+    });
+  });
+});

@@ -103,6 +103,8 @@ export class InputComponent implements OnInit {
   selectionFormattingStyle: Record<string, string> = {}
   private textHistoryTarget?: HTMLElement
   private textSelectionFrame?: number
+  /** The mouse button is held down in the text: the selection is still being dragged. */
+  private pointerSelecting = false
   private readonly textSelectionChangeHandler = () => this.scheduleSelectionFormattingUpdate()
   private readonly textSelectionRepositionHandler = () => this.scheduleSelectionFormattingUpdate()
   private cboxHistory = new ChecklistHistory()
@@ -2287,6 +2289,36 @@ export class InputComponent implements OnInit {
     }
   }
 
+  /**
+   * The bar opened with the A button closes when the user clicks anywhere else (selecting text then brings up the floating
+   * bar instead). While the button is held in the text the floating bar waits for the drag to end, so it is never in the way.
+   */
+  @HostListener('document:mousedown', ['$event'])
+  onDocumentMouseDown(event: MouseEvent) {
+    const target = event.target instanceof Element ? event.target : null
+    if (this.showTextFormatting && !target?.closest('.text-format-toolbar, .text-format-trigger, .mobile-icon.format')) {
+      this.showTextFormatting = false
+    }
+    const inText = !!target && (this.noteBody?.nativeElement.contains(target) || this.noteTitle?.nativeElement.contains(target))
+    if (event.button === 0 && inText) this.pointerSelecting = true
+  }
+
+  @HostListener('document:mouseup')
+  onDocumentMouseUp() {
+    if (!this.pointerSelecting) return
+    this.pointerSelecting = false
+    this.scheduleSelectionFormattingUpdate()
+  }
+
+  /** Escape closes the formatting bar first; it only reaches the note (and closes it) when the bar is already closed. */
+  @HostListener('keydown.escape', ['$event'])
+  onEditorEscape(event: Event) {
+    if (!this.showTextFormatting) return
+    this.showTextFormatting = false
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
   toggleTextFormatting(event: Event) {
     event.stopPropagation()
     this.showTextFormatting = !this.showTextFormatting
@@ -2302,7 +2334,7 @@ export class InputComponent implements OnInit {
   }
 
   private updateSelectionFormatting() {
-    if (this.destroyed || this.showTextFormatting || this.isDrawingNote || !this.canFormatText() || this.shouldUseMobileFormattingBar()) {
+    if (this.destroyed || this.showTextFormatting || this.pointerSelecting || this.isDrawingNote || !this.canFormatText() || this.shouldUseMobileFormattingBar()) {
       this.showSelectionFormatting = false
       return
     }
@@ -2316,7 +2348,10 @@ export class InputComponent implements OnInit {
       this.showSelectionFormatting = false
       return
     }
-    const rect = this.firstVisibleRangeRect(range)
+    // The pointer (or caret) is at the end the selection was extended to. Put the bar at the other end, so selecting
+    // upwards does not run into it: below the last line then, above the first line otherwise.
+    const backward = this.isBackwardSelection(selection)
+    const rect = backward ? this.lastVisibleRangeRect(range) : this.firstVisibleRangeRect(range)
     const noteRect = this.noteMain?.nativeElement.getBoundingClientRect()
     if (!rect || !noteRect) {
       this.showSelectionFormatting = false
@@ -2326,8 +2361,10 @@ export class InputComponent implements OnInit {
     const minLeft = toolbarHalfWidth + 8
     const maxLeft = Math.max(minLeft, noteRect.width - toolbarHalfWidth - 8)
     const left = Math.min(maxLeft, Math.max(minLeft, rect.left + rect.width / 2 - noteRect.left))
-    let top = rect.top - noteRect.top - 48
-    if (top < 8) top = rect.bottom - noteRect.top + 8
+    const below = rect.bottom - noteRect.top + 8
+    let top = backward ? below : rect.top - noteRect.top - 48
+    if (backward && below + 40 > noteRect.height) top = this.firstVisibleRangeRect(range).top - noteRect.top - 48
+    if (!backward && top < 8) top = below
     this.selectionFormattingStyle = {
       left: `${left}px`,
       top: `${Math.min(noteRect.height - 48, Math.max(8, top))}px`
@@ -2344,6 +2381,21 @@ export class InputComponent implements OnInit {
     const title = this.noteTitle?.nativeElement
     const body = this.noteBody?.nativeElement
     return !!(title?.contains(element) || body?.contains(element))
+  }
+
+  private lastVisibleRangeRect(range: Range) {
+    const rects = Array.from(range.getClientRects()).filter(rect => rect.width || rect.height)
+    return rects[rects.length - 1] || range.getBoundingClientRect()
+  }
+
+  /** True when the selection was extended towards the start of the text (its focus is before its anchor). */
+  private isBackwardSelection(selection: Selection) {
+    if (!selection.anchorNode || !selection.focusNode) return false
+    const probe = document.createRange()
+    probe.setStart(selection.anchorNode, selection.anchorOffset)
+    probe.setEnd(selection.focusNode, selection.focusOffset)
+    // A range cannot end before it starts, so it collapses onto the focus when the focus comes first.
+    return probe.collapsed && !selection.isCollapsed
   }
 
   private firstVisibleRangeRect(range: Range) {
