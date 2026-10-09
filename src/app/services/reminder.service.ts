@@ -255,8 +255,10 @@ export class ReminderService {
     return reminder;
   }
 
+  /** No answer from the server: the connection failed (0) or a reverse proxy in front of it reported that it is down. */
   private isUnreachable(error: unknown) {
-    return (error as { status?: number } | null)?.status === 0;
+    const status = (error as { status?: number } | null)?.status;
+    return status === 0 || status === 502 || status === 503 || status === 504;
   }
 
   async delete(id: number) {
@@ -591,9 +593,15 @@ export class ReminderService {
     const reminder = this.reminders$.value.find(r => r.id === reminderId);
     if (!reminder || reminder.status !== 'pending') return;
     const repeat = this.parseRepeatRule(reminder.repeatRule);
-    const nextDueAtUtc = repeat
-      ? nextRepeatDueAt(reminder.dueAtUtc, repeat, reminder.timezone, Date.now(), (reminder as ReminderI & { scheduleAnchorAtUtc?: string }).scheduleAnchorAtUtc || reminder.dueAtUtc)
-      : null;
+    let nextDueAtUtc: string | null = null;
+    if (repeat) {
+      try {
+        nextDueAtUtc = nextRepeatDueAt(reminder.dueAtUtc, repeat, reminder.timezone, Date.now(), (reminder as ReminderI & { scheduleAnchorAtUtc?: string }).scheduleAnchorAtUtc || reminder.dueAtUtc);
+      } catch (error) {
+        // An unresolvable schedule must not stop this occurrence from being shown.
+        console.error('Could not compute the next reminder occurrence', error);
+      }
+    }
 
     this.firedReminder$.next({
       reminderId: reminder.id,

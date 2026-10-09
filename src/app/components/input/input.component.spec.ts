@@ -6,7 +6,9 @@ function makeEditor() {
   const title = { nativeElement: { innerHTML: 'my title' } };
   const body = { nativeElement: { innerHTML: 'my unsaved full draft' } };
   Object.assign(editor, {
-    noteTitle: title, noteBody: body, noteMain: { nativeElement: { style: {} } },
+    noteTitle: title, noteBody: body, noteMain: { nativeElement: { style: {} } }, notePin: { nativeElement: { dataset: {} } },
+    labels: [{ name: 'work', added: false }, { name: 'home', added: true }], isArchived: false, isTrashed: false, binderName: '',
+    applyBackgroundImage: jasmine.createSpy('applyBackgroundImage'), updateTextColor: () => undefined,
     noteToEdit: { id: 5, syncId: 'n5', revision: 7, noteTitle: 'title', noteBody: 'body', labels: [] },
     images: [], attachments: [], isDrawingNote: false, isCbox: { next: () => undefined },
     cd: { detectChanges: () => undefined }, auth: { authenticatedImageUrl: (value: string) => value },
@@ -58,6 +60,23 @@ describe('InputComponent incoming updates', () => {
     expect(editor.externalUpdatePending).toBeFalse();
   });
 
+  it('shows pin, archive, binder and label changes too, so the adopted baseline matches the editor', () => {
+    const { editor } = makeEditor();
+    spyOn(editor, 'hasUnsavedEdits').and.returnValue(false);
+
+    editor.applyExternalUpdate(remote({
+      pinned: true, archived: true, trashed: false, binder: 'Projects', bgImage: '',
+      labels: [{ name: 'work', added: true }] as any
+    }));
+
+    expect(editor.notePin.nativeElement.dataset.pinned).toBe('true');
+    expect(editor.isArchived).toBeTrue();
+    expect(editor.binderName).toBe('Projects');
+    expect(editor.labels.map((label: { name: string; added: boolean }) => [label.name, label.added])).toEqual([['work', true], ['home', false]]);
+    expect(editor.noteToEdit.labels).toEqual([{ name: 'work', added: true } as any]);
+    expect(editor.applyBackgroundImage).toHaveBeenCalledWith('');
+  });
+
   it('re-attaches image delete buttons and link previews only when it replaced the body markup', () => {
     const { editor, body } = makeEditor();
     spyOn(editor, 'hasUnsavedEdits').and.returnValue(false);
@@ -79,5 +98,164 @@ describe('InputComponent incoming updates', () => {
     expect(editor.editBaseForSave()).toBeUndefined();
     editor.externalUpdatePending = true;
     expect(editor.editBaseForSave()).toEqual({ revision: 7, fields: { noteTitle: 'the title I started from' } });
+  });
+
+  describe('when the list changes while the note is open', () => {
+    const snapshotOf = (note: NoteI) => JSON.stringify({ title: note.noteTitle, body: note.noteBody });
+    function openEditor() {
+      const made = makeEditor();
+      made.editor.noteSaveSnapshot = snapshotOf;
+      made.editor.saveBaselineSnapshot = snapshotOf({ noteTitle: 'title', noteBody: 'body' } as NoteI);
+      made.editor.auth.currentUser = { id: 1 };
+      spyOn(made.editor, 'applyExternalUpdate');
+      return made.editor;
+    }
+
+    it('adopts a version written by the same user on another device', () => {
+      const editor = openEditor();
+      const fromPhone = remote({ noteTitle: 'title', noteBody: 'edited on the phone', lastEditorUserId: 1 });
+
+      editor.onNoteListChanged(fromPhone);
+
+      expect(editor.applyExternalUpdate).toHaveBeenCalledOnceWith(fromPhone);
+    });
+
+    it('ignores the echo of the editor\'s own save while it is in flight', () => {
+      const editor = openEditor();
+      editor.inFlightSaveSnapshot = snapshotOf({ noteTitle: 'title', noteBody: 'typed here' } as NoteI);
+      editor.externalUpdatePending = false;
+
+      editor.onNoteListChanged(remote({ noteTitle: 'title', noteBody: 'typed here', lastEditorUserId: 1 }));
+
+      expect(editor.applyExternalUpdate).not.toHaveBeenCalled();
+      expect(editor.externalUpdatePending).toBeFalse();
+    });
+
+    it('forgets a held-back version once the list matches what the editor derives from', () => {
+      const editor = openEditor();
+      editor.externalUpdatePending = true;
+
+      editor.onNoteListChanged(remote({ noteTitle: 'title', noteBody: 'body' }));
+
+      expect(editor.externalUpdatePending).toBeFalse();
+      expect(editor.applyExternalUpdate).not.toHaveBeenCalled();
+    });
+
+    it('never treats a truncated card preview as a newer version', () => {
+      const editor = openEditor();
+
+      editor.onNoteListChanged(remote({ noteBody: 'truncated…', isCardPreview: true }));
+
+      expect(editor.applyExternalUpdate).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('InputComponent list editing and keyboard handling', () => {
+  let host: HTMLElement;
+  beforeEach(() => { host = document.createElement('div'); document.body.appendChild(host); });
+  afterEach(() => host.remove());
+
+  function editorWith(html: string) {
+    const body = document.createElement('div');
+    body.contentEditable = 'true';
+    body.innerHTML = html;
+    const title = document.createElement('div');
+    title.contentEditable = 'true';
+    title.textContent = 'a title';
+    host.append(title, body);
+    const editor = Object.create(InputComponent.prototype) as any;
+    Object.assign(editor, { noteBody: { nativeElement: body }, noteTitle: { nativeElement: title } });
+    return { editor, body, title };
+  }
+
+  function select(start: Node, startOffset: number, end: Node = start, endOffset = startOffset) {
+    const range = document.createRange();
+    range.setStart(start, startOffset);
+    range.setEnd(end, endOffset);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  const keyEvent = (extra: Partial<KeyboardEvent> = {}) => ({ key: 'Tab', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault: jasmine.createSpy('preventDefault'), ...extra }) as unknown as KeyboardEvent;
+
+  it('only treats a selection inside the body as being in the body', () => {
+    const { editor, body, title } = editorWith('<p>text</p>');
+
+    select(title.firstChild!, 2);
+    expect(editor.selectionInBody()).toBeFalse();
+    select(body.querySelector('p')!.firstChild!, 2);
+    expect(editor.selectionInBody()).toBeTrue();
+  });
+
+  it('measures the depth of every list item a selection touches, for both list shapes', () => {
+    // Chrome writes a nested list beside the item, other shapes put it inside it; the depth is the same.
+    const { editor, body } = editorWith('<ul><li>a</li><ul><li>b</li></ul><li>c<ul><li>d</li></ul></li></ul>');
+    const items = body.querySelectorAll('li');
+
+    select(items[0].firstChild!, 0, items[3].firstChild!, 1);
+
+    expect(editor.selectedBodyListDepths()).toEqual([1, 2, 1, 2]);
+  });
+
+  it('does not indent past four levels when a later line of the selection is already that deep', () => {
+    const { editor, body } = editorWith('<ul><li>top</li><ul><ul><ul><li>deep</li></ul></ul></ul></ul>');
+    const items = body.querySelectorAll('li');
+    select(items[0].firstChild!, 0, items[1].firstChild!, 2);
+    const execCommand = spyOn(document, 'execCommand');
+
+    editor.indentBodyList(1);
+
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it('lets Tab leave the editor at the deepest list level instead of trapping it, and still indents above it', () => {
+    const { editor, body } = editorWith('<ul><li id="shallow">one</li><ul><ul><ul><li id="deep">four</li></ul></ul></ul></ul>');
+    spyOn(editor, 'indentBodyList');
+    spyOn(editor, 'scheduleTextHistoryRefresh');
+
+    select(body.querySelector('#deep')!.firstChild!, 1);
+    const atMaximum = keyEvent();
+    editor.onNoteBodyKeyDown(atMaximum);
+    expect(atMaximum.preventDefault).not.toHaveBeenCalled();
+
+    select(body.querySelector('#shallow')!.firstChild!, 1);
+    const indentable = keyEvent();
+    editor.onNoteBodyKeyDown(indentable);
+    expect(indentable.preventDefault).toHaveBeenCalled();
+    expect(editor.indentBodyList).toHaveBeenCalledWith(1);
+  });
+
+  it('ignores Enter and Tab pressed while an input method is composing in a checklist row', () => {
+    const { editor } = editorWith('');
+    const composing = keyEvent({ key: 'Enter', isComposing: true });
+    const candidate = keyEvent({ key: 'Enter', keyCode: 229 });
+
+    editor.cBoxKeyDown(composing, 1);
+    editor.cBoxKeyDown(candidate, 1);
+
+    expect(composing.preventDefault).not.toHaveBeenCalled();
+    expect(candidate.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('turns every line of a multi-line paste inside a bullet into its own bullet, skipping blank lines', () => {
+    const { editor, body } = editorWith('<ul><li>one</li></ul>');
+    select(body.querySelector('li')!.firstChild!, 3);
+
+    editor.insertPlainTextAtCursor(body, 'A\nB\n\nC');
+
+    expect(Array.from(body.querySelectorAll('li')).map(item => item.textContent)).toEqual(['oneA', 'B', 'C']);
+    expect(body.querySelectorAll('br').length).toBe(0);
+  });
+
+  it('still pastes multi-line text outside a list with line breaks', () => {
+    const { editor, body } = editorWith('<div>start</div>');
+    select(body.querySelector('div')!.firstChild!, 5);
+
+    editor.insertPlainTextAtCursor(body, 'A\nB');
+
+    expect(body.querySelectorAll('li').length).toBe(0);
+    expect(body.querySelectorAll('br').length).toBe(1);
   });
 });

@@ -229,19 +229,19 @@
   @if (showSelectionFormatting && canFormatText()) {
     <div class="text-format-toolbar selection-format-toolbar" [ngStyle]="selectionFormattingStyle"
       (mousedown)="$event.preventDefault()" (click)="$event.stopPropagation()">
-      <button type="button" (mousedown)="applyTextFormat('h1',$event)">H1</button>
-      <button type="button" (mousedown)="applyTextFormat('h2',$event)">H2</button>
-      <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)">Aa</button>
+      <button type="button" (mousedown)="applyTextFormat('h1',$event)" (click)="$event.detail === 0 && applyTextFormat('h1',$event)">H1</button>
+      <button type="button" (mousedown)="applyTextFormat('h2',$event)" (click)="$event.detail === 0 && applyTextFormat('h2',$event)">H2</button>
+      <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)" (click)="$event.detail === 0 && applyTextFormat('body',$event)">Aa</button>
       <span></span>
-      <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)">&bull;</button>
-      <button type="button" aria-label="Indent" title="Indent (Tab)" (mousedown)="applyTextFormat('indent',$event)">&rarr;</button>
-      <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" (mousedown)="applyTextFormat('outdent',$event)">&larr;</button>
+      <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)" (click)="$event.detail === 0 && applyTextFormat('bullet',$event)">&bull;</button>
+      <button type="button" aria-label="Indent" title="Indent (Tab)" (mousedown)="applyTextFormat('indent',$event)" (click)="$event.detail === 0 && applyTextFormat('indent',$event)">&rarr;</button>
+      <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" (mousedown)="applyTextFormat('outdent',$event)" (click)="$event.detail === 0 && applyTextFormat('outdent',$event)">&larr;</button>
       <span></span>
-      <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)">B</button>
-      <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)">I</button>
-      <button type="button" class="underline" (mousedown)="applyTextFormat('underline',$event)">U</button>
+      <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)" (click)="$event.detail === 0 && applyTextFormat('bold',$event)">B</button>
+      <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)" (click)="$event.detail === 0 && applyTextFormat('italic',$event)">I</button>
+      <button type="button" class="underline" (mousedown)="applyTextFormat('underline',$event)" (click)="$event.detail === 0 && applyTextFormat('underline',$event)">U</button>
       <button type="button" class="clear-format" aria-label="Clear formatting" title="Clear formatting"
-        (mousedown)="applyTextFormat('clear',$event)">Clear</button>
+        (mousedown)="applyTextFormat('clear',$event)" (click)="$event.detail === 0 && applyTextFormat('clear',$event)">Clear</button>
     </div>
   }
   <div #notePin data-pinned="false" [class.pinned]="notePin.dataset['pinned'] === 'true'" class="pin-icon H pop"
@@ -254,19 +254,19 @@
     <div class="icons-container">
       @if (showTextFormatting && canFormatText()) {
         <div class="text-format-toolbar" (mousedown)="$event.preventDefault()" (click)="$event.stopPropagation()">
-          <button type="button" (mousedown)="applyTextFormat('h1',$event)">H1</button>
-          <button type="button" (mousedown)="applyTextFormat('h2',$event)">H2</button>
-          <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)">Aa</button>
+          <button type="button" (mousedown)="applyTextFormat('h1',$event)" (click)="$event.detail === 0 && applyTextFormat('h1',$event)">H1</button>
+          <button type="button" (mousedown)="applyTextFormat('h2',$event)" (click)="$event.detail === 0 && applyTextFormat('h2',$event)">H2</button>
+          <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)" (click)="$event.detail === 0 && applyTextFormat('body',$event)">Aa</button>
           <span></span>
-          <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)">&bull;</button>
-          <button type="button" aria-label="Indent" title="Indent (Tab)" (mousedown)="applyTextFormat('indent',$event)">&rarr;</button>
-          <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" (mousedown)="applyTextFormat('outdent',$event)">&larr;</button>
+          <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)" (click)="$event.detail === 0 && applyTextFormat('bullet',$event)">&bull;</button>
+          <button type="button" aria-label="Indent" title="Indent (Tab)" (mousedown)="applyTextFormat('indent',$event)" (click)="$event.detail === 0 && applyTextFormat('indent',$event)">&rarr;</button>
+          <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" (mousedown)="applyTextFormat('outdent',$event)" (click)="$event.detail === 0 && applyTextFormat('outdent',$event)">&larr;</button>
           <span></span>
-          <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)">B</button>
-          <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)">I</button>
-          <button type="button" class="underline" (mousedown)="applyTextFormat('underline',$event)">U</button>
+          <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)" (click)="$event.detail === 0 && applyTextFormat('bold',$event)">B</button>
+          <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)" (click)="$event.detail === 0 && applyTextFormat('italic',$event)">I</button>
+          <button type="button" class="underline" (mousedown)="applyTextFormat('underline',$event)" (click)="$event.detail === 0 && applyTextFormat('underline',$event)">U</button>
           <button type="button" class="clear-format" aria-label="Clear formatting" title="Clear formatting"
-            (mousedown)="applyTextFormat('clear',$event)">Clear</button>
+            (mousedown)="applyTextFormat('clear',$event)" (click)="$event.detail === 0 && applyTextFormat('clear',$event)">Clear</button>
         </div>
       }
       <div class="icons">
@@ -307,19 +307,19 @@
     <div class="mobile-bottom-bar">
       @if (showTextFormatting && canFormatText()) {
         <div class="text-format-toolbar mobile-format-toolbar" (mousedown)="$event.preventDefault()" (click)="$event.stopPropagation()">
-          <button type="button" (mousedown)="applyTextFormat('h1',$event)">H1</button>
-          <button type="button" (mousedown)="applyTextFormat('h2',$event)">H2</button>
-          <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)">Aa</button>
+          <button type="button" (mousedown)="applyTextFormat('h1',$event)" (click)="$event.detail === 0 && applyTextFormat('h1',$event)">H1</button>
+          <button type="button" (mousedown)="applyTextFormat('h2',$event)" (click)="$event.detail === 0 && applyTextFormat('h2',$event)">H2</button>
+          <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)" (click)="$event.detail === 0 && applyTextFormat('body',$event)">Aa</button>
           <span></span>
-          <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)">&bull;</button>
-          <button type="button" aria-label="Indent" title="Indent" (mousedown)="applyTextFormat('indent',$event)">&rarr;</button>
-          <button type="button" aria-label="Outdent" title="Outdent" (mousedown)="applyTextFormat('outdent',$event)">&larr;</button>
+          <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)" (click)="$event.detail === 0 && applyTextFormat('bullet',$event)">&bull;</button>
+          <button type="button" aria-label="Indent" title="Indent" (mousedown)="applyTextFormat('indent',$event)" (click)="$event.detail === 0 && applyTextFormat('indent',$event)">&rarr;</button>
+          <button type="button" aria-label="Outdent" title="Outdent" (mousedown)="applyTextFormat('outdent',$event)" (click)="$event.detail === 0 && applyTextFormat('outdent',$event)">&larr;</button>
           <span></span>
-          <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)">B</button>
-          <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)">I</button>
-          <button type="button" class="underline" (mousedown)="applyTextFormat('underline',$event)">U</button>
+          <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)" (click)="$event.detail === 0 && applyTextFormat('bold',$event)">B</button>
+          <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)" (click)="$event.detail === 0 && applyTextFormat('italic',$event)">I</button>
+          <button type="button" class="underline" (mousedown)="applyTextFormat('underline',$event)" (click)="$event.detail === 0 && applyTextFormat('underline',$event)">U</button>
           <button type="button" class="clear-format" aria-label="Clear formatting" title="Clear formatting"
-            (mousedown)="applyTextFormat('clear',$event)">Clear</button>
+            (mousedown)="applyTextFormat('clear',$event)" (click)="$event.detail === 0 && applyTextFormat('clear',$event)">Clear</button>
         </div>
       }
       <div class="left-icons">

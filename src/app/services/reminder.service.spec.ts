@@ -63,6 +63,31 @@ describe('ReminderService profile isolation and durability', () => {
     expect(service.offlineSync.enqueue).toHaveBeenCalledOnceWith('reminder.delete', 'r15', jasmine.objectContaining({ id: 15 }));
   });
 
+  for (const status of [502, 503, 504]) {
+    it(`queues a reminder change for retry when a reverse proxy answers ${status} because the server is down`, async () => {
+      const { service } = makeService({ http: { patch: () => throwError(() => ({ status })) } });
+      service.reminders$.next([reminder(15, 'r15')]);
+
+      await service.update(15, { dueAtUtc: '2030-01-02T09:00:00Z' });
+
+      expect(service.offlineSync.enqueue).toHaveBeenCalledOnceWith('reminder.upsert', 'r15', jasmine.objectContaining({ dueAtUtc: '2030-01-02T09:00:00Z' }));
+    });
+  }
+
+  it('still shows a repeating reminder whose next occurrence cannot be computed', async () => {
+    spyOn(console, 'error');
+    const fired: unknown[] = [];
+    const update = jasmine.createSpy('update').and.resolveTo(undefined);
+    const { service } = makeService({ reminderTimers: new Map(), firedReminder$: { next: (value: unknown) => fired.push(value) }, update, floatNoteToTop: () => Promise.resolve() });
+    // The latest representable date has no next day, so the recurrence cannot resolve a following occurrence.
+    service.reminders$.next([reminder(21, 'r21', { dueAtUtc: '+275760-09-13T00:00:00.000Z', repeatRule: JSON.stringify({ type: 'daily' }) as any })]);
+
+    await service.fireLocalReminder(21);
+
+    expect(fired.length).toBe(1);
+    expect(update).toHaveBeenCalledWith(21, { status: 'fired' });
+  });
+
   it('does not hide a real server rejection behind the offline queue', async () => {
     const { service } = makeService({ http: { patch: () => throwError(() => ({ status: 409 })) } });
     service.reminders$.next([reminder(15, 'r15')]);

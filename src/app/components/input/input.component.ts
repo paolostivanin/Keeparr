@@ -245,6 +245,9 @@ export class InputComponent implements OnInit {
   private editorPreviewGeneration = 0
   private editorLinkDecorationFrame?: number
   private saveBaselineSnapshot?: string
+  /** Content of a save in progress: the list echoes it back before the save completes, and it is not someone else's edit. */
+  private inFlightSaveSnapshot?: string
+  private ownListNote?: NoteI
   private editorSession?: EditorSessionTracker
   private editorSessionPersister?: EditorSessionPersister
   private editorSessionReady: Promise<void> = Promise.resolve()
@@ -597,6 +600,7 @@ export class InputComponent implements OnInit {
       }
       if (!closeAfterSave) {
         this.coEditSaveInFlight = true
+        this.inFlightSaveSnapshot = this.noteSaveSnapshot(noteObj)
         try {
           await this.notesService.update(noteObj, this.noteToEdit.id!, this.editBaseForSave())
           this.saveBaselineSnapshot = this.noteSaveSnapshot(noteObj)
@@ -610,20 +614,24 @@ export class InputComponent implements OnInit {
           return false
         } finally {
           this.coEditSaveInFlight = false
+          this.inFlightSaveSnapshot = undefined
           if (this.coEditSaveQueued) {
             this.coEditSaveQueued = false
             this.saveNote(false)
           }
         }
       } else {
+        this.inFlightSaveSnapshot = this.noteSaveSnapshot(noteObj)
         try {
           await this.notesService.update(noteObj, this.noteToEdit.id!, this.editBaseForSave())
         } catch (error) {
+          this.inFlightSaveSnapshot = undefined
           this.editorSaveFailed(sessionGeneration, error)
           if (this.auth.isAuthExpiredError(error)) return false
           this.showNoteSaveError(error instanceof LocalNotePersistenceError)
           return false
         }
+        this.inFlightSaveSnapshot = undefined
         this.saveBaselineSnapshot = this.noteSaveSnapshot(noteObj)
         this.labelsDirty = false
         this.editorSaveSucceeded(sessionGeneration)
@@ -1252,8 +1260,19 @@ export class InputComponent implements OnInit {
       range.collapse(false)
     }
 
-    const fragment = document.createDocumentFragment()
     const lines = text.replace(/\r\n?/g, '\n').split('\n')
+    // Inside a bullet every pasted line becomes its own bullet instead of a soft line break within one. A blank line is
+    // skipped there: as with Enter on an empty bullet it would end the list and put the rest of the paste outside it.
+    const startElement = range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer as Element : range.startContainer.parentElement
+    const listItem = startElement?.closest('li')
+    if (listItem && target.contains(listItem) && selection?.rangeCount && target.contains(selection.getRangeAt(0).startContainer)) {
+      lines.filter(line => line !== '').forEach((line, index) => {
+        if (index > 0) document.execCommand('insertParagraph')
+        document.execCommand('insertText', false, line)
+      })
+      return
+    }
+    const fragment = document.createDocumentFragment()
     let lastNode: Node | null = null
     lines.forEach((line, index) => {
       if (index > 0) {
@@ -1894,6 +1913,7 @@ export class InputComponent implements OnInit {
   }
 
   cboxSuggestionKeyDown(event: KeyboardEvent, draftId: number, completedId: number, index: number) {
+    if (event.isComposing || event.keyCode === 229) return
     if (event.key === 'Enter') {
       event.preventDefault()
       event.stopPropagation()
@@ -1984,6 +2004,8 @@ export class InputComponent implements OnInit {
   }
 
   cBoxKeyDown($event: KeyboardEvent, id: number) {
+    // Keys pressed while an input method is composing (Enter confirms a candidate) are not commands for the list.
+    if ($event.isComposing || $event.keyCode === 229) return
     let target = $event.target as HTMLDivElement
     const suggestions = this.completedCboxSuggestions(id)
     if ($event.key === 'Escape' && suggestions.length) {
@@ -2376,6 +2398,8 @@ export class InputComponent implements OnInit {
   applyTextFormat(command: 'h1' | 'h2' | 'body' | 'bullet' | 'indent' | 'outdent' | 'bold' | 'italic' | 'underline' | 'clear', event: Event) {
     event.preventDefault()
     event.stopPropagation()
+    // Lists only make sense in the body: with the caret in the title these would put a <ul> there.
+    if ((command === 'bullet' || command === 'indent' || command === 'outdent') && !this.selectionInBody()) return
     if (command === 'h1') document.execCommand('formatBlock', false, 'H1')
     if (command === 'h2') document.execCommand('formatBlock', false, 'H2')
     if (command === 'body') document.execCommand('formatBlock', false, 'DIV')
@@ -2398,10 +2422,26 @@ export class InputComponent implements OnInit {
     return listDepth(node instanceof Element ? node : node?.parentElement, this.noteBody?.nativeElement)
   }
 
+  private selectionInBody(): boolean {
+    const node = window.getSelection()?.anchorNode
+    return !!node && !!this.noteBody?.nativeElement?.contains(node)
+  }
+
+  /** Nesting depth of every list item the selection touches (empty when it is not in a list). */
+  private selectedBodyListDepths(): number[] {
+    const body = this.noteBody?.nativeElement
+    const selection = window.getSelection()
+    if (!body || !selection?.rangeCount) return []
+    const range = selection.getRangeAt(0)
+    return Array.from(body.querySelectorAll('li')).filter(item => range.intersectsNode(item)).map(item => listDepth(item, body))
+  }
+
   private indentBodyList(delta: 1 | -1) {
     const selection = window.getSelection()
     if (!selection?.rangeCount) return
-    const depth = this.bodyListDepth(selection.anchorNode)
+    const anchorDepth = this.bodyListDepth(selection.anchorNode)
+    // Indenting moves every selected item one level deeper, so the deepest of them decides whether it still fits.
+    const depth = delta === 1 ? Math.max(anchorDepth, ...this.selectedBodyListDepths()) : anchorDepth
     if (delta === 1 ? !canIndentBodyList(depth) : !canOutdentBodyList(depth)) return
     document.execCommand(delta === 1 ? 'indent' : 'outdent')
   }
@@ -2418,7 +2458,10 @@ export class InputComponent implements OnInit {
   onNoteBodyKeyDown(event: KeyboardEvent) {
     if (event.key !== 'Tab' || event.ctrlKey || event.metaKey || event.altKey) return
     const selection = window.getSelection()
-    if (!selection?.rangeCount || this.bodyListDepth(selection.anchorNode) === 0) return
+    const depth = this.bodyListDepth(selection?.anchorNode ?? null)
+    if (!selection?.rangeCount || depth === 0) return
+    // At the deepest level Tab moves focus on instead of trapping the keyboard in the editor.
+    if (!event.shiftKey && !canIndentBodyList(Math.max(depth, ...this.selectedBodyListDepths()))) return
     event.preventDefault()
     this.indentBodyList(event.shiftKey ? -1 : 1)
     this.scheduleTextHistoryRefresh()
@@ -3749,11 +3792,7 @@ export class InputComponent implements OnInit {
       this.notesListSubscription = this.notesService.notesList$.subscribe(notes => {
         if (!notes) return;
         const updatedNote = notes.find(n => n.id === this.noteToEdit.id);
-        // Also adopt a change that was held back while the editor had unsaved edits (its merged result is
-        // attributed to this user), once the editor is clean again.
-        if (updatedNote && (updatedNote.lastEditorUserId !== this.auth.currentUser?.id || this.externalUpdatePending)) {
-          this.applyExternalUpdate(updatedNote);
-        }
+        if (updatedNote) this.onNoteListChanged(updatedNote);
       });
     }
     //? ----------------------------------------------------------------
@@ -3938,6 +3977,28 @@ export class InputComponent implements OnInit {
     return { revision: this.noteToEdit.revision ?? 0, fields: JSON.parse(snapshot) };
   }
 
+  /**
+   * A new version of the open note reached the list. Whatever its author (another user, or this user on another device),
+   * it is shown unless it is the editor's own content; a version held back while there were unsaved edits is shown once
+   * the editor is clean again, which is when its merged result arrives.
+   */
+  private onNoteListChanged(note: NoteI) {
+    // The list emits for every change anywhere; a note object already judged to be the editor's own is not compared again.
+    if (note.isCardPreview || note === this.ownListNote) return;
+    const snapshot = this.noteSaveSnapshot(note);
+    if (snapshot === this.inFlightSaveSnapshot) {
+      this.ownListNote = note;
+      return;
+    }
+    if (snapshot === (this.saveBaselineSnapshot ?? this.noteSaveSnapshot(this.noteToEdit))) {
+      // Nothing differs from what the editor derives from, so no newer version is being held back.
+      this.externalUpdatePending = false;
+      this.ownListNote = note;
+      return;
+    }
+    this.applyExternalUpdate(note);
+  }
+
   applyExternalUpdate(note: NoteI) {
     // A card preview is a truncated projection and must never replace the editor's full content.
     if (note.isCardPreview) return;
@@ -3959,10 +4020,18 @@ export class InputComponent implements OnInit {
     }
     if (this.noteMain?.nativeElement) {
       this.noteMain.nativeElement.style.backgroundColor = note.bgColor || "";
-      if (note.bgImage) {
-        this.noteMain.nativeElement.style.backgroundImage = note.bgImage;
-      }
+      this.noteMain.nativeElement.style.borderColor = note.bgColor || "";
+      this.updateTextColor(note.bgColor);
+      this.applyBackgroundImage(note.bgImage);
     }
+    // The saved baseline below covers these too, so the editor must show them as well: otherwise they would count as
+    // unsaved edits forever, or be written back over the newer values when the note is closed.
+    if (this.notePin?.nativeElement) this.notePin.nativeElement.dataset['pinned'] = String(!!note.pinned);
+    this.isArchived = !!note.archived;
+    this.isTrashed = !!note.trashed;
+    this.binderName = note.binder || '';
+    const labelStates = new Map((note.labels || []).map(label => [label.name, label.added] as const));
+    this.labels.forEach(label => { label.added = !!labelStates.get(label.name); });
     if (!this.cboxDragImage) {
       this.checkBoxes = this.normalizeCheckBoxes(note.checkBoxes || []);
       this.resetCboxHistory();
@@ -3978,7 +4047,7 @@ export class InputComponent implements OnInit {
     this.isHybridNote = !!note.isCbox && this.hasMeaningfulBody(note.noteBody);
     this.isCbox.next(note.isCbox);
     // The editor now shows this version: it is the new base for the next save.
-    this.noteToEdit = { ...this.noteToEdit, revision: note.revision ?? this.noteToEdit.revision };
+    this.noteToEdit = { ...this.noteToEdit, revision: note.revision ?? this.noteToEdit.revision, labels: note.labels || [] };
     this.saveBaselineSnapshot = this.noteSaveSnapshot(note);
     this.cd.detectChanges();
   }
