@@ -1072,7 +1072,8 @@ class KeeparrRepositoryTest {
             conflict = JSONObject().put("error", "Note access was removed.").toString(), state = OutboxState.CONFLICT)
         val uploadFile = java.io.File(app.filesDir, "pending-media/recoverable-upload").apply { parentFile?.mkdirs(); writeText("file") }
         val upload = Outbox("copy-upload-op", profile.profile, "media.upload", "$syncId:${uploadFile.name}",
-            JSONObject().put("file", uploadFile.name).put("name", "recoverable.txt").put("mime", "text/plain").put("noteSyncId", syncId).toString(),
+            JSONObject().put("file", uploadFile.name).put("name", "recoverable.txt").put("mime", "text/plain").put("noteSyncId", syncId)
+                .put("link", JSONObject().put("type", "note.upsert").put("syncId", syncId).put("baseRevision", 2)).toString(),
             state = OutboxState.CONFLICT, conflict = JSONObject().put("error", "The parent note was revoked.").toString())
         repository.store.enqueue(noteConflict)
         repository.store.enqueue(upload)
@@ -1089,6 +1090,7 @@ class KeeparrRepositoryTest {
         val pendingUpload = repository.store.pending(profile.profile).single { it.type == "media.upload" }
         assertEquals(copied.getString("syncId"), JSONObject(pendingUpload.payload).getString("noteSyncId"))
         assertEquals(uploadFile.name, JSONObject(pendingUpload.payload).getString("file"))
+        assertFalse("the original note's stored link must not be replayed for the copy", JSONObject(pendingUpload.payload).has("link"))
         assertTrue(uploadFile.exists())
         assertEquals(0, repository.store.pending(profile.profile).count { it.syncId == syncId && it.type == "note.upsert" })
     }
@@ -1378,6 +1380,9 @@ class KeeparrRepositoryTest {
         assertEquals(sent.payload, entries[0].payload)
         assertEquals("the edit waits for it", sent.operationId, entries[1].dependsOnOperationId)
         assertNotEquals(sent.payload, entries[1].payload)
+        // Equal versions read as "schedule unchanged" once the create is acknowledged, and the server would restore the old time.
+        assertEquals(1L, JSONObject(entries[0].payload).getLong("scheduleVersion"))
+        assertEquals("the edit is a schedule change on top of the create", 2L, JSONObject(entries[1].payload).getLong("scheduleVersion"))
     }
 
     @Test fun aConnectionFailureWhileLinkingAnImageIsRetriedNotParkedAsAConflict() = runBlocking {

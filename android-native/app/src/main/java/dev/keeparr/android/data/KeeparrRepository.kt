@@ -240,7 +240,11 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
             val inFlight = sentOrInFlight(profile, "reminder.upsert", id)
             val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == note.syncId }
             val previous = conflicted ?: queued
+            // Behind a sent operation, the edit builds on the version that operation carries: a reminder the server has not
+            // acknowledged yet has no server version to start from, and counting from 0 would give the edit the same
+            // version as the create, which the server then reads as "schedule unchanged" and restores the old time.
             val baseScheduleVersion = previous?.baseScheduleVersion
+                ?: inFlight?.let { JSONObject(it.payload).optLong("scheduleVersion") }?.takeIf { it > 0 }
                 ?: existing?.takeIf { it.optLong("id") > 0 }?.optLong("scheduleVersion")
                 ?: 0L
             val hasPendingDefinitionChange = previous != null && JSONObject(previous.payload).optLong("scheduleVersion") > baseScheduleVersion
@@ -906,7 +910,8 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
             it.type == "media.upload" && runCatching { JSONObject(it.payload).text("noteSyncId") == sourceSyncId }.getOrDefault(false)
         }
         for (entry in uploads) {
-            val payload = JSONObject(entry.payload).put("noteSyncId", targetSyncId)
+            // A stored image link is the upsert of the original note; the copy needs its own, built when the upload runs.
+            val payload = JSONObject(entry.payload).put("noteSyncId", targetSyncId).also { it.remove("link") }
             val file = payload.text("file")
             store.acknowledge(entry.operationId)
             store.enqueue(entry.copy(operationId = UUID.randomUUID().toString(), syncId = "$targetSyncId:$file", payload = payload.toString(),

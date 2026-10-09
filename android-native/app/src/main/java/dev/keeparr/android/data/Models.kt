@@ -170,6 +170,9 @@ object NoteFormat {
         }
         fun walkList(list: Element, depth: Int) {
             for (item in list.children()) {
+                // Chrome's indent puts the nested list beside the <li> (<ul><li>a</li><ul><li>b</li></ul></ul>) instead of
+                // inside it; read it as the children of the item before it, or those lines would disappear here.
+                if (item.tagName() == "ul" || item.tagName() == "ol") { walkList(item, depth + 1); continue }
                 if (item.tagName() != "li") continue
                 val own = StringBuilder()
                 val nested = mutableListOf<Element>()

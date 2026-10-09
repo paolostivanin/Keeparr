@@ -16,6 +16,18 @@ class BulletsTest {
         assertEquals(listOf(0, 1, 2, 3, 0), Bullets.levels(spanned as android.text.Spannable))
         assertEquals(html, NoteFormat.serialize(spanned))
     }
+    @Test fun listsNestedBesideTheItemAsChromeIndentWritesThemKeepEveryLine() {
+        // Chrome's execCommand('indent') output: the nested list is a child of the list, not of the <li>.
+        val chrome = "<ul><li>a</li><ul><li>b</li><ul><li>c</li></ul></ul><li>d</li></ul>"
+        assertTrue(NoteFormat.editable(chrome))
+        val spanned = NoteFormat.spanned(chrome)
+        assertEquals("a\nb\nc\nd", spanned.toString())
+        assertEquals(listOf(0, 1, 2, 0), Bullets.levels(spanned as android.text.Spannable))
+        // Saving from Android writes the standard shape, which the same reader gives back unchanged.
+        val saved = NoteFormat.serialize(spanned)
+        assertEquals("<ul><li>a<ul><li>b<ul><li>c</li></ul></li></ul></li><li>d</li></ul>", saved)
+        assertEquals(listOf(0, 1, 2, 0), Bullets.levels(NoteFormat.spanned(saved) as android.text.Spannable))
+    }
     @Test fun fifthLevelIsClampedAndParagraphsSurround() {
         val spanned = NoteFormat.spanned("<p>x</p><ul><li>1<ul><li>2<ul><li>3<ul><li>4<ul><li>5</li></ul></li></ul></li></ul></li></ul></li></ul><p>y</p>")
         assertEquals(listOf(null, 0, 1, 2, 3, 3, null), Bullets.levels(spanned as android.text.Spannable))
