@@ -52,7 +52,7 @@ Open `http://localhost:6767` and create the first admin account.
 
 Keeparr stores its database, uploads, attachments and generated server data in `./data`. Back that folder up, or use the built-in backup tools.
 
-The compose file pulls the multi-arch (amd64, arm64) image `ghcr.io/paolostivanin/keeparr:latest`. Release tags are also published as `2.0.2`, `2.0` and `2`; pin one of those in `docker-compose.yml` if you do not want to follow `latest`. To build from the local source instead, add the dev override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
+The compose file pulls the multi-arch (amd64, arm64) image `ghcr.io/paolostivanin/keeparr:latest`. Release tags are also published as `2.1.0`, `2.1` and `2`; pin one of those in `docker-compose.yml` if you do not want to follow `latest`. To build from the local source instead, add the dev override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
 
 ### Updating
 
