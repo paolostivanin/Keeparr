@@ -190,6 +190,9 @@ class NativeContractTest {
             .put(JSONObject().put("id", 2).put("done", false).put("data", "Eggs"))))
         assertEquals("☑ Milk\n☐ Eggs", widgetNoteBodyText(checklist, single = false))
     }
+    @Test fun widgetBodyTextShowsBulletsEvenWhenTheListTagsAreUpperCase() {
+        assertEquals("\u2022 one\n  \u25E6 two", widgetNoteBodyText(Note(JSONObject().put("noteBody", "<UL><LI>one<UL><LI>two</LI></UL></LI></UL>")), single = false))
+    }
     @Test fun showCheckboxesSplitsAndroidAndWebBodiesIntoUncheckedItems() {
         val android = JSONObject().put("noteBody", "<p dir=\"ltr\">Milk &amp; eggs</p>\n<p dir=\"ltr\">Bread</p>\n")
         val androidItems = NoteFormat.showCheckboxes(android, 100)

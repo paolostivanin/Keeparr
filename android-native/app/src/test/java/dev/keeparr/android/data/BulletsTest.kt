@@ -78,6 +78,12 @@ class BulletsTest {
         assertEquals("plain text keeps its exact display text", NoteFormat.displayText("<p>a</p><p><br></p><p>b</p>"),
             NoteFormat.previewText("<p>a</p><p><br></p><p>b</p>"))
     }
+    @Test fun previewTextNumbersOrderedListsAndKeepsBulletsForUnorderedOnes() {
+        assertEquals("1. a\n  1. b\n  2. c\n2. d", NoteFormat.previewText("<ol><li>a<ol><li>b</li><li>c</li></ol></li><li>d</li></ol>"))
+        assertEquals("\u2022 x\n1. y\n2. z", NoteFormat.previewText("<ul><li>x</li></ul><ol><li>y</li><li>z</li></ol>"))
+        // The editor's own conversion is unchanged: ordered items still carry a bullet level and the body stays read-only.
+        assertEquals(listOf(0, 0), Bullets.levels(NoteFormat.spanned("<ol><li>y</li><li>z</li></ol>") as android.text.Spannable))
+    }
     @Test fun orderedListsAreNotEditableButBulletsAre() {
         assertTrue(NoteFormat.editable("<ul><li>x</li></ul>"))
         assertTrue(!NoteFormat.editable("<ol><li>x</li></ol>"))

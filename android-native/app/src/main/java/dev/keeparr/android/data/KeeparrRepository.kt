@@ -166,8 +166,13 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
     // it, or a replay would be rejected for reusing the ID with a different payload.
     private suspend fun unsent(profile: String, type: String, syncId: String) =
         store.queued(profile, type, syncId)?.takeIf { !it.attempted }
+    // Looks through every pending row: `store.queued` returns only the newest one, which is an unsent edit queued behind the
+    // sent operation, and the sent operation would be missed.
     private suspend fun sentOrInFlight(profile: String, type: String, syncId: String) =
-        store.inFlight(profile, type, syncId) ?: store.queued(profile, type, syncId)?.takeIf { it.attempted }
+        store.pending(profile).lastOrNull { entry ->
+            entry.type == type && entry.syncId == syncId &&
+                (entry.state == OutboxState.IN_FLIGHT || (entry.state == OutboxState.QUEUED && entry.attempted))
+        }
 
     // The editor's copy can trail an acknowledgement this repository already applied.
     private fun knownRevision(profile: String, note: Note) = maxOf(note.revision, acceptedRevisions["$profile\u0000${note.syncId}"] ?: 0L)
@@ -748,8 +753,12 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                 "note.upsert" -> when (resolution) {
                     ConflictResolution.REPLACE_WITH_DRAFT -> {
                         require(latest != null) { "The server version is unavailable; save this draft as a copy instead." }
-                        val merged = rebaseNoteDraft(Note(latest), Note(JSONObject(entry.payload)))
-                        store.acknowledge(entry.operationId)
+                        // The stored note is the newest local draft; the entry's own payload may be the version that was sent
+                        // with later edits queued (and conflicted) behind it. Rebase the newest draft and retire them all.
+                        val newestDraft = store.record(entry.profile, "note", entry.syncId)?.payload ?: entry.payload
+                        val merged = rebaseNoteDraft(Note(latest), Note(JSONObject(newestDraft)))
+                        store.pending(entry.profile).filter { it.type == "note.upsert" && it.syncId == entry.syncId }
+                            .forEach { store.acknowledge(it.operationId) }
                         store.put(Record(entry.profile, "note", entry.syncId, merged.toString()))
                         store.enqueue(entry.copy(operationId = UUID.randomUUID().toString(), payload = merged.toString(),
                             baseRevision = latest.getLong("revision"), state = OutboxState.QUEUED, dependsOnOperationId = null, conflict = null,
@@ -759,8 +768,13 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                     ConflictResolution.SAVE_AS_COPY -> {
                         // The stored note is the newest local draft; the entry's own payload is only the version that was
                         // sent, and edits typed after it are queued behind it. All of them are retired with the copy.
-                        val latestDraft = store.record(entry.profile, "note", entry.syncId)?.payload ?: entry.payload
+                        // After a revocation the note itself is gone and the draft kept for recovery is the newest one.
+                        val latestDraft = store.record(entry.profile, "note", entry.syncId)?.payload
+                            ?: store.record(entry.profile, "recovery", entry.syncId)?.payload ?: entry.payload
                         recoverAsCopy(entry.profile, entry.syncId, JSONObject(latestDraft))
+                        // The original goes back to the server's version, like "use the other version": it must not keep a
+                        // draft that is no longer queued and would otherwise look saved.
+                        if (latest != null) store.put(Record(entry.profile, "note", entry.syncId, latest.toString()))
                     }
                     ConflictResolution.USE_SERVER, ConflictResolution.DISCARD -> {
                         store.acknowledge(entry.operationId)

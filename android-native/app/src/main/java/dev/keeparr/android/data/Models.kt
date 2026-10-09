@@ -153,14 +153,19 @@ object NoteFormat {
     }
 
     // The one conversion behind the editor and every read-only view, so they cannot disagree.
-    fun spanned(html: String): Spanned {
-        if (!Regex("<\\s*(ul|li)[\\s>/]", RegexOption.IGNORE_CASE).containsMatchIn(html)) return plainSpanned(html)
+    fun spanned(html: String): Spanned = build(html, null)
+
+    // [ordinals], when given, receives one entry per line: the 1-based number of an ordered-list item, else null.
+    private fun build(html: String, ordinals: MutableList<Int?>?): Spanned {
+        if (!Regex("<\\s*(ul|li)[\\s>/]", RegexOption.IGNORE_CASE).containsMatchIn(html)) return plainSpanned(html).also { text ->
+            if (ordinals != null) repeat(Bullets.lines(text).size) { ordinals += null }
+        }
         val body = Jsoup.parseBodyFragment(html).body()
         val result = SpannableStringBuilder()
         val levels = mutableListOf<Int?>()
-        fun appendLine(content: CharSequence, level: Int?) {
+        fun appendLine(content: CharSequence, level: Int?, ordinal: Int? = null) {
             if (levels.isNotEmpty()) result.append('\n')
-            result.append(content); levels += level
+            result.append(content); levels += level; ordinals?.add(ordinal)
         }
         val pending = StringBuilder()
         fun flushPending() {
@@ -169,6 +174,7 @@ object NoteFormat {
             Bullets.lines(parsed).forEach { appendLine(parsed.subSequence(it[0], it[1]), null) }
         }
         fun walkList(list: Element, depth: Int) {
+            var number = 0
             for (item in list.children()) {
                 // Chrome's indent puts the nested list beside the <li> (<ul><li>a</li><ul><li>b</li></ul></ul>) instead of
                 // inside it; read it as the children of the item before it, or those lines would disappear here.
@@ -182,7 +188,8 @@ object NoteFormat {
                 val content = plainSpanned(own.toString())
                 val flat = SpannableStringBuilder(content)
                 for (i in flat.indices) if (flat[i] == '\n') flat.replace(i, i + 1, " ")
-                appendLine(flat, minOf(depth, MAX_BULLET_LEVELS - 1))
+                number++
+                appendLine(flat, minOf(depth, MAX_BULLET_LEVELS - 1), if (list.tagName() == "ol") number else null)
                 nested.forEach { walkList(it, depth + 1) }
             }
         }
@@ -214,13 +221,17 @@ object NoteFormat {
      * Each bullet line gets its glyph and two spaces of indent per level; text without bullets is exactly [displayText].
      */
     fun previewText(html: String): String {
-        val spanned = spanned(html)
+        val ordinals = mutableListOf<Int?>()
+        val spanned = build(html, ordinals)
         val text = spanned.toString()
         val levels = Bullets.levels(spanned as? Spannable ?: return text)
         if (levels.none { it != null }) return text
         return Bullets.lines(text).mapIndexed { index, line ->
             val content = text.substring(line[0], line[1])
-            levels[index]?.let { level -> "  ".repeat(level) + BulletLevelSpan.GLYPHS[level.coerceIn(0, BulletLevelSpan.GLYPHS.lastIndex)] + " " + content } ?: content
+            // Items of an ordered list are numbered; the editor only draws bullets, and only for lists it can edit.
+            levels[index]?.let { level ->
+                "  ".repeat(level) + (ordinals.getOrNull(index)?.let { "$it." } ?: BulletLevelSpan.GLYPHS[level.coerceIn(0, BulletLevelSpan.GLYPHS.lastIndex)]) + " " + content
+            } ?: content
         }.joinToString("\n")
     }
 

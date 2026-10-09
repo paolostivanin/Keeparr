@@ -1406,6 +1406,82 @@ class KeeparrRepositoryTest {
         assertEquals(upload.operationId, repository.store.nextSendable(profile.profile)?.operationId)
     }
 
+    @Test fun deletingAReminderStillDeletesItsSentCreateWhenAnUnsentEditWasQueuedBehindIt() = runBlocking {
+        val note = Note(Note.create(profile.userId).raw.put("id", 55).put("revision", 4))
+        repository.store.put(Record(profile.profile, "note", note.syncId, note.raw.toString()))
+        val api = FakeNativeApi().apply { callHandler = { _, _, _ -> throw ApiException(-1, "Accepted response was lost") } }
+        repository = KeeparrRepository(app, app.database, profile, api)
+        app.repository = repository
+        profile.token = "test-token"
+        repository.setReminder(note, "2030-01-01T09:00:00Z", "UTC", null)
+        val sent = repository.store.pending(profile.profile).single()
+        assertNotNull(runCatching { repository.sync() }.exceptionOrNull())
+        repository.setReminder(note, "2030-01-02T09:00:00Z", "UTC", null)
+        assertEquals("an unsent edit now sits behind the sent create", 2, repository.store.pending(profile.profile).size)
+
+        repository.deleteReminder(sent.syncId)
+
+        val pending = repository.store.pending(profile.profile)
+        assertEquals("the sent create is kept for replay", sent.operationId, pending.single { it.type == "reminder.upsert" }.operationId)
+        val delete = pending.single { it.type == "reminder.delete" }
+        assertEquals("the delete waits for the create instead of being dropped", sent.operationId, delete.dependsOnOperationId)
+    }
+
+    @Test fun replacingWithTheDraftUsesTheNewestLocalEditAndRetiresTheWholeQueuedChain() = runBlocking {
+        val syncId = "replace-chain"
+        fun note(title: String, revision: Long) = JSONObject().put("id", 44).put("syncId", syncId).put("revision", revision)
+            .put("ownerUserId", profile.userId).put("noteTitle", title).put("noteBody", "")
+            .put("checkBoxes", JSONArray()).put("images", JSONArray()).put("labels", JSONArray())
+        val rejection = JSONObject().put("status", 409).put("latest", note("Server title", 8)).toString()
+        val sent = Outbox("chain-sent", profile.profile, "note.upsert", syncId, note("Sent title", 5).toString(), baseRevision = 5,
+            conflict = rejection, state = OutboxState.CONFLICT, attempted = true)
+        val later = Outbox("chain-later", profile.profile, "note.upsert", syncId, note("Typed after the send", 5).toString(), baseRevision = 5,
+            dependsOnOperationId = sent.operationId, conflict = rejection, state = OutboxState.CONFLICT)
+        repository.store.put(Record(profile.profile, "note", syncId, note("Typed after the send", 5).toString()))
+        repository.store.enqueue(sent)
+        repository.store.enqueue(later)
+
+        repository.resolve(sent, ConflictResolution.REPLACE_WITH_DRAFT)
+
+        val replacement = repository.store.pending(profile.profile).single()
+        assertEquals("the older and the later conflicted operations are both retired", 8L, replacement.baseRevision)
+        assertEquals("Typed after the send", JSONObject(replacement.payload).getString("noteTitle"))
+        assertEquals("Typed after the send", JSONObject(repository.store.record(profile.profile, "note", syncId)!!.payload).getString("noteTitle"))
+    }
+
+    @Test fun savingARevokedNoteAsACopyUsesTheRecoveryDraftNotTheOlderSentPayload() = runBlocking {
+        val syncId = "revoked-copy"
+        fun note(title: String) = JSONObject().put("id", 45).put("syncId", syncId).put("revision", 3).put("ownerUserId", profile.userId)
+            .put("noteTitle", title).put("noteBody", "").put("checkBoxes", JSONArray()).put("images", JSONArray()).put("labels", JSONArray())
+        val entry = Outbox("revoked-op", profile.profile, "note.upsert", syncId, note("Sent version").toString(), baseRevision = 3,
+            conflict = JSONObject().put("error", "Note access was removed.").toString(), state = OutboxState.CONFLICT)
+        repository.store.put(Record(profile.profile, "recovery", syncId, note("Newest draft").toString()))
+        repository.store.enqueue(entry)
+
+        repository.resolve(entry, ConflictResolution.SAVE_AS_COPY)
+
+        val copies = repository.store.list(profile.profile, "note").map { Note(JSONObject(it.payload)) }
+        assertEquals(listOf("Newest draft"), copies.map { it.title })
+    }
+
+    @Test fun savingAConflictedNoteAsACopyReturnsTheOriginalToTheServerVersion() = runBlocking {
+        val syncId = "conflict-copy"
+        fun note(title: String, revision: Long) = JSONObject().put("id", 46).put("syncId", syncId).put("revision", revision)
+            .put("ownerUserId", profile.userId).put("noteTitle", title).put("noteBody", "")
+            .put("checkBoxes", JSONArray()).put("images", JSONArray()).put("labels", JSONArray())
+        val entry = Outbox("conflict-copy-op", profile.profile, "note.upsert", syncId, note("My draft", 3).toString(), baseRevision = 3,
+            conflict = JSONObject().put("status", 409).put("latest", note("Server version", 6)).toString(), state = OutboxState.CONFLICT)
+        repository.store.put(Record(profile.profile, "note", syncId, note("My draft", 3).toString()))
+        repository.store.enqueue(entry)
+
+        repository.resolve(entry, ConflictResolution.SAVE_AS_COPY)
+
+        assertEquals("the draft is not left behind as an unsent local version",
+            "Server version", JSONObject(repository.store.record(profile.profile, "note", syncId)!!.payload).getString("noteTitle"))
+        val copy = repository.store.list(profile.profile, "note").map { Note(JSONObject(it.payload)) }.single { it.syncId != syncId }
+        assertEquals("My draft", copy.title)
+    }
+
     @Test fun saveAsCopyKeepsTheNewestDraftWhenOlderOperationsConflicted() = runBlocking {
         val first = Note(Note.create(profile.userId).raw.put("id", 55).put("revision", 4).put("noteTitle", "earlier draft"))
         repository.save(first, synchronize = false)

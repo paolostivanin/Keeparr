@@ -208,7 +208,7 @@ internal fun widgetNoteBodyText(note: Note, single: Boolean): String = when {
     }
     // Bullets are spans, not characters, so only a body with a list needs the bullet-aware conversion; every other body
     // keeps the widget's own whitespace handling.
-    "<li" in note.body -> NoteFormat.previewText(boundedWidgetText(note.body, 8192)).trim()
+    note.body.contains("<li", ignoreCase = true) -> NoteFormat.previewText(boundedWidgetText(note.body, 8192)).trim()
     else -> widgetPlainText(note.body, 8192)
 }
 
