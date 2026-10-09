@@ -40,5 +40,9 @@ ENV PGID=1000
 EXPOSE 6767
 VOLUME ["/app/data"]
 
+# Healthy once the API answers; /api/setup/status needs no sign-in and touches the database.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||6767)+'/api/setup/status').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "server/server.js"]
