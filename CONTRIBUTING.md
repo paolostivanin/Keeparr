@@ -31,7 +31,7 @@ Run the checks that CI runs:
 ```bash
 npm run build
 npm test -- --watch=false --browsers=ChromeHeadless
-npm run test:native && npm run test:sync && npm run test:reminders
+npm run test:native && npm run test:sync && npm run test:reminders && npm run test:utils
 npm run test:server && npm run test:scale && npm run test:mcp
 
 cd android-native && ./gradlew testDebugUnitTest assembleDebug lintDebug

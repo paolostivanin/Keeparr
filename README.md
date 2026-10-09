@@ -106,7 +106,7 @@ npm start        # API on :3000 and the web UI on :6767, which proxies /api and 
 | `npm run api` / `npm run client` | Run the server or the Angular dev server alone. |
 | `npm run build` | Production web build into `dist/`. |
 | `npm test -- --watch=false --browsers=ChromeHeadless` | Web unit tests (Karma). |
-| `npm run test:native`, `test:sync`, `test:reminders`, `test:server`, `test:scale`, `test:mcp` | Server, protocol and MCP tests. |
+| `npm run test:native`, `test:sync`, `test:reminders`, `test:utils`, `test:server`, `test:scale`, `test:mcp` | Server, protocol, web-utility and MCP tests. |
 | `npm run benchmark:web`, `benchmark:server` | Performance harness, see [`docs/performance.md`](docs/performance.md). |
 | `npm run mcp` | Run the local stdio MCP server. |
 

@@ -3953,6 +3953,9 @@ export class InputComponent implements OnInit {
     const nextBody = note.noteBody !== undefined ? this.decorateLinksForEditor(note.noteBody || '') : undefined;
     if (this.noteBody?.nativeElement && nextBody !== undefined && this.noteBody.nativeElement.innerHTML !== nextBody) {
       this.updateHtmlWithCursorPreservation(this.noteBody.nativeElement, nextBody);
+      // The replaced markup lacks the delete buttons and link previews the editor attaches after loading a note.
+      this.hydrateEditorLinkPreviews();
+      this.hydrateInlineImageButtons();
     }
     if (this.noteMain?.nativeElement) {
       this.noteMain.nativeElement.style.backgroundColor = note.bgColor || "";

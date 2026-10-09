@@ -13,7 +13,9 @@ function makeEditor() {
     normalizeCheckBoxes: (value: unknown) => value, resetCboxHistory: () => undefined,
     decorateLinksForEditor: (value: string) => value, hasMeaningfulBody: () => true,
     updateHtmlWithCursorPreservation: (element: { innerHTML: string }, html: string) => { element.innerHTML = html; },
-    noteSaveSnapshot: () => JSON.stringify({ noteTitle: 'title' })
+    noteSaveSnapshot: () => JSON.stringify({ noteTitle: 'title' }),
+    hydrateEditorLinkPreviews: jasmine.createSpy('hydrateEditorLinkPreviews'),
+    hydrateInlineImageButtons: jasmine.createSpy('hydrateInlineImageButtons')
   });
   return { editor, title, body };
 }
@@ -54,6 +56,20 @@ describe('InputComponent incoming updates', () => {
     expect(body.nativeElement.innerHTML).toBe('remote body');
     expect(editor.noteToEdit.revision).toBe(8);
     expect(editor.externalUpdatePending).toBeFalse();
+  });
+
+  it('re-attaches image delete buttons and link previews only when it replaced the body markup', () => {
+    const { editor, body } = makeEditor();
+    spyOn(editor, 'hasUnsavedEdits').and.returnValue(false);
+
+    editor.applyExternalUpdate(remote({ noteBody: 'my unsaved full draft' }));
+    expect(editor.hydrateEditorLinkPreviews).not.toHaveBeenCalled();
+    expect(editor.hydrateInlineImageButtons).not.toHaveBeenCalled();
+
+    editor.applyExternalUpdate(remote());
+    expect(body.nativeElement.innerHTML).toBe('remote body');
+    expect(editor.hydrateEditorLinkPreviews).toHaveBeenCalledTimes(1);
+    expect(editor.hydrateInlineImageButtons).toHaveBeenCalledTimes(1);
   });
 
   it('saves against the editor\'s own base only while a newer version is being held back', () => {
