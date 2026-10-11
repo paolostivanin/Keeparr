@@ -132,6 +132,20 @@ class WidgetBehaviorTest {
     private val notesByTitle get() = runBlocking { app.database.store().list(profile.profile, "note") }
         .associate { JSONObject(it.payload).getString("noteTitle") to it.syncId }
 
+    @Test fun aNoteWithCollaboratorsShowsTheSharedIconLikeTheOverview() {
+        val shared = note(2.0) { raw.put("collaborators", JSONArray().put(JSONObject().put("id", 5L))) }
+        val unshared = note(1.0) { raw.put("collaborators", JSONArray()) }
+        store(shared, unshared)
+        configure(7, "home")
+        val factory = factory(7)
+
+        fun sharedIconVisibility(position: Int) = factory.getViewAt(position)!!.apply(app, FrameLayout(app))
+            .findViewById<android.view.View>(dev.keeparr.android.R.id.row_shared).visibility
+        assertEquals(shared.syncId, factory.getItemId(0).let { id -> listOf(shared, unshared).first { widgetRowId(it.syncId) == id }.syncId })
+        assertEquals(android.view.View.VISIBLE, sharedIconVisibility(0))
+        assertEquals(android.view.View.GONE, sharedIconVisibility(1))
+    }
+
     @Test fun eachRowParcelStaysSmallEvenForHugeNotes() {
         val huge = note(1.0) { raw.put("noteBody", "<p>" + "x".repeat(1_000_000) + "</p>").put("noteTitle", "t".repeat(100_000)) }
         val checklist = note(2.0) { raw.put("isCbox", true).put("checkBoxes", JSONArray((1..300).map {

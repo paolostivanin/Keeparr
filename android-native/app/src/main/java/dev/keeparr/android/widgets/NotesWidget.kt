@@ -183,6 +183,8 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
                 setViewVisibility(R.id.row_reminder, View.VISIBLE)
             } else setViewVisibility(R.id.row_reminder, View.GONE)
             setViewVisibility(R.id.row_checks, View.GONE)
+            setViewVisibility(R.id.row_shared, if (note.shared) View.VISIBLE else View.GONE)
+            setInt(R.id.row_shared, "setColorFilter", foreground)
             setInt(R.id.widget_card_background, "setColorFilter", color)
             setOnClickFillInIntent(R.id.widget_row, widgetFillIn(row))
         }

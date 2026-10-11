@@ -45,6 +45,7 @@ data class Note(val raw: JSONObject) {
     val body get() = raw.text("noteBody")
     val pinned get() = raw.optBoolean("pinned")
     val locked get() = raw.optBoolean("locked")
+    val shared get() = (raw.optJSONArray("collaborators")?.length() ?: 0) > 0
     val checklist get() = raw.optBoolean("isCbox")
     val items get() = raw.optJSONArray("checkBoxes")?.objects().orEmpty()
     val order get() = raw.optDouble("sortOrder")
@@ -125,7 +126,7 @@ object NoteOrder {
             filter.startsWith("label:") -> filter.removePrefix("label:") in note.labels
             filter.startsWith("binder:") -> filter.removePrefix("binder:") == note.binder
             filter.startsWith("note:") -> filter.removePrefix("note:") == note.syncId
-            filter == "shared" -> (note.raw.optJSONArray("collaborators")?.length() ?: 0) > 0
+            filter == "shared" -> note.shared
             else -> note.binder.isEmpty()
         }
     }.sortedWith(comparator)
@@ -379,6 +380,15 @@ object ChecklistAdapter {
         if (from !in 0 until result.length() || to !in 0 until result.length()) return result
         val entries = (0 until result.length()).map { result.opt(it) }.toMutableList()
         java.util.Collections.swap(entries, from, to)
+        return JSONArray().also { updated -> entries.forEach(updated::put) }
+    }
+
+    /** Adds an empty row right after [index] at the same indent, or at the end when [index] is not a row. */
+    fun insertAfter(items: JSONArray, index: Int, id: Long): JSONArray {
+        val entries = (0 until items.length()).map { items.opt(it) }.toMutableList()
+        val indent = items.optJSONObject(index)?.optInt("indentLevel") ?: 0
+        val row = JSONObject().put("id", id).put("done", false).put("data", "").put("indentLevel", indent)
+        entries.add(if (index in entries.indices) index + 1 else entries.size, row)
         return JSONArray().also { updated -> entries.forEach(updated::put) }
     }
 

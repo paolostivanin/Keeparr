@@ -318,6 +318,20 @@ class NativeContractTest {
         assertEquals(nested.getLong("id"), reordered.getJSONObject(0).getLong("id"))
         assertEquals("First", reordered.getJSONObject(1).getString("data"))
     }
+    @Test fun enterInAChecklistRowInsertsAnEmptyRowAfterItAtTheSameIndent() {
+        val original = JSONArray().put(JSONObject().put("id", 1).put("data", "First").put("done", true).put("indentLevel", 2))
+            .put(JSONObject().put("id", 2).put("data", "Second").put("done", false).put("indentLevel", 0))
+        val inserted = ChecklistAdapter.insertAfter(original, 0, 3)
+        assertEquals(listOf(1L, 3L, 2L), (0 until inserted.length()).map { inserted.getJSONObject(it).getLong("id") })
+        assertEquals(2, inserted.getJSONObject(1).getInt("indentLevel"))
+        assertEquals("", inserted.getJSONObject(1).getString("data"))
+        assertFalse(inserted.getJSONObject(1).getBoolean("done"))
+        // The source rows are left untouched and an unknown row appends at the end.
+        assertEquals(2, original.length())
+        val appended = ChecklistAdapter.insertAfter(original, -1, 4)
+        assertEquals(4L, appended.getJSONObject(2).getLong("id"))
+        assertEquals(0, appended.getJSONObject(2).getInt("indentLevel"))
+    }
     @Test fun styledTextWidgetRoundTripRetainsSupportedLinkMarkup() {
         val richHtml = fixtures.getJSONObject("content").getString("richChecklistItem")
         val editor = EditText(RuntimeEnvironment.getApplication())
@@ -349,8 +363,8 @@ class NativeContractTest {
                 assertEquals(R.mipmap.ic_launcher, parser.getAttributeResourceValue(androidNamespace, "previewImage", 0))
             }
         }
-        assertEquals("2.1.1", BuildConfig.VERSION_NAME)
-        assertEquals(6, BuildConfig.VERSION_CODE)
+        assertEquals("2.1.2", BuildConfig.VERSION_NAME)
+        assertEquals(7, BuildConfig.VERSION_CODE)
     }
     @Test fun connectionSnapshotsAreImmutableAndRedactCredentialsFromDiagnostics() {
         val snapshot = ConnectionSnapshot("https://server.example.test", "cert-alias", 3,

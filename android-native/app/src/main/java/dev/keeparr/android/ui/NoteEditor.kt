@@ -34,6 +34,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -112,13 +117,10 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     val itemFocus = remember { mutableMapOf<Long, FocusRequester>() }
     var pendingFocusItemId by remember { mutableStateOf<Long?>(null) }
     fun checklistItemId(item: JSONObject, index: Int) = item.optLong("id", index.toLong())
-    fun addChecklistItem() {
+    // Without a row to follow, the new one goes at the end.
+    fun addChecklistItem(after: Int = -1) {
         val id = System.currentTimeMillis()
-        change("checkBoxes") {
-            val all = it.optJSONArray("checkBoxes") ?: JSONArray()
-            all.put(JSONObject().put("id", id).put("done", false).put("data", "").put("indentLevel", 0))
-            it.put("checkBoxes", all)
-        }
+        change("checkBoxes") { it.put("checkBoxes", ChecklistAdapter.insertAfter(it.optJSONArray("checkBoxes") ?: JSONArray(), after, id)) }
         pendingFocusItemId = id
     }
     // Tapping blank editor space behaves like tapping the end of the content.
@@ -314,8 +316,17 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                                 value = NoteFormat.displayText(item.text("data")),
                                 onValueChange = { text -> change("checkBoxes") {
                                     it.getJSONArray("checkBoxes").getJSONObject(index).put("data", NoteFormat.editedChecklistItem(item.opt("data"), text))
-                                } }, modifier = Modifier.weight(1f).padding(start = (item.optInt("indentLevel") * 12).dp).focusRequester(requester),
-                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
+                                } }, modifier = Modifier.weight(1f).padding(start = (item.optInt("indentLevel") * 12).dp).focusRequester(requester)
+                                    // A hardware Enter would otherwise put a line break into the item.
+                                    .onPreviewKeyEvent { event ->
+                                        val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
+                                        if (enter && event.type == KeyEventType.KeyDown) addChecklistItem(index)
+                                        enter
+                                    },
+                                // Next shows Enter as an action on the multi-line field, so the keyboard adds a row instead of a line break.
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
+                                    imeAction = androidx.compose.ui.text.input.ImeAction.Next),
+                                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onNext = { addChecklistItem(index) }),
                                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = foreground), cursorBrush = SolidColor(foreground),
                                 decorationBox = { inner -> Box {
                                     if (item.text("data").isBlank()) Text("List item", color = foreground.copy(alpha = .55f))
@@ -348,7 +359,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                         }
                     }
                 }
-                TextButton(onClick = ::addChecklistItem) { Icon(Icons.Outlined.Add, null); Text("List item") }
+                TextButton(onClick = { addChecklistItem() }) { Icon(Icons.Outlined.Add, null); Text("List item") }
             } else if (NoteFormat.editable(note.body)) {
                 StyledEditor(note.body, reset = note.body, textColor = foreground, handle = bodyHandle, onChange = { html -> change("noteBody") { it.put("noteBody", html) } })
             } else {

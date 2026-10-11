@@ -102,7 +102,7 @@ internal class HomeProjector {
         } else emptyList(),
         imagePath = note.raw.optJSONArray("images")?.optJSONObject(0)?.text("dataUrl")?.takeIf { it.isNotBlank() },
         labels = note.labels.toList(),
-        shared = (note.raw.optJSONArray("collaborators")?.length() ?: 0) > 0,
+        shared = note.shared,
         pinned = note.pinned,
         reminderText = reminderText
     )

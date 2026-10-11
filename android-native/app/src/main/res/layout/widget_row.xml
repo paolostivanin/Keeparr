@@ -8,5 +8,7 @@
         <TextView android:id="@+id/row_body" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="13sp" android:textColor="#49463E" android:maxLines="6" android:ellipsize="end" />
         <TextView android:id="@+id/row_reminder" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:textStyle="bold" android:maxLines="1" android:ellipsize="end" android:visibility="gone" />
         <LinearLayout android:id="@+id/row_checks" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone" />
+        <ImageView android:id="@+id/row_shared" android:layout_width="18dp" android:layout_height="18dp" android:layout_marginTop="4dp"
+            android:src="@drawable/ic_shared_note" android:contentDescription="Shared note" android:visibility="gone" />
     </LinearLayout>
 </FrameLayout>
