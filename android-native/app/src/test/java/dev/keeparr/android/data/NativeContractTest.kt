@@ -290,6 +290,20 @@ class NativeContractTest {
         assertEquals("<b>first</b> and <i>second</i>", NoteFormat.editedChecklistItem("<b>first</b> and <i>second</i>", "flat"))
         assertFalse(NoteFormat.checklistItemEditable(fixtures.getJSONObject("content").getJSONObject("structuredChecklistItem")))
     }
+    @Test fun checklistItemWithoutTextStaysEditableSoANewOrClearedRowCanBeTypedInto() {
+        // "Show checkboxes" on a note with no body adds an empty row; it must not be locked as read-only.
+        val emptyBody = JSONObject().put("noteBody", "")
+        assertEquals(emptyList<JSONObject>(), NoteFormat.showCheckboxes(emptyBody, 1))
+        for (empty in listOf("", " ", "<b></b>", "<a href=\"https://example.test\"></a>")) assertTrue("'$empty'", NoteFormat.checklistItemEditable(empty))
+        assertEquals("a &amp; b", NoteFormat.editedChecklistItem("", "a & b"))
+        assertEquals("typed", NoteFormat.editedChecklistItem("<b></b>", "typed"))
+        // Clearing a row keeps it editable, so the text can be typed again.
+        val cleared = NoteFormat.editedChecklistItem("<b>Rich</b>", "") as String
+        assertTrue(NoteFormat.checklistItemEditable(cleared))
+        assertEquals("again", Html.fromHtml(NoteFormat.editedChecklistItem(cleared, "again") as String, 0).toString().trim())
+        assertFalse(NoteFormat.checklistItemEditable("<b>first</b> and <i>second</i>"))
+        assertFalse(NoteFormat.checklistItemEditable(null))
+    }
     @Test fun checklistToggleMoveAndIndentPreserveNestedAndUnknownItemData() {
         val original = JSONArray().put(JSONObject().put("id", 1).put("data", "First").put("done", false))
             .put(fixtures.getJSONObject("content").getJSONObject("nestedChecklistItem"))
@@ -335,8 +349,8 @@ class NativeContractTest {
                 assertEquals(R.mipmap.ic_launcher, parser.getAttributeResourceValue(androidNamespace, "previewImage", 0))
             }
         }
-        assertEquals("2.1.0", BuildConfig.VERSION_NAME)
-        assertEquals(5, BuildConfig.VERSION_CODE)
+        assertEquals("2.1.1", BuildConfig.VERSION_NAME)
+        assertEquals(6, BuildConfig.VERSION_CODE)
     }
     @Test fun connectionSnapshotsAreImmutableAndRedactCredentialsFromDiagnostics() {
         val snapshot = ConnectionSnapshot("https://server.example.test", "cert-alias", 3,

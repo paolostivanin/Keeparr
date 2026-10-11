@@ -293,11 +293,13 @@ object NoteFormat {
         }
     }
 
+    private fun textNodesWithContent(body: Element) = body.getAllElements().flatMap { it.textNodes() }.filter { it.text().isNotBlank() }
+
+    // An item with no text yet (a new row, or one the user cleared) is editable: there is nothing to flatten. Several
+    // text runs are not, since a single visible string cannot be mapped back onto them.
     fun checklistItemEditable(data: Any?): Boolean {
         if (data !is String || !editable(data)) return false
-        val body = Jsoup.parseBodyFragment(data).body()
-        val textNodes = body.getAllElements().flatMap { it.textNodes() }.filter { it.text().isNotBlank() }
-        return textNodes.size == 1
+        return textNodesWithContent(Jsoup.parseBodyFragment(data).body()).size <= 1
     }
 
     fun editedChecklistItem(data: Any?, visibleText: String): Any? {
@@ -306,7 +308,9 @@ object NoteFormat {
             if (!checklistItemEditable(data)) return data
             val document = Jsoup.parseBodyFragment(data)
             document.outputSettings().prettyPrint(false)
-            document.body().getAllElements().flatMap { it.textNodes() }.first { it.text().isNotBlank() }.text(visibleText)
+            // Markup around no text carries nothing worth keeping, so typing into it starts plain text.
+            val node = textNodesWithContent(document.body()).firstOrNull() ?: return Html.escapeHtml(visibleText)
+            node.text(visibleText)
             return document.body().html()
         }
         return Html.escapeHtml(visibleText)
