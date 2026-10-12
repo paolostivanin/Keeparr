@@ -50,13 +50,13 @@ const CapacitorApp = registerPlugin<CapacitorAppPlugin>('App');
       }
 
       .notification-permission-title {
-        font: 600 15px 'Google Sans', Roboto, Arial, sans-serif;
+        font: 600 15px var(--font-display);
         margin-bottom: 6px;
       }
 
       .notification-permission-card p {
         color: #5f6368;
-        font: 400 13px/1.4 Roboto, Arial, sans-serif;
+        font: 400 13px/1.4 var(--font-body);
         margin: 0 0 12px;
       }
 
@@ -68,7 +68,7 @@ const CapacitorApp = registerPlugin<CapacitorAppPlugin>('App');
         color: #7d6a28;
         cursor: pointer;
         display: flex;
-        font: 500 24px/1 Roboto, Arial, sans-serif;
+        font: 500 24px/1 var(--font-body);
         height: 32px;
         justify-content: center;
         padding: 0;
@@ -89,7 +89,7 @@ const CapacitorApp = registerPlugin<CapacitorAppPlugin>('App');
         border-radius: 6px;
         color: #202124;
         cursor: pointer;
-        font: 600 13px 'Google Sans', Roboto, Arial, sans-serif;
+        font: 600 13px var(--font-display);
         padding: 8px 14px;
       }
 

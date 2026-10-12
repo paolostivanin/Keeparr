@@ -10,7 +10,7 @@
   }
   .about-label {
     color: #bdc1c6;
-    font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    font-family: var(--font-display);
     font-size: 13px;
   }
   .about-value {
@@ -22,7 +22,7 @@
     code {
       background: rgba(255, 255, 255, 0.08);
       border-radius: 4px;
-      font-family: 'Roboto Mono', monospace;
+      font-family: var(--font-mono);
       font-size: 12px;
       padding: 2px 8px;
     }

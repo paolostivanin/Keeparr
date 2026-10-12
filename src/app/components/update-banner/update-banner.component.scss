@@ -2,7 +2,7 @@
   background: linear-gradient(180deg, rgba(138, 180, 248, 0.18), rgba(138, 180, 248, 0.08));
   border-bottom: 1px solid rgba(138, 180, 248, 0.35);
   color: #e8eaed;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   padding: 10px 16px;
 }
 
@@ -32,7 +32,7 @@
   code {
     background: rgba(255, 255, 255, 0.08);
     border-radius: 4px;
-    font-family: 'Roboto Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     padding: 1px 6px;
   }
@@ -79,7 +79,7 @@
 .update-banner__notes {
   background: rgba(0, 0, 0, 0.2);
   border-radius: 6px;
-  font-family: 'Roboto Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   margin: 10px auto 0;

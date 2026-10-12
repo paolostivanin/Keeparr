@@ -28,7 +28,7 @@
 .placeholder {
   .input {
     padding: 21px 6px 11px 16px;
-    font-family: "Google Sans Light 2";
+    font-family: var(--font-display);
     height: 46px;
     width: 100%;
     background-color: #202124;
@@ -41,7 +41,7 @@
 
     &::placeholder {
       letter-spacing: 0.00625em;
-      font-family: "Google Sans";
+      font-family: var(--font-display);
       font-size: 1rem;
       font-weight: 500;
       line-height: 1.5rem;
@@ -185,7 +185,7 @@
         background: transparent;
         color: inherit;
         cursor: pointer;
-        font-family: "Google Sans";
+        font-family: var(--font-display);
         font-size: 12px;
         font-weight: 500;
         line-height: 16px;
@@ -206,7 +206,7 @@
       font-weight: 400;
 
       letter-spacing: 0.00625em;
-      font-family: "Google Sans";
+      font-family: var(--font-display);
       font-size: 1rem;
       font-weight: 500;
       line-height: 1.5rem;
@@ -233,7 +233,7 @@
     .note-body {
       color: inherit;
       letter-spacing: 0.01428571em;
-      font-family: Roboto, Arial, sans-serif;
+      font-family: var(--font-body);
       font-size: 0.875rem;
       font-weight: 400;
       line-height: 1.25rem;
@@ -362,7 +362,7 @@
       justify-content: center;
       color: #5f6368; // Consistent dark grey for mobile
       cursor: pointer;
-      font-family: "Google Sans", Roboto, Arial, sans-serif;
+      font-family: var(--font-display);
       font-size: 18px;
       font-weight: 500;
       padding: 0;
@@ -409,7 +409,7 @@
       font-size: 12px;
       flex: 1;
       text-align: center;
-      font-family: 'Roboto', Arial, sans-serif;
+      font-family: var(--font-body);
     }
   }
 
@@ -462,7 +462,7 @@
   }
 
   .attachment-name {
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -471,7 +471,7 @@
 
   .attachment-size {
     color: #9aa0a6;
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: 12px;
     white-space: nowrap;
   }
@@ -672,7 +672,7 @@
     border: 0;
     color: #3c4043;
     cursor: pointer;
-    font-family: "Google Sans", Roboto, Arial, sans-serif;
+    font-family: var(--font-display);
     font-size: 14px;
     padding: 10px 16px;
     text-align: left;
@@ -840,7 +840,7 @@
     border: 0;
     color: #3c4043;
     cursor: pointer;
-    font-family: "Google Sans", Roboto, Arial, sans-serif;
+    font-family: var(--font-display);
     font-size: 14px;
     padding: 10px 18px;
     text-align: left;
@@ -880,7 +880,7 @@
   color: inherit;
   cursor: pointer;
   display: flex;
-  font: 400 16px/1.35 Roboto, Arial, sans-serif;
+  font: 400 16px/1.35 var(--font-body);
   gap: 10px;
   min-height: 44px;
   padding: 8px 12px;
@@ -1137,7 +1137,7 @@
 
       .mobile-new-note-starters-label {
         color: inherit;
-        font-family: "Google Sans", Roboto, Arial, sans-serif;
+        font-family: var(--font-display);
         font-size: 15px;
         font-weight: 500;
         line-height: 22px;
@@ -1160,7 +1160,7 @@
         color: inherit;
         cursor: pointer;
         display: flex;
-        font-family: "Google Sans", Roboto, Arial, sans-serif;
+        font-family: var(--font-display);
         font-size: 15px;
         font-weight: 500;
         gap: 6px;
@@ -1287,7 +1287,7 @@
   margin-right: 15px;
   color: #dadce0;
   letter-spacing: 0.01785714em;
-  font-family: "Google Sans";
+  font-family: var(--font-display);
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.25rem;
@@ -1428,7 +1428,7 @@
   font-size: 12px;
   padding: 2px 16px;
   color: #5f6368;
-  font-family: 'Roboto', Arial, sans-serif;
+  font-family: var(--font-body);
 
   &.warning {
     color: #b3261e;

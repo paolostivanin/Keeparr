@@ -39,7 +39,7 @@
         div {
             border: 1px solid transparent;
             letter-spacing: 0;
-            font-family: "Google Sans", Roboto, Arial, sans-serif;
+            font-family: var(--font-display);
             font-size: 0.875rem;
             font-weight: 500;
             line-height: 1.25rem;
@@ -112,7 +112,7 @@
                 span {
                     color: #bdc1c6;
                     display: block;
-                    font-family: "Google Sans", Roboto, Arial, sans-serif;
+                    font-family: var(--font-display);
                     font-size: 9px;
                     font-weight: 500;
                     line-height: 11px;
@@ -145,7 +145,7 @@
         .title {
             font-size: 14px;
             padding: 0 12px;
-            font-family: "Roboto", arial, sans-serif;
+            font-family: var(--font-body);
         }
 
         .search {
@@ -175,7 +175,7 @@
                 box-shadow: none;
                 color: #e8eaed;
                 font-size: 13px;
-                font-family: "Roboto", arial, sans-serif;
+                font-family: var(--font-body);
                 height: 25px;
                 outline: none;
             }
@@ -221,7 +221,7 @@
                 vertical-align: top;
                 word-wrap: break-word;
                 font-size: 13px;
-                font-family: "Roboto", arial, sans-serif;
+                font-family: var(--font-body);
                 color: #e8eaed;
                 font-weight: 500;
             }
@@ -234,7 +234,7 @@
 
         .label-error {
             color: #f28b82;
-            font-family: "Roboto", arial, sans-serif;
+            font-family: var(--font-body);
             font-size: 12px;
             padding: 0 12px 6px;
         }

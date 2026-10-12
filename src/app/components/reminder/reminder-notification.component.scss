@@ -7,7 +7,7 @@
   bottom: 24px;
   box-shadow: 0 4px 20px rgb(0 0 0 / 50%);
   display: flex;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   gap: 12px;
   left: 50%;
   max-width: 480px;
@@ -62,7 +62,7 @@
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 13px;
   font-weight: 500;
   padding: 6px 12px;

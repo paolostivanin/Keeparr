@@ -67,7 +67,7 @@
   [_title] {
     color: #9aa0a6;
     letter-spacing: 0.07272727em;
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: 0.6875rem;
     font-weight: 500;
     line-height: 1rem;
@@ -133,7 +133,7 @@
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
   color: #fff;
   display: none;
-  font: 500 13px/1.2 Roboto, Arial, sans-serif;
+  font: 500 13px/1.2 var(--font-body);
   gap: 6px;
   left: 50%;
   padding: 8px 12px;
@@ -211,7 +211,7 @@
     top: -13px;
     z-index: 2;
     transform: translate(-50%, 0);
-    font-family: 'Google Sans Light 1';
+    font-family: var(--font-display);
     font-size: 11px;
     background-color: #fbbc04;
     color: black;
@@ -223,6 +223,10 @@
 
   &:hover {
     z-index: 99;
+
+    .note-main {
+      box-shadow: var(--elev-2);
+    }
 
     .icons-container,
     .check-icon {
@@ -266,9 +270,11 @@
 
   .note-main {
     position: relative;
-    background-color: transparent; box-shadow: 0 1px 2px rgba(0,0,0,0.2);
-    border: 1px solid #5f6368;
-    border-radius: 8px;
+    background-color: transparent;
+    box-shadow: var(--elev-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition: box-shadow var(--dur-base) var(--ease-standard);
     min-height: 60px;
     background-position-x: right;
 
@@ -369,7 +375,7 @@
     min-height: var(--preview-title-min-height);
     margin: var(--preview-title-margin);
     letter-spacing: 0.00625em;
-    font-family: "Google Sans";
+    font-family: var(--font-display);
     font-size: var(--preview-title-size);
     font-weight: 500;
     line-height: var(--preview-title-line-height);
@@ -429,7 +435,7 @@
     border: 1px solid rgb(154 160 166 / 45%);
     border-radius: 999px;
     color: #9aa0a6;
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: 12px;
     line-height: 1.2;
     font-weight: 600;
@@ -443,7 +449,7 @@
     margin: 10px 16px 18px;
     min-height: 32px;
     opacity: 0.72;
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: 0.95rem;
     font-weight: 600;
 
@@ -496,7 +502,7 @@
     min-height: var(--preview-body-min-height);
     margin: var(--preview-body-margin);
     letter-spacing: 0;
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: var(--preview-body-size);
     font-weight: 400;
     line-height: var(--preview-body-line-height);
@@ -556,7 +562,7 @@
 
   .overview-cbox-more {
     color: inherit;
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: var(--preview-more-size);
     font-weight: 700;
     line-height: 1.25rem;
@@ -588,7 +594,7 @@
     }
 
     .attachment-name {
-      font-family: Roboto, Arial, sans-serif;
+      font-family: var(--font-body);
       font-size: 12px;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -597,7 +603,7 @@
 
     .attachment-size {
       color: #9aa0a6;
-      font-family: Roboto, Arial, sans-serif;
+      font-family: var(--font-body);
       font-size: 11px;
       white-space: nowrap;
     }
@@ -697,7 +703,7 @@
     color: #d93025;
     display: inline-flex;
     align-items: center;
-    font-family: "Google Sans Light 1", Roboto, Arial, sans-serif;
+    font-family: var(--font-display);
     font-size: 11.6px;
     line-height: 14px;
     margin: 5px;
@@ -749,17 +755,18 @@ app-note-card-actions {
   align-items: center;
 
   .image {
-    background-size: 120px 120px;
+    background-color: var(--text-muted);
     height: 120px;
     width: 120px;
     margin: 20px;
-    opacity: 0.1;
-    background-image: url(/assets/images/svg/no-notes.svg);
+    opacity: 0.28;
+    mask: url(/assets/images/svg/no-notes.svg) center / 120px 120px no-repeat;
+    -webkit-mask: url(/assets/images/svg/no-notes.svg) center / 120px 120px no-repeat;
   }
 
   .text {
-    color: #9aa0a6;
-    font-family: "Google Sans Light 1";
+    color: var(--text-muted);
+    font-family: var(--font-display);
     font-size: 1.375rem;
     font-weight: 400;
     letter-spacing: 0;
@@ -855,7 +862,7 @@ app-note-card-actions {
   color: #e8eaed;
   cursor: pointer;
   display: block;
-  font-family: "Google Sans", Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 0.875rem;
   font-weight: 500;
   height: 36px;
@@ -1227,7 +1234,6 @@ app-note-card-actions {
   .note-main {
     color: #202124;
     border-color: #dadce0;
-    box-shadow: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
   }
 }
 

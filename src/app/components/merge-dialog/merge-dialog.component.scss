@@ -13,7 +13,7 @@
   color: #e8eaed;
   display: flex;
   flex-direction: column;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   left: 50%;
   max-height: calc(100dvh - 64px);
   max-width: 520px;

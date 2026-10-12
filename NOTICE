@@ -24,3 +24,17 @@ aBrihoum (https://github.com/aBrihoum/google-keep-clone), which is
 distributed under the MIT License. That project's copyright and licence
 notice applies to the portions derived from it and is available at
 https://github.com/aBrihoum/google-keep-clone/blob/master/LICENSE.
+
+
+Bundled fonts
+-------------
+
+The web app bundles Latin and Latin-extended subsets of Google Sans, Roboto and
+Roboto Mono (variable fonts), plus Lobster Two (wordmark), all licensed under the
+SIL Open Font License 1.1. The files come from Fontsource
+(https://fontsource.org), which repackages the upstream Google Fonts releases.
+The license texts are in src/assets/fonts/LICENSE-*.txt.
+
+The web app also bundles the Material Symbols Outlined icon font (Google, Apache License 2.0;
+https://github.com/google/material-design-icons). Its license text is in
+src/assets/fonts/LICENSE-material-symbols.txt.

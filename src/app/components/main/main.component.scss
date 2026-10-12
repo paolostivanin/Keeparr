@@ -141,7 +141,7 @@
   box-shadow: 0 8px 24px rgba(60,64,67,0.16);
   color: #3c4043;
   display: inline-flex;
-  font: 700 13px/1 "Google Sans", Roboto, Arial, sans-serif;
+  font: 700 13px/1 var(--font-display);
   gap: 6px;
   left: 50%;
   padding: 8px 12px;
@@ -217,12 +217,12 @@
   }
 
   strong {
-    font: 800 15px/1.1 "Google Sans", Roboto, Arial, sans-serif;
+    font: 800 15px/1.1 var(--font-display);
   }
 
   small {
     color: #5f6368;
-    font: 600 12px/1.25 "Google Sans", Roboto, Arial, sans-serif;
+    font: 600 12px/1.25 var(--font-display);
   }
 
   .smart-gemma-action {
@@ -240,7 +240,7 @@
   background: rgba(246, 174, 169, 0.24);
   border-radius: 10px;
   color: #b3261e;
-  font: 700 12px/1.25 "Google Sans", Roboto, Arial, sans-serif;
+  font: 700 12px/1.25 var(--font-display);
   padding: 8px 10px;
 }
 
@@ -254,7 +254,7 @@
   color: #fbbc04;
   cursor: pointer;
   display: inline-flex;
-  font: 600 13px/1 "Google Sans", Roboto, Arial, sans-serif;
+  font: 600 13px/1 var(--font-display);
   gap: 8px;
   min-height: 56px;
   padding: 0 16px;
@@ -385,7 +385,7 @@
       color: inherit;
       cursor: pointer;
       display: inline-flex;
-      font: 600 13px/1 "Google Sans", Roboto, sans-serif;
+      font: 600 13px/1 var(--font-display);
       gap: 8px;
       padding: 0 14px 0 16px;
 
@@ -605,7 +605,7 @@
 
 .smart-listening-copy {
   color: #5f6368;
-  font-family: "Google Sans", Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   text-align: center;
 
   h2 {
@@ -661,7 +661,7 @@
 }
 
 .smart-review-header {
-  font-family: "Google Sans", Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   padding: 12px 4px 14px;
 
   .eyebrow {
@@ -682,7 +682,7 @@
 
   p {
     color: #5f6368;
-    font: 400 14px/1.35 Roboto, Arial, sans-serif;
+    font: 400 14px/1.35 var(--font-body);
     margin: 8px 0 0;
   }
 }
@@ -710,7 +710,7 @@
   box-sizing: border-box;
   color: #202124;
   display: block;
-  font-family: "Google Sans", Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   margin: 0;
   max-width: 100%;
   min-height: 0;
@@ -911,7 +911,7 @@
   li {
     align-items: flex-start;
     display: grid;
-    font: 500 15px/1.35 Roboto, Arial, sans-serif;
+    font: 500 15px/1.35 var(--font-body);
     gap: 10px;
     grid-template-columns: 20px 1fr;
   }
@@ -924,7 +924,7 @@
 }
 
 .smart-proposal-body {
-  font: 400 16px/1.45 Roboto, Arial, sans-serif;
+  font: 400 16px/1.45 var(--font-body);
   margin: 0;
   overflow-wrap: anywhere;
 }
@@ -950,7 +950,7 @@
 
 .smart-share-heading {
   color: rgba(60, 64, 67, 0.72);
-  font: 700 12px/1 "Google Sans", Roboto, Arial, sans-serif;
+  font: 700 12px/1 var(--font-display);
   letter-spacing: 0;
 }
 
@@ -969,7 +969,7 @@
   box-shadow: 0 10px 24px rgba(60, 64, 67, 0.12);
   color: #202124;
   display: inline-grid;
-  font: 700 15px/1.2 "Google Sans", Roboto, Arial, sans-serif;
+  font: 700 15px/1.2 var(--font-display);
   gap: 10px;
   grid-template-columns: 44px minmax(0, 1fr);
   justify-self: start;
@@ -1035,12 +1035,12 @@
   }
 
   strong {
-    font: 800 14px/1.1 "Google Sans", Roboto, Arial, sans-serif;
+    font: 800 14px/1.1 var(--font-display);
   }
 
   span:not(.material-symbols-outlined) {
     color: rgba(60, 64, 67, 0.72);
-    font: 700 13px/1.2 "Google Sans", Roboto, Arial, sans-serif;
+    font: 700 13px/1.2 var(--font-display);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1055,7 +1055,7 @@
   color: #fbbc04;
   cursor: pointer;
   display: inline-flex;
-  font: 600 12px/1 "Google Sans", Roboto, Arial, sans-serif;
+  font: 600 12px/1 var(--font-display);
   height: 32px;
   justify-content: center;
   margin-top: 10px;
@@ -1118,7 +1118,7 @@
   box-shadow: 0 14px 30px rgba(251, 188, 4, 0.28);
   color: #202124;
   cursor: pointer;
-  font: 700 17px/1 "Google Sans", Roboto, Arial, sans-serif;
+  font: 700 17px/1 var(--font-display);
   height: 64px;
   min-width: 154px;
   padding: 0 26px;
@@ -1176,13 +1176,13 @@
 }
 .smart-action-type {
   color: #1a73e8;
-  font: 600 11px/1 "Google Sans", Roboto, Arial, sans-serif;
+  font: 600 11px/1 var(--font-display);
   margin-bottom: 5px;
   text-transform: uppercase;
 }
 .smart-action-summary {
   color: #202124;
-  font: 500 14px/1.35 Roboto, Arial, sans-serif;
+  font: 500 14px/1.35 var(--font-body);
   overflow-wrap: anywhere;
 }
 .smart-action-meta {
@@ -1247,7 +1247,7 @@
   color: #3c4043;
   display: flex;
   flex-wrap: wrap;
-  font: 400 13px/1.4 "Google Sans", Roboto, Arial, sans-serif;
+  font: 400 13px/1.4 var(--font-display);
   gap: 8px 16px;
   left: 50%;
   max-width: min(640px, calc(100vw - 24px));

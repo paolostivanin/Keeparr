@@ -37,7 +37,7 @@ h1 { margin-bottom: 0; }
 
 .group-title {
   color: #e8eaed;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 20px;
   font-weight: 500;
   margin: 0 0 16px;
@@ -79,7 +79,7 @@ h1 { margin-bottom: 0; }
   align-items: center;
   color: #e8eaed;
   display: flex;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 15px;
   font-weight: 500;
   gap: 12px;
@@ -88,7 +88,7 @@ h1 { margin-bottom: 0; }
 
 .section-desc {
   color: #9aa0a6;
-  font-family: Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   line-height: 1.5;
   margin: 0 0 16px;
@@ -181,7 +181,7 @@ h1 { margin-bottom: 0; }
 
   strong {
     color: #e8eaed;
-    font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    font-family: var(--font-display);
     font-size: 15px;
     font-weight: 500;
   }
@@ -217,7 +217,7 @@ h1 { margin-bottom: 0; }
 .user-handle,
 .user-email {
   color: #9aa0a6;
-  font-family: Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
 }
 
@@ -269,7 +269,7 @@ h1 { margin-bottom: 0; }
     border: 1px solid #5f6368;
     border-radius: 6px;
     color: #e8eaed;
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: 14px;
     padding: 8px 10px;
 
@@ -402,7 +402,7 @@ h1 { margin-bottom: 0; }
       border: 1px solid #5f6368;
       border-radius: 6px;
       color: #e8eaed;
-      font-family: Roboto, Arial, sans-serif;
+      font-family: var(--font-body);
       font-size: 14px;
       padding: 8px 10px;
       &:focus { border-color: #fbbc04; outline: none; }
@@ -440,7 +440,7 @@ h1 { margin-bottom: 0; }
   .file-info {
     display: grid;
     gap: 2px;
-    .filename { color: #e8eaed; font-size: 14px; font-family: 'Roboto Mono', monospace; }
+    .filename { color: #e8eaed; font-size: 14px; font-family: var(--font-mono); }
     .file-meta { color: #9aa0a6; font-size: 12px; }
   }
 
@@ -454,7 +454,7 @@ h1 { margin-bottom: 0; }
   background: rgba(154, 160, 166, 0.1);
   border-radius: 4px;
   color: #aecbfa;
-  font-family: 'Roboto Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   padding: 2px 6px;
   word-break: break-all;

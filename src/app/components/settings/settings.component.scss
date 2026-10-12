@@ -32,7 +32,7 @@ h1 { margin-bottom: 0; }
   align-items: center;
   color: #e8eaed;
   display: flex;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 15px;
   font-weight: 500;
   gap: 12px;
@@ -50,7 +50,7 @@ h1 { margin-bottom: 0; }
 
 .group-title {
   color: #e8eaed;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 20px;
   font-weight: 500;
   margin: 0 0 16px;
@@ -96,7 +96,7 @@ h1 { margin-bottom: 0; }
 
 .section-desc {
   color: #9aa0a6;
-  font-family: Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   line-height: 1.5;
   margin: 0 0 16px;
@@ -130,14 +130,14 @@ h1 { margin-bottom: 0; }
 
 .preference-label {
   color: #e8eaed;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 14px;
   font-weight: 500;
 }
 
 .preference-desc {
   color: #9aa0a6;
-  font-family: Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 12px;
   line-height: 1.35;
 }
@@ -180,7 +180,7 @@ h1 { margin-bottom: 0; }
 
   button {
     border-radius: 6px;
-    font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    font-family: var(--font-display);
     font-size: 14px;
     font-weight: 500;
     min-height: 40px;
@@ -195,7 +195,7 @@ h1 { margin-bottom: 0; }
 
 .external-subheading {
   color: #bdc1c6;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 12px;
   font-weight: 600;
   margin-bottom: 2px;
@@ -241,7 +241,7 @@ h1 { margin-bottom: 0; }
     color: #e8eaed;
     cursor: pointer;
     display: flex;
-    font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    font-family: var(--font-display);
     justify-content: space-between;
     list-style: none;
     min-height: 44px;
@@ -302,7 +302,7 @@ h1 { margin-bottom: 0; }
     border-radius: 4px;
     color: #bdc1c6;
     cursor: pointer;
-    font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    font-family: var(--font-display);
     font-size: 12px;
     font-weight: 600;
     min-height: 30px;
@@ -390,7 +390,7 @@ h1 { margin-bottom: 0; }
 
 .optional-integrations-heading {
   color: #9aa0a6;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.08em;
@@ -431,7 +431,7 @@ h1 { margin-bottom: 0; }
   border-radius: 4px;
   color: #8ab4f8;
   flex: 1;
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   min-width: 0;
   overflow: hidden;
@@ -559,14 +559,14 @@ h1 { margin-bottom: 0; }
 
 .permission-label {
   color: #e8eaed;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 14px;
   font-weight: 500;
 }
 
 .permission-desc {
   color: #9aa0a6;
-  font-family: Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 12px;
 }
 
@@ -627,7 +627,7 @@ h1 { margin-bottom: 0; }
   color: #e8eaed;
   cursor: pointer;
   display: flex;
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   font-size: 13px;
   justify-content: space-between;
   padding: 12px 14px;
@@ -646,7 +646,7 @@ h1 { margin-bottom: 0; }
 .instruction-steps {
   border-top: 1px solid #5f6368;
   color: #bdc1c6;
-  font-family: Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   line-height: 1.6;
   margin: 0;

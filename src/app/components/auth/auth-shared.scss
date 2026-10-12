@@ -1,9 +1,9 @@
 .auth-page {
   align-items: center;
-  background: #202124;
+  background: radial-gradient(1100px 520px at 50% -8%, rgb(251 188 4 / 9%), transparent 65%), #202124;
   color: #e8eaed;
   display: flex;
-  font-family: "Google Sans", Roboto, Arial, sans-serif;
+  font-family: var(--font-display);
   justify-content: center;
   min-height: 100vh;
   padding: 24px;
@@ -12,10 +12,10 @@
 .auth-panel {
   background: #313235;
   border: 1px solid #5f6368;
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
   max-width: 440px;
-  padding: 32px;
+  padding: 36px 32px 32px;
   width: 100%;
 
   &.compact {
@@ -40,12 +40,12 @@
   }
 
   span {
-    color: #feefc3;
-    font-family: "Lobster Two", cursive;
+    color: var(--brand-text);
+    font-family: var(--font-brand);
     font-size: 50px;
     line-height: 1;
     padding-left: 9px;
-    text-shadow: 4px 0 #8ab4f8, 4px 2px #8ab4f8, 3px 1px #8ab4f8;
+    text-shadow: 4px 0 var(--brand-shadow), 4px 2px var(--brand-shadow), 3px 1px var(--brand-shadow);
   }
 }
 
@@ -58,7 +58,7 @@ h1 {
 
 .helper {
   color: #bdc1c6;
-  font-family: Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.5;
   margin: 0 0 24px;
@@ -67,13 +67,18 @@ h1 {
 .sso-button {
   background: transparent;
   border: 1px solid #8ab4f8;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: #8ab4f8;
   cursor: pointer;
-  font: 500 14px "Google Sans", Roboto, Arial, sans-serif;
+  font: 500 14px var(--font-display);
   min-height: 42px;
   padding: 0 16px;
+  transition: background-color var(--dur-base) var(--ease-standard);
   width: 100%;
+
+  &:hover {
+    background: rgb(138 180 248 / 10%);
+  }
 }
 
 .auth-divider {
@@ -111,13 +116,14 @@ h1 {
   select {
     background: #202124;
     border: 1px solid #5f6368;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     color: #e8eaed;
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: 15px;
     height: 42px;
     outline: none;
     padding: 0 12px;
+    transition: border-color var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard);
   }
 
   // Placeholders are usually longer-form explainers; shrink so they don't clip.
@@ -128,11 +134,12 @@ h1 {
   input:focus,
   select:focus {
     border-color: #fbbc04;
+    box-shadow: 0 0 0 3px rgb(251 188 4 / 22%);
   }
 
   label .hint {
     color: #9aa0a6;
-    font-family: Roboto, Arial, sans-serif;
+    font-family: var(--font-body);
     font-size: 11px;
     line-height: 1.4;
     margin-top: -3px;
@@ -149,15 +156,21 @@ h1 {
   button {
     background: #fbbc04;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     color: #202124;
     cursor: pointer;
-    font-family: "Google Sans", Roboto, Arial, sans-serif;
+    font-family: var(--font-display);
     font-size: 14px;
     font-weight: 500;
     height: 40px;
     padding: 0 18px;
+    transition: filter var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard);
     width: fit-content;
+  }
+
+  button:hover:not(:disabled) {
+    box-shadow: var(--elev-1);
+    filter: brightness(1.06);
   }
 
   button:disabled {
@@ -196,7 +209,7 @@ h1 {
 
     small {
       color: #9aa0a6;
-      font-family: Roboto, Arial, sans-serif;
+      font-family: var(--font-body);
       font-size: 12px;
       line-height: 1.45;
     }
@@ -206,7 +219,7 @@ h1 {
 .error,
 .success {
   border-radius: 6px;
-  font-family: Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   padding: 10px 12px;
 }
@@ -223,7 +236,7 @@ h1 {
 
 .footer-tagline {
   color: #5f6368;
-  font-family: Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 12px;
   margin-top: 24px;
   text-align: center;
@@ -231,7 +244,7 @@ h1 {
 
 :host-context(.light-theme) {
   .auth-page {
-    background: #fff;
+    background: radial-gradient(1100px 520px at 50% -8%, rgb(251 188 4 / 16%), transparent 65%), #f8f9fa;
     color: #202124;
   }
 
@@ -271,9 +284,15 @@ h1 {
       color: #5f6368;
     }
 
+    input:focus,
+    select:focus {
+      border-color: #e37400;
+      box-shadow: 0 0 0 3px rgb(249 171 0 / 28%);
+    }
+
     button {
-      background: #1a73e8;
-      color: #fff;
+      background: #fbbc04;
+      color: #202124;
     }
 
     label .hint {
@@ -370,7 +389,7 @@ h1 {
     background: rgba(0, 0, 0, 0.2);
     border: 1px solid #5f6368;
     border-radius: 4px;
-    font-family: monospace;
+    font-family: var(--font-mono);
     font-size: 14px;
     padding: 8px;
     text-align: center;
