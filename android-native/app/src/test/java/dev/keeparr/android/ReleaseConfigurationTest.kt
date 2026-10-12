@@ -21,8 +21,8 @@ class ReleaseConfigurationTest {
 
     @Test fun versionMatchesTheV2Release() {
         val info = packages.getPackageInfo(context.packageName, 0)
-        assertEquals("2.1.2", info.versionName)
-        assertEquals(7L, info.longVersionCode)
+        assertEquals("2.1.3", info.versionName)
+        assertEquals(8L, info.longVersionCode)
     }
 
     @Test fun launcherAndShareIntentsReachTheMainActivity() {

@@ -378,8 +378,8 @@ class NativeContractTest {
                 assertEquals(R.mipmap.ic_launcher, parser.getAttributeResourceValue(androidNamespace, "previewImage", 0))
             }
         }
-        assertEquals("2.1.2", BuildConfig.VERSION_NAME)
-        assertEquals(7, BuildConfig.VERSION_CODE)
+        assertEquals("2.1.3", BuildConfig.VERSION_NAME)
+        assertEquals(8, BuildConfig.VERSION_CODE)
     }
     @Test fun connectionSnapshotsAreImmutableAndRedactCredentialsFromDiagnostics() {
         val snapshot = ConnectionSnapshot("https://server.example.test", "cert-alias", 3,
