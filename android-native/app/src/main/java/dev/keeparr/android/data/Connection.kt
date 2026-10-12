@@ -60,6 +60,12 @@ sealed interface ConnectionState {
     data class Offline(val message: String) : ConnectionState
 }
 
+/** How the app picks light or dark: follow the system (the default), or always one of them. */
+enum class ThemeMode {
+    System, Light, Dark;
+    fun isDark(systemDark: Boolean) = when (this) { System -> systemDark; Light -> false; Dark -> true }
+}
+
 interface ConnectionProfile {
     val ready: StateFlow<Boolean> get() = MutableStateFlow(true)
     val writeError: StateFlow<String?> get() = MutableStateFlow(null)
@@ -85,7 +91,7 @@ interface ConnectionProfile {
     var token: String
     var headers: String
     var message: String
-    var darkMode: Boolean
+    var themeMode: ThemeMode
     fun snapshot() = ConnectionSnapshot(origin, aliasFor(origin), aliasRevisionFor(origin), headersFor(origin), userId, token)
 }
 
@@ -135,7 +141,7 @@ class ConnectionSettings(
     @Volatile private var userIdValue = 0L
     @Volatile private var tokenValue = ""
     @Volatile private var messageValue = ""
-    @Volatile private var darkModeValue = false
+    @Volatile private var themeModeValue = ThemeMode.System
     private val snapshotLock = Any()
     @Volatile private var activeSnapshot = ConnectionSnapshot("", "", 0, "", 0, "")
     private val aliases = ConcurrentHashMap<String, String>()
@@ -147,7 +153,9 @@ class ConnectionSettings(
     private val userIdPreference = longPreferencesKey("userId")
     private val tokenPreference = stringPreferencesKey("token")
     private val messagePreference = stringPreferencesKey("message")
-    private val darkModePreference = booleanPreferencesKey("darkMode")
+    private val themeModePreference = stringPreferencesKey("themeMode")
+    // The pre-ThemeMode on/off switch; only read, so an explicit earlier choice carries over.
+    private val legacyDarkModePreference = booleanPreferencesKey("darkMode")
 
     override suspend fun initialize() = withContext(Dispatchers.IO) {
         if (_ready.value) return@withContext
@@ -166,7 +174,8 @@ class ConnectionSettings(
             userIdValue = stored[userIdPreference] ?: 0
             tokenValue = decrypt(stored[tokenPreference] ?: "")
             messageValue = stored[messagePreference] ?: ""
-            darkModeValue = stored[darkModePreference] ?: false
+            themeModeValue = ThemeMode.entries.firstOrNull { it.name == stored[themeModePreference] }
+                ?: stored[legacyDarkModePreference]?.let { if (it) ThemeMode.Dark else ThemeMode.Light } ?: ThemeMode.System
             aliases.clear()
             aliasRevisions.clear()
             gatewayHeaders.clear()
@@ -284,7 +293,7 @@ class ConnectionSettings(
     }
     override var headers: String get() = headersFor(origin); set(value) = setHeadersFor(origin, value)
     override var message: String get() = messageValue; set(value) { messageValue = value; update { this[messagePreference] = value } }
-    override var darkMode: Boolean get() = darkModeValue; set(value) { darkModeValue = value; update { this[darkModePreference] = value } }
+    override var themeMode: ThemeMode get() = themeModeValue; set(value) { themeModeValue = value; update { this[themeModePreference] = value.name } }
     override fun snapshot() = activeSnapshot
 
     private fun refreshSnapshotLocked() {

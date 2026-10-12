@@ -29,7 +29,7 @@ class LifecycleOwnershipTest {
         override var token = "token"
         override var headers = ""
         override var message = ""
-        override var darkMode = false
+        override var themeMode = ThemeMode.System
         override fun aliasFor(server: String) = ""
         override fun setAliasFor(server: String, value: String) {}
         override fun headersFor(server: String) = ""

@@ -1,0 +1,7 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="horizontal" android:gravity="center_vertical" android:minHeight="20dp">
+    <ImageView android:id="@+id/check_line_icon" android:layout_width="16dp" android:layout_height="16dp"
+        android:src="@drawable/ic_widget_check_off" />
+    <TextView android:id="@+id/check_line_text" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+        android:layout_marginStart="6dp" android:textSize="13sp" android:textColor="@color/widget_text_secondary" android:maxLines="1" android:ellipsize="end" />
+</LinearLayout>

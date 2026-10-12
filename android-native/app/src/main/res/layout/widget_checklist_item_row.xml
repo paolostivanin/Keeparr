@@ -2,7 +2,11 @@
     android:background="@drawable/widget_note_card" android:clipToOutline="true">
     <ImageView android:id="@+id/checklist_card_background" android:layout_width="match_parent" android:layout_height="match_parent"
         android:src="@drawable/widget_note_card" android:scaleType="fitXY" android:importantForAccessibility="no" />
-    <TextView android:id="@+id/checklist_item_row" android:layout_width="match_parent" android:layout_height="match_parent"
-        android:gravity="center_vertical" android:paddingHorizontal="12dp" android:paddingVertical="4dp"
-        android:textColor="#292720" android:textSize="14sp" android:maxLines="2" />
+    <LinearLayout android:id="@+id/checklist_item_content" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:orientation="horizontal" android:gravity="center_vertical" android:paddingHorizontal="12dp" android:paddingVertical="4dp">
+        <ImageView android:id="@+id/checklist_item_check" android:layout_width="20dp" android:layout_height="20dp"
+            android:src="@drawable/ic_widget_check_off" android:importantForAccessibility="no" />
+        <TextView android:id="@+id/checklist_item_row" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+            android:layout_marginStart="10dp" android:textColor="@color/widget_text" android:textSize="14sp" android:maxLines="2" />
+    </LinearLayout>
 </FrameLayout>

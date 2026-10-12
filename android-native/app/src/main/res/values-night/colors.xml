@@ -1,0 +1,13 @@
+<resources>
+    <color name="window_background">#202124</color>
+    <color name="widget_background">#202124</color>
+    <color name="widget_card">#3C4043</color>
+    <color name="widget_note_card">#303134</color>
+    <color name="widget_fab">#FFCF45</color>
+    <color name="widget_fab_stroke">#E0B02E</color>
+    <color name="widget_fab_icon">#202124</color>
+    <color name="widget_text">#E8EAED</color>
+    <color name="widget_text_secondary">#BDC1C6</color>
+    <color name="widget_text_status">#BDC1C6</color>
+    <color name="widget_text_action">#E8EAED</color>
+</resources>

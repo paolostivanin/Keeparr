@@ -8,10 +8,9 @@
     <TextView android:id="@+id/widget_status" android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:layout_gravity="bottom|start" android:layout_marginStart="8dp" android:layout_marginBottom="16dp"
         android:background="@drawable/widget_card" android:paddingHorizontal="8dp" android:paddingVertical="5dp"
-        android:textColor="#6C6250" android:textSize="11sp" android:maxLines="1" android:visibility="gone" />
-    <TextView android:id="@+id/widget_add" android:layout_width="56dp" android:layout_height="56dp"
+        android:textColor="@color/widget_text_status" android:textSize="11sp" android:maxLines="1" android:visibility="gone" />
+    <ImageView android:id="@+id/widget_add" android:layout_width="56dp" android:layout_height="56dp"
         android:layout_gravity="bottom|end" android:layout_marginEnd="8dp" android:layout_marginBottom="8dp"
-        android:background="@drawable/widget_fab" android:gravity="center" android:text="＋"
-        android:textSize="30sp" android:textColor="#3C3529" android:elevation="4dp"
-        android:contentDescription="Create a note" />
+        android:background="@drawable/widget_fab" android:padding="16dp" android:src="@drawable/ic_widget_add"
+        android:tint="@color/widget_fab_icon" android:elevation="4dp" android:contentDescription="Create a note" />
 </FrameLayout>

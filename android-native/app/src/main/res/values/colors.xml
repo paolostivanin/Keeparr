@@ -1,3 +1,16 @@
 <resources>
     <color name="ic_launcher_background">#FBBC04</color>
+    <!-- Window background behind the Compose content: shows during launch, so it matches the app surface. -->
+    <color name="window_background">#FFFFFF</color>
+    <!-- Widgets (RemoteViews cannot use Compose); values-night/colors.xml has the dark variants. -->
+    <color name="widget_background">#FFF8E9</color>
+    <color name="widget_card">#FFFFFF</color>
+    <color name="widget_note_card">#FFFFFF</color>
+    <color name="widget_fab">#FDD663</color>
+    <color name="widget_fab_stroke">#E6C452</color>
+    <color name="widget_fab_icon">#3C3529</color>
+    <color name="widget_text">#292720</color>
+    <color name="widget_text_secondary">#49463E</color>
+    <color name="widget_text_status">#6C6250</color>
+    <color name="widget_text_action">#3C3529</color>
 </resources>

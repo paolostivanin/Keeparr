@@ -150,45 +150,66 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
         val note = row.note
         val item = row.item
         val reminder = reminders[note.syncId]
-        val color = NotePalette.parse(note.raw.text("bgColor")) ?: Color.WHITE
-        val foreground = widgetForegroundColor(color)
+        // A note with its own color keeps explicit colors. One without follows the widget's light/dark color resources, which the
+        // host resolves, so it also flips with the system theme without the row being rebuilt.
+        val color = NotePalette.parse(note.raw.text("bgColor"))
+        val foreground = color?.let(::widgetForegroundColor)
         if (item != null) {
             val itemLabel = item?.let { Html.fromHtml(boundedWidgetText(it.text("data"), 4096), Html.FROM_HTML_MODE_COMPACT)
                 .toString().ifBlank { "Checklist item" }.let { text -> boundedWidgetText(text, 256) } }
+            val done = item.optBoolean("done")
             val itemRow = RemoteViews(app.packageName, R.layout.widget_checklist_item_row)
-            itemRow.setInt(R.id.checklist_card_background, "setColorFilter", color)
-            itemRow.setTextColor(R.id.checklist_item_row, foreground)
-            itemRow.setTextViewText(R.id.checklist_item_row,
-                (if (item.optBoolean("done")) "☑  " else "☐  ") + itemLabel)
-            itemRow.setContentDescription(R.id.checklist_item_row,
-                "${if (item.optBoolean("done")) "Complete" else "Incomplete"}: $itemLabel. Toggle checklist item")
-            itemRow.setOnClickFillInIntent(R.id.checklist_item_row, widgetFillIn(row))
+            itemRow.tint(R.id.checklist_card_background, "setColorFilter", color, R.color.widget_note_card)
+            itemRow.tint(R.id.checklist_item_row, "setTextColor", foreground, R.color.widget_text)
+            itemRow.setImageViewResource(R.id.checklist_item_check, checkIcon(done))
+            itemRow.tint(R.id.checklist_item_check, "setColorFilter", foreground, R.color.widget_text)
+            itemRow.setTextViewText(R.id.checklist_item_row, itemLabel)
+            itemRow.setContentDescription(R.id.checklist_item_content,
+                "${if (done) "Complete" else "Incomplete"}: $itemLabel. Toggle checklist item")
+            itemRow.setOnClickFillInIntent(R.id.checklist_item_content, widgetFillIn(row))
             return itemRow
         }
         return RemoteViews(app.packageName, R.layout.widget_row).apply {
             val title = if (note.locked) "Locked note" else (if (note.pinned) "📌 " else "") + note.title
             setTextViewText(R.id.row_title, boundedWidgetText(title, 160))
             setViewVisibility(R.id.row_title, if (title.isBlank()) View.GONE else View.VISIBLE)
-            setTextColor(R.id.row_title, foreground)
+            tint(R.id.row_title, "setTextColor", foreground, R.color.widget_text)
             val body = widgetNoteBodyText(note, single)
             setTextViewText(R.id.row_body, boundedWidgetText(body, if (single) 4096 else 1024))
             setViewVisibility(R.id.row_body, if (body.isBlank()) View.GONE else View.VISIBLE)
-            setTextColor(R.id.row_body, foreground)
+            tint(R.id.row_body, "setTextColor", foreground, R.color.widget_text)
             setInt(R.id.row_body, "setMaxLines", if (single) WIDGET_SINGLE_NOTE_MAX_LINES else WIDGET_CARD_MAX_LINES)
+            // A recycled row view still holds the previous note's lines, so they are always cleared first.
+            removeAllViews(R.id.row_checks)
+            val lines = if (single) emptyList() else widgetChecklistLines(note)
+            lines.forEach { (done, text) ->
+                addView(R.id.row_checks, RemoteViews(app.packageName, R.layout.widget_check_line).apply {
+                    setImageViewResource(R.id.check_line_icon, checkIcon(done))
+                    setContentDescription(R.id.check_line_icon, if (done) "Complete" else "Incomplete")
+                    tint(R.id.check_line_icon, "setColorFilter", foreground, R.color.widget_text)
+                    setTextViewText(R.id.check_line_text, text)
+                    tint(R.id.check_line_text, "setTextColor", foreground, R.color.widget_text)
+                })
+            }
+            setViewVisibility(R.id.row_checks, if (lines.isEmpty()) View.GONE else View.VISIBLE)
             if (reminder != null) {
                 val label = "⏰ ${ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder))}"
                 setTextViewText(R.id.row_reminder, label)
-                setTextColor(R.id.row_reminder, foreground)
+                tint(R.id.row_reminder, "setTextColor", foreground, R.color.widget_text)
                 setContentDescription(R.id.row_reminder, "Reminder ${ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder))}")
                 setViewVisibility(R.id.row_reminder, View.VISIBLE)
             } else setViewVisibility(R.id.row_reminder, View.GONE)
-            setViewVisibility(R.id.row_checks, View.GONE)
             setViewVisibility(R.id.row_shared, if (note.shared) View.VISIBLE else View.GONE)
-            setInt(R.id.row_shared, "setColorFilter", foreground)
-            setInt(R.id.widget_card_background, "setColorFilter", color)
+            tint(R.id.row_shared, "setColorFilter", foreground, R.color.widget_text)
+            tint(R.id.widget_card_background, "setColorFilter", color, R.color.widget_note_card)
             setOnClickFillInIntent(R.id.widget_row, widgetFillIn(row))
         }
     }
+
+private fun RemoteViews.tint(viewId: Int, method: String, explicit: Int?, fallback: Int) =
+    if (explicit != null) setInt(viewId, method, explicit) else setColor(viewId, method, fallback)
+
+private fun checkIcon(done: Boolean) = if (done) R.drawable.ic_widget_check_on else R.drawable.ic_widget_check_off
 
 internal fun singleNoteWidgetChecklistItems(note: Note): List<JSONObject> =
     if (note.checklist && !note.locked) note.items else emptyList()
@@ -205,14 +226,19 @@ private fun widgetPlainText(html: String, maxCharacters: Int) =
 internal fun widgetNoteBodyText(note: Note, single: Boolean): String = when {
     note.locked -> "Open Keeparr to view"
     single && note.checklist -> "Checklist · ${note.items.size} item(s)"
-    note.checklist -> note.items.take(8).joinToString("\n") {
-        (if (it.optBoolean("done")) "☑ " else "☐ ") + boundedWidgetText(widgetPlainText(it.text("data"), 512), 128)
-    }
+    // A checklist's items are drawn as icon rows (see widgetChecklistLines), not as body text.
+    note.checklist -> ""
     // Bullets are spans, not characters, so only a body with a list needs the bullet-aware conversion; every other body
     // keeps the widget's own whitespace handling.
     note.body.contains("<li", ignoreCase = true) -> NoteFormat.previewText(boundedWidgetText(note.body, 8192)).trim()
     else -> widgetPlainText(note.body, 8192)
 }
+
+/** The checklist rows a card shows (done, text), at most as many as the card has lines. */
+internal fun widgetChecklistLines(note: Note): List<Pair<Boolean, String>> =
+    if (note.checklist && !note.locked) note.items.take(WIDGET_CARD_MAX_LINES).map {
+        it.optBoolean("done") to boundedWidgetText(widgetPlainText(it.text("data"), 512), 128)
+    } else emptyList()
 
 internal fun widgetForegroundColor(background: Int): Int =
     if (Color.luminance(background) > .4f) Color.rgb(41, 39, 32) else Color.rgb(245, 243, 239)

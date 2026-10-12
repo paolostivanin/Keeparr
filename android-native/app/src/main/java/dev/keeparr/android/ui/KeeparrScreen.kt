@@ -16,10 +16,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.staggeredgrid.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Label
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -36,6 +39,14 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
@@ -43,6 +54,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
+import dev.keeparr.android.R
 import dev.keeparr.android.data.*
 import dev.keeparr.android.reminders.ReminderScheduler
 import kotlinx.coroutines.*
@@ -61,9 +73,9 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
     // Derived from the settings once they are ready, in the same composition: seeding these from a LaunchedEffect
     // painted one login/light-theme frame before the stored session and theme were applied.
     var signedInOverride by remember { mutableStateOf<Boolean?>(null) }
-    var darkOverride by remember { mutableStateOf<Boolean?>(null) }
+    var themeOverride by remember { mutableStateOf<ThemeMode?>(null) }
     val signedIn = settingsReady && StartupGate.signedIn(signedInOverride, app.settings.token)
-    val dark = settingsReady && StartupGate.dark(darkOverride, app.settings.darkMode)
+    val dark = StartupGate.dark(themeOverride, if (settingsReady) app.settings.themeMode else null, isSystemInDarkTheme())
     var error by remember { mutableStateOf<String?>(null) }
     val sessions: EditorSessionStores = androidx.lifecycle.viewmodel.compose.viewModel(activity)
     // The open note survives activity re-creation (rotation, process restoration) as its syncId and is reloaded;
@@ -82,7 +94,7 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
     var showSettings by remember { mutableStateOf(false) }
     val incoming by activity.incoming.collectAsStateWithLifecycle()
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { error = problem.message ?: "Could not complete this action" } } }
-    MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = Color(0xFFFFCF45)) else lightColorScheme(primary = Color(0xFF765900))) {
+    KeeparrTheme(dark) {
         Surface(Modifier.fillMaxSize()) {
             if (!settingsReady) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -121,7 +133,7 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
                 } else HomeScreen(app, notes, reminders, conflicts, onEdit = { openEditor(it) }, onCreate = { checklist ->
                     action { val note = Note.create(app.settings.userId, checklist); repo.save(note); openEditor(note) }
                 }, onSettings = { showSettings = true }, onReauthenticate = { signedInOverride = false }, onError = { error = it })
-                if (showSettings) SettingsScreen(activity, app, reminders, occurrences, dark, onDark = { darkOverride = it; app.settings.darkMode = it },
+                if (showSettings) SettingsScreen(activity, app, reminders, occurrences, StartupGate.mode(themeOverride, app.settings.themeMode), onTheme = { themeOverride = it; app.settings.themeMode = it },
                     onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedInOverride = false; showSettings = false } }, onError = { error = it })
             }
             val visibleError = settingsWriteError ?: error
@@ -159,10 +171,14 @@ private fun LoginScreen(activity: MainActivity, app: KeeparrApplication, onLogin
         onLogin()
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Spacer(Modifier.height(35.dp))
-        Icon(Icons.Outlined.Lightbulb, null, Modifier.size(52.dp), tint = MaterialTheme.colorScheme.primary)
-        Text("Your notes. Your server.", style = MaterialTheme.typography.headlineMedium)
-        Text("Sign in to Keeparr", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(24.dp))
+        Box(Modifier.size(64.dp).clip(MaterialTheme.shapes.medium).background(Color(0xFFFBBC04))) {
+            Image(painterResource(R.drawable.ic_launcher_foreground), null, Modifier.fillMaxSize())
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Your notes. Your server.", style = MaterialTheme.typography.headlineMedium)
+            Text("Sign in to Keeparr", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         app.settings.message.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         OutlinedTextField(server, { value ->
             server = value
@@ -201,7 +217,7 @@ private fun LoginScreen(activity: MainActivity, app: KeeparrApplication, onLogin
                 else activate(target)
             } catch (problem: Exception) { onError(problem.message ?: "Sign-in failed") }
             finally { busy = false }
-        } }, enabled = !busy && server.isNotBlank() && username.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+        } }, enabled = !busy && server.isNotBlank() && username.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Sign in")
         }
     }
@@ -254,15 +270,16 @@ private fun HomeScreen(app: KeeparrApplication, notes: List<Note>, reminders: Li
     fun toggleSelected(id: String) = home.toggle(id)
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
-        ModalDrawerSheet(Modifier.verticalScroll(rememberScrollState())) {
+        ModalDrawerSheet(Modifier.verticalScroll(rememberScrollState()), drawerShape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)) {
             Text("Keeparr", Modifier.padding(24.dp), style = MaterialTheme.typography.headlineMedium)
             projection.filterChoices.forEach { (value, label) -> NavigationDrawerItem(label = { Text(label) }, selected = filter == value,
-                onClick = { filter = value; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp)) }
+                onClick = { filter = value; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp),
+                colors = NavigationDrawerItemDefaults.colors(unselectedTextColor = MaterialTheme.colorScheme.onSurface)) }
         }
     }) {
         Scaffold(topBar = {
             Column(Modifier.statusBarsPadding().padding(horizontal = 12.dp)) {
-                Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainer) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.Menu, "Navigation") }
                         TextField(search, { search = it }, placeholder = { Text("Search your notes") }, modifier = Modifier.weight(1f), singleLine = true,
@@ -304,16 +321,16 @@ private fun HomeScreen(app: KeeparrApplication, notes: List<Note>, reminders: Li
         }, bottomBar = {
             Surface(shadowElevation = 4.dp, color = MaterialTheme.colorScheme.surfaceContainer) {
                 Row(Modifier.navigationBarsPadding().fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { onCreate(false) }, modifier = Modifier.weight(1f)) { Text("Take a note…", Modifier.fillMaxWidth()) }
+                    TextButton(onClick = { onCreate(false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                        Text("Take a note…", Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge) }
                     IconButton(onClick = { onCreate(true) }) { Icon(Icons.Outlined.CheckBox, "Create checklist") }
                     IconButton(onClick = { onCreate(false) }) { Icon(Icons.Outlined.Add, "Create note") }
                 }
             }
         }) { padding ->
             if (filter == "reminders") ReminderList(app, reminders, notes, Modifier.fillMaxSize().padding(padding), onOpenNote = { note -> if (note != null) onEdit(note) }, onError = onError)
-            else if (visible.isEmpty()) Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Outlined.Lightbulb, null, Modifier.size(80.dp)); Text("Your notes appear here", Modifier.padding(16.dp)) }
-            } else LazyVerticalStaggeredGrid(columns = if (grid) StaggeredGridCells.Adaptive(170.dp) else StaggeredGridCells.Fixed(1), state = gridState,
+            else if (visible.isEmpty()) Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { EmptyState(emptyView(filter, search)) }
+            else LazyVerticalStaggeredGrid(columns = if (grid) StaggeredGridCells.Adaptive(170.dp) else StaggeredGridCells.Fixed(1), state = gridState,
                 modifier = Modifier.fillMaxSize().padding(padding).onGloballyPositioned { gridCoordinates[0] = it }
                     .noteReorderGestures(reorder, reorderEnabled, { gridCoordinates[0] }, { gridState.scrollBy(it) }, onDrop = { drop ->
                         val source = latestProjection.notesBySyncId[drop.sourceId]
@@ -321,13 +338,13 @@ private fun HomeScreen(app: KeeparrApplication, notes: List<Note>, reminders: Li
                     }),
                 contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp) {
                 val pinned = projection.pinnedCards; val other = projection.otherCards
-                if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(pinned, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, reorder,
+                if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                items(pinned, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, Modifier.animateItem(fadeOutSpec = tween(120)), card.syncId in selectedIds, reorderEnabled, reorder,
                     onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
                     onLongClick = { selectNote(card.syncId) }, onMove = { delta -> moveNote(card.syncId, delta)?.let { ids -> action { app.repository.reorder(ids) } } },
                     canMove = { delta -> visibleIndex[card.syncId]?.let { canMoveNoteBy(visible, it, delta) } == true }) }
-                if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium) }
-                items(other, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, card.syncId in selectedIds, reorderEnabled, reorder,
+                if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                items(other, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, Modifier.animateItem(fadeOutSpec = tween(120)), card.syncId in selectedIds, reorderEnabled, reorder,
                     onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
                     onLongClick = { selectNote(card.syncId) }, onMove = { delta -> moveNote(card.syncId, delta)?.let { ids -> action { app.repository.reorder(ids) } } },
                     canMove = { delta -> visibleIndex[card.syncId]?.let { canMoveNoteBy(visible, it, delta) } == true }) }
@@ -422,7 +439,7 @@ private fun ReminderList(app: KeeparrApplication, reminders: List<JSONObject>, n
             (reminder.optLong("noteId") == 0L || notes.any { it.id == reminder.optLong("noteId") || it.syncId == reminder.text("noteSyncId") })
     }
         .sortedBy { runCatching { Instant.parse(ReminderFormat.displayDueAt(it)) }.getOrDefault(Instant.MAX) }
-    if (rows.isEmpty()) Box(modifier, contentAlignment = Alignment.Center) { Text("No upcoming reminders") }
+    if (rows.isEmpty()) Box(modifier, contentAlignment = Alignment.Center) { EmptyState(emptyView("reminders", "")) }
     else LazyColumn(modifier, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items(rows, key = { it.text("syncId") }) { reminder ->
             val note = notes.find { it.id == reminder.optLong("noteId") || it.syncId == reminder.text("noteSyncId") }
@@ -451,7 +468,7 @@ private fun ReminderList(app: KeeparrApplication, reminders: List<JSONObject>, n
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, selected: Boolean, reorderEnabled: Boolean, reorder: NoteReorderController,
+private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, modifier: Modifier, selected: Boolean, reorderEnabled: Boolean, reorder: NoteReorderController,
     onClick: () -> Unit, onLongClick: () -> Unit, onMove: (Int) -> Unit, canMove: (Int) -> Boolean) {
     DisposableEffect(note.syncId, reorder) { onDispose { reorder.disposed(note.syncId) } }
     // Only this card's own highlight state is observed, so a changing drop target recomposes just two cards.
@@ -460,10 +477,17 @@ private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, selected: B
     val color = note.colorArgb?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
     val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF1F1F1)
     val highlighted = selected || dropTarget
-    Surface(shape = RoundedCornerShape(12.dp), color = color, contentColor = foreground,
-        border = BorderStroke(if (highlighted) 3.dp else 1.dp, if (highlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.fillMaxWidth().alpha(if (dragging) .6f else 1f)
+    val shape = MaterialTheme.shapes.small
+    // A colored note gets a hairline in its own text color, so the border stays soft on every swatch in light and dark.
+    val outline = if (note.colorArgb != null) foreground.copy(alpha = .14f) else MaterialTheme.colorScheme.outlineVariant
+    val body = MaterialTheme.typography.bodyMedium
+    // The press ripple is drawn by the clickable, outside the Surface, so it takes the card's text color and its rounded clip from here.
+    CompositionLocalProvider(LocalContentColor provides foreground) {
+    Surface(shape = shape, color = color, contentColor = foreground,
+        border = BorderStroke(if (highlighted) 3.dp else 1.dp, if (highlighted) MaterialTheme.colorScheme.primary else outline),
+        modifier = modifier.fillMaxWidth().alpha(if (dragging) .6f else 1f)
             .onGloballyPositioned { reorder.positioned(note.syncId, it.boundsInWindow()) }
+            .clip(shape)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick,
                 onLongClickLabel = "Drag to reorder note".takeIf { reorderEnabled })
             // Dragging is not available to every user, so the same moves are exposed as accessibility actions.
@@ -473,16 +497,21 @@ private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, selected: B
                     CustomAccessibilityAction("Move later") { onMove(1); true }.takeIf { canMove(1) })
             }) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (note.locked) { Icon(Icons.Outlined.Lock, "Locked note"); Text("Locked note") }
+                if (note.locked) { Icon(Icons.Outlined.Lock, "Locked note"); Text("Locked note", style = body) }
                 else {
                 note.imagePath?.let { MediaImage(app, it) }
-                if (note.title.isNotBlank()) Text(note.title, style = MaterialTheme.typography.titleMedium, maxLines = 3)
-                if (note.checklist) note.checklistItems.forEach { item -> Row {
-                    Text(if (item.done) "☑  " else "☐  "); Text(item.text, maxLines = 3)
-                } } else if (note.bodyText.isNotBlank()) Text(note.bodyText, maxLines = 12)
+                if (note.title.isNotBlank()) Text(note.title, style = MaterialTheme.typography.titleMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                if (note.checklist) note.checklistItems.forEach { item -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // The box is as tall as one text line and scales with the font size, so it stays centered on the first line.
+                    Box(Modifier.height(textDp(body.lineHeight)), contentAlignment = Alignment.Center) {
+                        Icon(if (item.done) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
+                            if (item.done) "Completed" else "Not completed", Modifier.size(textDp(18.sp)))
+                    }
+                    Text(item.text, style = body, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                } } else if (note.bodyText.isNotBlank()) Text(note.bodyText, style = body, maxLines = 12, overflow = TextOverflow.Ellipsis)
                 note.reminderText?.let { reminderText ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.Schedule, "Reminder", Modifier.size(16.dp))
+                        Icon(Icons.Outlined.Schedule, "Reminder", Modifier.size(textDp(14.sp)))
                         Text(reminderText, Modifier.padding(start = 5.dp), style = MaterialTheme.typography.labelSmall, maxLines = 1)
                     }
                 }
@@ -490,6 +519,34 @@ private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, selected: B
                 if (note.shared) Icon(Icons.Outlined.PeopleOutline, "Shared note", Modifier.size(18.dp))
             }
         }
+    }
+    }
+}
+
+@Composable
+private fun textDp(size: TextUnit) = with(LocalDensity.current) { size.toDp() }
+
+private class EmptyView(val icon: ImageVector, val title: String, val hint: String)
+
+private fun emptyView(filter: String, search: String) = when {
+    search.isNotBlank() -> EmptyView(Icons.Outlined.SearchOff, "No matching notes", "Try different words or check the spelling.")
+    filter == "reminders" -> EmptyView(Icons.Outlined.Notifications, "No upcoming reminders", "Notes with a reminder appear here.")
+    filter == "shared" -> EmptyView(Icons.Outlined.PeopleOutline, "No shared notes", "Notes you share, or that are shared with you, appear here.")
+    filter == "archive" -> EmptyView(Icons.Outlined.Archive, "Your archive is empty", "Archive a note to tuck it away without deleting it.")
+    filter == "trash" -> EmptyView(Icons.Outlined.DeleteOutline, "Trash is empty", "Notes you delete appear here, so you can still restore them.")
+    filter.startsWith("label:") -> EmptyView(Icons.AutoMirrored.Outlined.Label, "No notes with this label", "Add the label to a note and it appears here.")
+    filter.startsWith("binder:") -> EmptyView(Icons.Outlined.Folder, "This binder is empty", "Notes you file in this binder appear here.")
+    else -> EmptyView(Icons.Outlined.Lightbulb, "Your notes appear here", "Tap \"Take a note…\" to write your first one.")
+}
+
+@Composable
+private fun EmptyState(view: EmptyView) {
+    Column(Modifier.padding(horizontal = 40.dp, vertical = 24.dp).semantics(mergeDescendants = true) {}, horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(96.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(view.icon, null, Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
+        }
+        Text(view.title, Modifier.padding(top = 20.dp), style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+        Text(view.hint, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
     }
 }
 

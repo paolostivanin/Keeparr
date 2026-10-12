@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -13,7 +14,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.keeparr.android.KeeparrApplication
+import dev.keeparr.android.ui.KeeparrTheme
+import dev.keeparr.android.ui.StartupGate
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -27,6 +31,7 @@ class WidgetConfigActivity : ComponentActivity() {
         val app = application as KeeparrApplication
         setContent {
             val scope = rememberCoroutineScope()
+            val settingsReady by app.settings.ready.collectAsStateWithLifecycle()
             var choices by remember { mutableStateOf(listOf("home" to "All notes, in app order", "pinned" to "Pinned notes")) }
             LaunchedEffect(Unit) {
                 val notes = app.repository.notes().first()
@@ -34,9 +39,9 @@ class WidgetConfigActivity : ComponentActivity() {
                     notes.map { it.binder }.filter { it.isNotBlank() }.distinct().sorted().map { "binder:$it" to "Binder: $it" } +
                     notes.filter { !it.archived && !it.trashed }.map { "note:${it.syncId}" to "Single note: ${if (it.locked) "Locked note" else it.title.ifBlank { "Untitled" }}" }
             }
-            MaterialTheme {
+            KeeparrTheme(StartupGate.dark(null, if (settingsReady) app.settings.themeMode else null, isSystemInDarkTheme())) {
                 Surface(Modifier.fillMaxSize()) {
-                    Column(Modifier.padding(20.dp)) {
+                    Column(Modifier.safeDrawingPadding().padding(20.dp)) {
                         Text("Choose widget notes", style = MaterialTheme.typography.headlineSmall)
                         Text("Each view follows the order in Keeparr.", Modifier.padding(vertical = 12.dp))
                         LazyColumn {

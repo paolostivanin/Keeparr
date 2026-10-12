@@ -13,6 +13,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import dev.keeparr.android.widgets.singleNoteWidgetChecklistItems
 import dev.keeparr.android.widgets.boundedWidgetText
+import dev.keeparr.android.widgets.widgetChecklistLines
 import dev.keeparr.android.widgets.widgetForegroundColor
 import dev.keeparr.android.widgets.widgetNoteBodyText
 import dev.keeparr.android.BuildConfig
@@ -33,6 +34,9 @@ import kotlinx.coroutines.flow.flowOf
 
 private val Context.legacyMigrationStore by preferencesDataStore(name = "connection-migration-test",
     produceMigrations = { context -> listOf(SharedPreferencesMigration(context, "connection-migration-test")) })
+
+private val Context.legacyLightMigrationStore by preferencesDataStore(name = "connection-migration-light-test",
+    produceMigrations = { context -> listOf(SharedPreferencesMigration(context, "connection-migration-light-test")) })
 
 private class FailingSettingsDataStore : DataStore<Preferences> {
     override val data: Flow<Preferences> = flowOf(emptyPreferences())
@@ -188,7 +192,9 @@ class NativeContractTest {
         val checklist = Note(JSONObject().put("isCbox", true).put("checkBoxes", JSONArray()
             .put(JSONObject().put("id", 1).put("done", true).put("data", "<p>Milk</p>"))
             .put(JSONObject().put("id", 2).put("done", false).put("data", "Eggs"))))
-        assertEquals("☑ Milk\n☐ Eggs", widgetNoteBodyText(checklist, single = false))
+        assertEquals("a checklist card draws its items as icon rows, not as body text", "", widgetNoteBodyText(checklist, single = false))
+        assertEquals(listOf(true to "Milk", false to "Eggs"), widgetChecklistLines(checklist))
+        assertEquals("Checklist · 2 item(s)", widgetNoteBodyText(checklist, single = true))
     }
     @Test fun widgetBodyTextShowsBulletsEvenWhenTheListTagsAreUpperCase() {
         assertEquals("\u2022 one\n  \u25E6 two", widgetNoteBodyText(Note(JSONObject().put("noteBody", "<UL><LI>one<UL><LI>two</LI></UL></LI></UL>")), single = false))
@@ -472,7 +478,38 @@ class NativeContractTest {
 
         assertEquals("$origin#57", settings.profile)
         assertEquals("legacy-client-cert", settings.aliasFor(origin))
-        assertTrue(settings.darkMode)
+        assertEquals("an earlier dark choice is kept", ThemeMode.Dark, settings.themeMode)
+    }
+    @Test fun legacyLightChoiceStaysLightWhileNoChoiceFollowsTheSystem() {
+        val context = RuntimeEnvironment.getApplication()
+        context.getSharedPreferences("connection-migration-light-test", Context.MODE_PRIVATE).edit().putBoolean("darkMode", false).commit()
+
+        val chosen = ConnectionSettings(context, context.legacyLightMigrationStore)
+        runBlocking { chosen.initialize() }
+        assertEquals("an explicit light choice is not overridden by the new default", ThemeMode.Light, chosen.themeMode)
+
+        val fresh = ConnectionSettings(context)
+        runBlocking { fresh.initialize() }
+        assertEquals(ThemeMode.System, fresh.themeMode)
+    }
+    @Test fun themeModePersistsAcrossReopeningTheSettings() {
+        val context = RuntimeEnvironment.getApplication()
+        val settings = ConnectionSettings(context)
+        runBlocking { settings.initialize() }
+        assertEquals(ThemeMode.System, settings.themeMode)
+        for (mode in listOf(ThemeMode.Dark, ThemeMode.Light, ThemeMode.System)) {
+            settings.themeMode = mode
+            runBlocking { settings.awaitWrites() }
+            val reopened = ConnectionSettings(context)
+            runBlocking { reopened.initialize() }
+            assertEquals(mode, reopened.themeMode)
+        }
+    }
+    @Test fun themeModeResolvesAgainstTheSystemOnlyWhenItFollowsIt() {
+        assertTrue(ThemeMode.System.isDark(true))
+        assertFalse(ThemeMode.System.isDark(false))
+        assertFalse(ThemeMode.Light.isDark(true))
+        assertTrue(ThemeMode.Dark.isDark(false))
     }
     @Test fun httpRequestUsesOneCapturedOriginTokenAndHeaderSnapshot() {
         val settings = ConnectionSettings(RuntimeEnvironment.getApplication())

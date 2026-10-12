@@ -1578,7 +1578,7 @@ class KeeparrRepositoryTest {
             get() = headersFor(origin)
             set(value) = setHeadersFor(origin, value)
         override var message = ""
-        override var darkMode = false
+        override var themeMode = ThemeMode.System
     }
 
     private class FakeNativeApi : NativeApi {

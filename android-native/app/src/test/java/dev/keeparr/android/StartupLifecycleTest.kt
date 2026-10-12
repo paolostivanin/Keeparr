@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import dev.keeparr.android.data.ConnectionSettings
+import dev.keeparr.android.data.ThemeMode
 import dev.keeparr.android.ui.StartupGate
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
@@ -32,8 +33,12 @@ class StartupLifecycleTest {
         assertFalse(StartupGate.signedIn(null, ""))
         assertFalse("an explicit sign-out wins over a stored token", StartupGate.signedIn(false, "session-token"))
         assertTrue("a fresh login wins before the token is read back", StartupGate.signedIn(true, ""))
-        assertTrue(StartupGate.dark(null, true))
-        assertFalse(StartupGate.dark(false, true))
+        assertTrue(StartupGate.dark(null, ThemeMode.Dark, false))
+        assertFalse("an explicit choice wins over the stored one", StartupGate.dark(ThemeMode.Light, ThemeMode.Dark, true))
+        assertTrue("System follows a dark system", StartupGate.dark(null, ThemeMode.System, true))
+        assertFalse("System follows a light system", StartupGate.dark(null, ThemeMode.System, false))
+        assertTrue("before the settings are read the system theme applies", StartupGate.dark(null, null, true))
+        assertFalse(StartupGate.dark(null, null, false))
     }
 
     @Test fun settingsAreReadAndDecryptedOffTheCallingThread() = runBlocking {

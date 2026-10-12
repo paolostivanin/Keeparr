@@ -36,7 +36,7 @@ import java.time.Instant
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SettingsScreen(activity: MainActivity, app: KeeparrApplication, reminders: List<JSONObject>, occurrences: List<JSONObject>,
-    dark: Boolean, onDark: (Boolean) -> Unit, onClose: () -> Unit, onLogout: () -> Unit, onError: (String) -> Unit) {
+    theme: ThemeMode, onTheme: (ThemeMode) -> Unit, onClose: () -> Unit, onLogout: () -> Unit, onError: (String) -> Unit) {
     var showAbout by remember { mutableStateOf(false) }
     if (showAbout) { AboutScreen(onBack = { showAbout = false }); return }
     BackHandler(onBack = onClose)
@@ -88,7 +88,12 @@ internal fun SettingsScreen(activity: MainActivity, app: KeeparrApplication, rem
                     onClick = { activity.chooseCertificate(app.settings.origin) { alias = it; SyncWorker.enqueue(app) } })
             }
             SettingsSection("Appearance") {
-                SettingsSwitchRow(Icons.Outlined.DarkMode, "Dark theme", null, dark, onDark)
+                SettingsRow(Icons.Outlined.DarkMode, "Theme", "Follow the system, or always light or dark")
+                Row(Modifier.padding(start = 56.dp, end = 16.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ThemeMode.entries.forEach { mode ->
+                        FilterChip(selected = theme == mode, onClick = { onTheme(mode) }, label = { Text(mode.name) })
+                    }
+                }
             }
             SettingsSection("Reminders") {
                 // `refresh` only exists to re-run these reads after returning from system settings.

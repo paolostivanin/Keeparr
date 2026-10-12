@@ -10,6 +10,7 @@ import android.widget.TextView
 import androidx.room.Room
 import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
+import dev.keeparr.android.R as AppR
 import dev.keeparr.android.data.*
 import dev.keeparr.android.reminders.ReminderController
 import kotlinx.coroutines.*
@@ -35,7 +36,7 @@ class WidgetBehaviorTest {
         override var token = "token"
         override var headers = ""
         override var message = ""
-        override var darkMode = false
+        override var themeMode = ThemeMode.System
         override fun aliasFor(server: String) = ""
         override fun setAliasFor(server: String, value: String) {}
         override fun headersFor(server: String) = ""
@@ -206,6 +207,67 @@ class WidgetBehaviorTest {
 
         profile.token = ""
         assertEquals("signed out", 0, factory(1).count)
+    }
+
+    private fun checklistNote(vararg items: Pair<String, Boolean>, configure: Note.() -> Unit = {}) = note(1.0) {
+        raw.put("isCbox", true).put("checkBoxes", JSONArray(items.mapIndexed { index, (text, done) ->
+            JSONObject().put("id", index + 1).put("data", text).put("done", done) })); configure(this)
+    }
+
+    private fun render(row: Row, single: Boolean = false) = buildRow(app, row, emptyMap(), single).apply(app, FrameLayout(app))
+    private fun android.view.View.checkLines() = (findViewById<android.view.ViewGroup>(AppR.id.row_checks))
+
+    @Test fun aChecklistCardDrawsIconRowsInsteadOfTextGlyphs() {
+        val view = render(Row(checklistNote("Milk" to true, "Eggs" to false)))
+        val lines = view.checkLines()
+        assertEquals(android.view.View.VISIBLE, lines.visibility)
+        assertEquals(listOf("Milk", "Eggs"), (0 until lines.childCount).map { lines.getChildAt(it).findViewById<TextView>(AppR.id.check_line_text).text.toString() })
+        assertEquals(listOf("Complete", "Incomplete"), (0 until lines.childCount).map { lines.getChildAt(it).findViewById<android.view.View>(AppR.id.check_line_icon).contentDescription })
+        assertEquals("the items are not repeated as body text", android.view.View.GONE, view.findViewById<android.view.View>(AppR.id.row_body).visibility)
+        listOf(AppR.id.row_body, AppR.id.row_title).forEach { assertFalse(view.findViewById<TextView>(it).text.contains("☑") || view.findViewById<TextView>(it).text.contains("☐")) }
+    }
+
+    @Test fun aChecklistCardShowsAtMostAsManyRowsAsACardHasLines() {
+        val view = render(Row(checklistNote(*(1..20).map { "item $it" to false }.toTypedArray())))
+        assertEquals(WIDGET_CARD_MAX_LINES, view.checkLines().childCount)
+    }
+
+    @Test fun aRecycledRowViewDoesNotKeepThePreviousNotesChecklistRows() {
+        val parent = FrameLayout(app)
+        val view = buildRow(app, Row(checklistNote("Milk" to true, "Eggs" to false)), emptyMap(), false).apply(app, parent)
+        assertEquals(2, view.checkLines().childCount)
+        buildRow(app, Row(checklistNote("Bread" to false)), emptyMap(), false).reapply(app, view)
+        assertEquals("rows are replaced, not accumulated", 1, view.checkLines().childCount)
+        buildRow(app, Row(note(2.0)), emptyMap(), false).reapply(app, view)
+        assertEquals(0, view.checkLines().childCount)
+        assertEquals(android.view.View.GONE, view.checkLines().visibility)
+    }
+
+    @Test fun aSingleNoteChecklistItemRowShowsTheItemTextWithoutAGlyphAndDescribesTheWholeRow() {
+        val checklist = checklistNote("Milk" to true, "Eggs" to false)
+        val view = render(Row(checklist, checklist.items[0], 0), single = true)
+        assertEquals("Milk", view.findViewById<TextView>(AppR.id.checklist_item_row).text.toString())
+        val content = view.findViewById<android.view.View>(AppR.id.checklist_item_content)
+        assertEquals("Complete: Milk. Toggle checklist item", content.contentDescription)
+        assertFalse("the state is an icon now, not a text prefix", view.findViewById<TextView>(AppR.id.checklist_item_row).text.contains("☑"))
+        assertTrue("the description and tap target are the row, which contains the icon", (content as android.view.ViewGroup).findViewById<android.view.View>(AppR.id.checklist_item_check) != null)
+    }
+
+    @Test fun aNoteWithoutAColorFollowsTheWidgetColorsAndAColoredNoteKeepsItsOwn() {
+        fun title(view: android.view.View) = view.findViewById<TextView>(AppR.id.row_title).currentTextColor
+        assertEquals(app.getColor(AppR.color.widget_text), title(render(Row(note(1.0)))))
+        val dark = note(1.0) { raw.put("bgColor", "#5B0000") }
+        assertEquals(widgetForegroundColor(android.graphics.Color.parseColor("#5B0000")), title(render(Row(dark))))
+        val light = note(1.0) { raw.put("bgColor", "#FFF8B8") }
+        assertEquals(widgetForegroundColor(android.graphics.Color.parseColor("#FFF8B8")), title(render(Row(light))))
+    }
+
+    @org.robolectric.annotation.Config(qualifiers = "night")
+    @Test fun inDarkModeANoteWithoutAColorGetsLightTextOnTheDarkCard() {
+        val view = render(Row(note(1.0)))
+        assertEquals(0xFFE8EAED.toInt(), view.findViewById<TextView>(AppR.id.row_title).currentTextColor)
+        assertEquals(0xFFE8EAED.toInt(), app.getColor(AppR.color.widget_text))
+        assertEquals(0xFF303134.toInt(), app.getColor(AppR.color.widget_note_card))
     }
 
     @Test fun tapsToggleOnlyIdentifiableItemsOfUnlockedNotes() {

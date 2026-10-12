@@ -39,7 +39,8 @@ internal object AboutInfo {
         "Jetpack Compose, Room, WorkManager, DataStore: Apache License 2.0",
         "OkHttp, kotlinx.serialization, kotlinx.coroutines: Apache License 2.0",
         "jsoup: MIT License",
-        "AndroidSVG: Apache License 2.0")
+        "AndroidSVG: Apache License 2.0",
+        "Google Sans and Roboto fonts: SIL Open Font License 1.1")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
