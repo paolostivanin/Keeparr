@@ -812,7 +812,7 @@
     <div class="cbox-plus-icon"></div>
     <div class="cbox-note-container">
       <div class="cbox-note ph">List item</div>
-      <div #cboxPh (keydown)="cboxPhKeyDown($event)" (input)="cboxPhInput()" (focus)="rememberTextHistoryTarget(cboxPh)" class="cbox-note" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text">
+      <div #cboxPh (keydown)="cboxPhKeyDown($event)" (input)="cboxPhInput()" (paste)="onCboxPhPaste($event)" (focus)="rememberTextHistoryTarget(cboxPh)" class="cbox-note" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text">
       </div>
     </div>
   </div>
@@ -857,7 +857,7 @@
           (click)="toggleCboxDone(cb.id, $event)"></div>
         <div class="cbox-note-container">
           <div #cboxInput [attr.data-cbox-last]="last" [attr.data-cbox-id]="cb.id" [class.cbox-done]="cb.done"
-            (input)="onCboxInput(cb.id, cboxInput)" (blur)="cboxTools(cb.id).update(cboxInput); cboxInputBlur(cb.id)" (keydown)="cBoxKeyDown($event,cb.id)"
+            (input)="onCboxInput(cb.id, cboxInput)" (blur)="cboxTools(cb.id).update(cboxInput); cboxInputBlur(cb.id)" (keydown)="cBoxKeyDown($event,cb.id)" (paste)="onCboxPaste($event, cb.id)"
             (touchstart)="cboxTextTouchStart($event, cb.id, cboxInput)" (touchmove)="cboxTextTouchMove($event, cb.id, cboxInput)"
             (touchcancel)="cboxTextTouchCancel(cb.id, cboxInput)"
             (focus)="cboxInputFocus($event)" (touchend)="focusCboxFromTouch($event, cb.id, cboxInput)"

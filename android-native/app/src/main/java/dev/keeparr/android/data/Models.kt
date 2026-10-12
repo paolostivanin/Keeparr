@@ -392,6 +392,26 @@ object ChecklistAdapter {
         return JSONArray().also { updated -> entries.forEach(updated::put) }
     }
 
+    /** One entry per non-empty line, however the text was broken (a paste can carry any line ending). */
+    fun lines(text: String): List<String> = text.split(Regex("\r\n?|\n")).map { it.trim() }.filter { it.isNotEmpty() }
+
+    /**
+     * Replaces the text of the row at [index] with the first of [lines] and puts every further line in an unchecked row
+     * right after it at the same indent, with ids [firstId], [firstId] + 1 and so on.
+     */
+    fun splitRow(items: JSONArray, index: Int, lines: List<String>, firstId: Long): JSONArray {
+        val entries = (0 until items.length()).map { items.opt(it) }.toMutableList()
+        val row = items.optJSONObject(index) ?: return JSONArray(entries)
+        val replaced = JSONObject(row.toString()).put("data", NoteFormat.editedChecklistItem(row.opt("data"), lines.firstOrNull().orEmpty()))
+        entries[index] = replaced
+        val indent = row.optInt("indentLevel")
+        val added = lines.drop(1).mapIndexed { offset, line ->
+            JSONObject().put("id", firstId + offset).put("done", false).put("data", Html.escapeHtml(line)).put("indentLevel", indent)
+        }
+        entries.addAll(index + 1, added)
+        return JSONArray().also { updated -> entries.forEach(updated::put) }
+    }
+
     private fun updateItem(items: JSONArray, index: Int, update: (JSONObject) -> Unit): JSONArray {
         val result = JSONArray(items.toString())
         result.optJSONObject(index)?.let(update)

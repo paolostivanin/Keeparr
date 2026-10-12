@@ -123,6 +123,17 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         change("checkBoxes") { it.put("checkBoxes", ChecklistAdapter.insertAfter(it.optJSONArray("checkBoxes") ?: JSONArray(), after, id)) }
         pendingFocusItemId = id
     }
+    // Text with line breaks can only come from a paste: Enter adds a row instead. Each line gets a row of its own.
+    fun editChecklistItem(index: Int, item: JSONObject, text: String) {
+        if (!text.contains('\n') && !text.contains('\r')) {
+            change("checkBoxes") { it.getJSONArray("checkBoxes").getJSONObject(index).put("data", NoteFormat.editedChecklistItem(item.opt("data"), text)) }
+            return
+        }
+        val lines = ChecklistAdapter.lines(text)
+        val firstId = System.currentTimeMillis()
+        change("checkBoxes") { it.put("checkBoxes", ChecklistAdapter.splitRow(it.getJSONArray("checkBoxes"), index, lines, firstId)) }
+        if (lines.size > 1) pendingFocusItemId = firstId + lines.size - 2
+    }
     // Tapping blank editor space behaves like tapping the end of the content.
     fun focusEditorEnd() {
         if (note.checklist) {
@@ -314,9 +325,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                             } })
                             if (NoteFormat.checklistItemEditable(item.opt("data"))) BasicTextField(
                                 value = NoteFormat.displayText(item.text("data")),
-                                onValueChange = { text -> change("checkBoxes") {
-                                    it.getJSONArray("checkBoxes").getJSONObject(index).put("data", NoteFormat.editedChecklistItem(item.opt("data"), text))
-                                } }, modifier = Modifier.weight(1f).padding(start = (item.optInt("indentLevel") * 12).dp).focusRequester(requester)
+                                onValueChange = { text -> editChecklistItem(index, item, text) }, modifier = Modifier.weight(1f).padding(start = (item.optInt("indentLevel") * 12).dp).focusRequester(requester)
                                     // A hardware Enter would otherwise put a line break into the item.
                                     .onPreviewKeyEvent { event ->
                                         val enter = event.key == Key.Enter || event.key == Key.NumPadEnter

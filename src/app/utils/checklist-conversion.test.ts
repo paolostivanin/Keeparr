@@ -1,7 +1,7 @@
 // node --test src/app/utils/checklist-conversion.test.ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { canHideCheckboxes, checkBoxesToBodyHtml, escapeHtml, linesToCheckBoxes, splitBodyIntoLines, type LineNode } from './checklist-conversion.ts';
+import { canHideCheckboxes, checkBoxesToBodyHtml, escapeHtml, linesToCheckBoxes, splitBodyIntoLines, splitPastedLines, type LineNode } from './checklist-conversion.ts';
 
 const text = (value: string): LineNode => ({ nodeType: 3, nodeName: '#text', textContent: value, childNodes: [] });
 const el = (name: string, children: LineNode[] = [], extra: Partial<LineNode> = {}): LineNode =>
@@ -35,6 +35,13 @@ test('linesToCheckBoxes escapes text and continues after the highest existing id
   ]);
   assert.equal(linesToCheckBoxes(['x'])[0].id, 0);
   assert.equal(escapeHtml('<&>'), '&lt;&amp;&gt;');
+});
+
+test('splitPastedLines gives one trimmed entry per non-empty line for any line ending', () => {
+  assert.deepEqual(splitPastedLines('Carriola (38.90, reparto edilizia)\r\n  Tappeti bagno \n\n\rPorta bagnoschiuma\n'), [
+    'Carriola (38.90, reparto edilizia)', 'Tappeti bagno', 'Porta bagnoschiuma',
+  ]);
+  assert.deepEqual(splitPastedLines(' \n\t'), []);
 });
 
 test('checkBoxesToBodyHtml keeps unchecked items in order and drops checked and blank ones', () => {

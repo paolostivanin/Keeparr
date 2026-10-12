@@ -260,6 +260,77 @@ describe('InputComponent list editing and keyboard handling', () => {
   });
 });
 
+describe('InputComponent checklist paste', () => {
+  let host: HTMLElement;
+  beforeEach(() => { host = document.createElement('div'); document.body.appendChild(host); });
+  afterEach(() => host.remove());
+
+  function checklistEditor() {
+    const row = document.createElement('div');
+    row.contentEditable = 'true';
+    row.textContent = 'headtail';
+    host.append(row);
+    const editor = Object.create(InputComponent.prototype) as any;
+    Object.assign(editor, {
+      checkBoxes: [{ id: 1, done: false, data: 'headtail', indentLevel: 1 }, { id: 2, done: false, data: 'next', indentLevel: 0 }],
+      cboxSuggestionEligibleIds: new Set<number>(), inputLength: { value: { title: 0, body: 0, cb: 0 }, next: () => undefined },
+      cboxPh: { nativeElement: document.createElement('div') }, cd: { detectChanges: () => undefined },
+      syncCboxDomIntoModel: () => undefined, pushCboxHistorySnapshot: jasmine.createSpy('pushCboxHistorySnapshot'),
+      queueCoEditAutosave: () => undefined, onCboxInput: () => undefined
+    });
+    return { editor, row };
+  }
+
+  const pasteEvent = (text: string, currentTarget?: HTMLElement) => ({
+    clipboardData: { getData: () => text }, currentTarget, preventDefault: jasmine.createSpy('preventDefault')
+  }) as unknown as ClipboardEvent;
+
+  it('adds one row per pasted line after the row at its indent and keeps the text behind the caret on the last one', () => {
+    const { editor, row } = checklistEditor();
+    const range = document.createRange();
+    range.setStart(row.firstChild!, 4);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    const event = pasteEvent('A < B\r\n\r\nC\nD', row);
+
+    editor.onCboxPaste(event, 1);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(row.textContent).toBe('headA < B');
+    expect(editor.checkBoxes.map((cb: any) => cb.data)).toEqual(['headtail', 'C', 'Dtail', 'next']);
+    expect(editor.checkBoxes.map((cb: any) => cb.id)).toEqual([1, 3, 4, 2]);
+    expect(editor.checkBoxes.map((cb: any) => cb.indentLevel)).toEqual([1, 1, 1, 0]);
+    expect(editor.pushCboxHistorySnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('escapes pasted markup', () => {
+    const { editor, row } = checklistEditor();
+    editor.onCboxPaste(pasteEvent('one\n<b>two</b>', row), 1);
+    expect(editor.checkBoxes[1].data).toBe('&lt;b&gt;two&lt;/b&gt;');
+  });
+
+  it('leaves a single pasted line to the browser', () => {
+    const { editor, row } = checklistEditor();
+    const event = pasteEvent('just one line\n', row);
+
+    editor.onCboxPaste(event, 1);
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(editor.checkBoxes.length).toBe(2);
+  });
+
+  it('appends one row per line when pasting into the empty "List item" row', () => {
+    const { editor } = checklistEditor();
+    const event = pasteEvent('x\ny\nz');
+
+    editor.onCboxPhPaste(event);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(editor.checkBoxes.map((cb: any) => cb.data)).toEqual(['headtail', 'next', 'x', 'y', 'z']);
+    expect(editor.pushCboxHistorySnapshot).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('InputComponent formatting bars', () => {
   let host: HTMLElement;
   beforeEach(() => { host = document.createElement('div'); document.body.appendChild(host); });

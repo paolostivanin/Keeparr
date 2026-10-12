@@ -70,6 +70,11 @@ export function linesToCheckBoxes(lines: string[], existing: ChecklistItem[] = [
   return lines.map((line, index) => ({ done: false, data: escapeHtml(line), id: firstId + index, indentLevel: 0 }))
 }
 
+/** Pasted text becomes one item per non-empty line, without the surrounding whitespace. */
+export function splitPastedLines(text: string): string[] {
+  return text.split(/\r\n?|\n/).map(line => line.trim()).filter(Boolean)
+}
+
 function hasVisibleText(html: string): boolean {
   return html.replace(/<[^>]*>/g, '').replace(/&nbsp;|\u00a0/g, ' ').trim().length > 0
 }

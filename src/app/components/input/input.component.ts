@@ -23,7 +23,7 @@ import { UserPreferencesService } from 'src/app/services/user-preferences.servic
 import { ensureTimepickerWheelPlugin } from 'src/app/utils/timepicker-wheel';
 import { MAX_BODY_LIST_LEVELS, canIndentBodyList, canOutdentBodyList, listDepth } from 'src/app/utils/body-list';
 import { MAX_INDENT_LEVEL, descendantIndexes, normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
-import { canHideCheckboxes, checkBoxesToBodyHtml, linesToCheckBoxes, splitBodyIntoLines } from 'src/app/utils/checklist-conversion';
+import { canHideCheckboxes, checkBoxesToBodyHtml, escapeHtml, linesToCheckBoxes, splitBodyIntoLines, splitPastedLines } from 'src/app/utils/checklist-conversion';
 import { DrawingHistory } from 'src/app/utils/drawing-history';
 import { Disposables } from 'src/app/utils/disposables';
 import { ChecklistHistory, normalizeChecklist, setChecklistIndent, toggleChecklistDone } from 'src/app/utils/checklist-model';
@@ -1723,42 +1723,82 @@ export class InputComponent implements OnInit {
   }
 
   private focusLastCboxInput() {
-    const el = document.querySelector(`[data-cbox-last="true"]`) as HTMLDivElement | null
-    if (!el) return
-    el.focus()
-    const sel = window.getSelection()
-    sel?.selectAllChildren(el)
-    sel?.collapseToEnd()
+    this.focusCboxInputElement(document.querySelector(`[data-cbox-last="true"]`))
   }
 
   addCheckBox(data: string, insertAfterId?: number) {
+    return this.addCheckBoxes([data], insertAfterId)[0]
+  }
+
+  /** Adds one row per entry (a single undo step), after the given row at its indent, or at the end. */
+  addCheckBoxes(data: string[], insertAfterId?: number) {
     this.syncCboxDomIntoModel()
     const numericIds = this.checkBoxes
       .map(c => Number(c.id))
       .filter(id => Number.isSafeInteger(id) && id >= 0)
-    const maxId = numericIds.length ? Math.max(...numericIds) : -1
-    const cb = {
-      done: false,
-      data: data,
-      id: maxId + 1,
-      indentLevel: 0
-    }
-    if (insertAfterId !== undefined) {
-      const idx = this.checkBoxes.findIndex(item => item.id === insertAfterId)
-      if (idx >= 0) {
-        cb.indentLevel = this.checkboxIndentLevel(this.checkBoxes[idx])
-        this.checkBoxes.splice(idx + 1, 0, cb)
-      } else {
-        this.checkBoxes.push(cb)
-      }
-    } else {
-      this.checkBoxes.push(cb)
-    }
-    this.cboxSuggestionEligibleIds.add(cb.id)
+    let nextId = (numericIds.length ? Math.max(...numericIds) : -1) + 1
+    const idx = insertAfterId === undefined ? -1 : this.checkBoxes.findIndex(item => item.id === insertAfterId)
+    const indentLevel = idx >= 0 ? this.checkboxIndentLevel(this.checkBoxes[idx]) : 0
+    const added = data.map(html => ({ done: false, data: html, id: nextId++, indentLevel }))
+    if (idx >= 0) this.checkBoxes.splice(idx + 1, 0, ...added)
+    else this.checkBoxes.push(...added)
+    added.forEach(cb => this.cboxSuggestionEligibleIds.add(cb.id))
     this.inputLength.next({ ...this.inputLength.value, cb: this.checkBoxes.length })
     this.pushCboxHistorySnapshot()
     this.queueCoEditAutosave()
-    return cb
+    return added
+  }
+
+  /** Several pasted lines in a row become one row each; the text after the caret ends up behind the last line. */
+  onCboxPaste(event: ClipboardEvent, id: number) {
+    const lines = splitPastedLines(event.clipboardData?.getData('text/plain') || '')
+    if (lines.length < 2) return
+    event.preventDefault()
+    const row = event.currentTarget as HTMLDivElement
+    const tail = this.takeCboxTextAfterCaret(row)
+    row.append(document.createTextNode(lines[0]))
+    this.onCboxInput(id, row)
+    const rest = lines.slice(1).map(escapeHtml)
+    rest[rest.length - 1] += tail
+    const added = this.addCheckBoxes(rest, id)
+    this.cd.detectChanges()
+    this.focusCboxInput(added[added.length - 1].id)
+  }
+
+  onCboxPhPaste(event: ClipboardEvent) {
+    const lines = splitPastedLines(event.clipboardData?.getData('text/plain') || '')
+    if (!lines.length) return
+    event.preventDefault()
+    this.cboxPh?.nativeElement.replaceChildren()
+    this.addCheckBoxes(lines.map(escapeHtml))
+    this.cd.detectChanges()
+    this.focusLastCboxInput()
+  }
+
+  /** Removes the selection and everything behind the caret from the row, returning the latter as HTML. */
+  private takeCboxTextAfterCaret(row: HTMLElement) {
+    const selection = window.getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    if (!range || !row.contains(range.commonAncestorContainer)) return ''
+    range.deleteContents()
+    const behind = document.createRange()
+    behind.setStart(range.startContainer, range.startOffset)
+    behind.setEnd(row, row.childNodes.length)
+    const holder = document.createElement('div')
+    holder.append(behind.extractContents())
+    return holder.innerHTML
+  }
+
+  private focusCboxInput(id: number) {
+    this.focusCboxInputElement(document.querySelector(`[data-cbox-id="${id}"]`))
+  }
+
+  private focusCboxInputElement(el: Element | null) {
+    if (!(el instanceof HTMLElement)) return
+    el.focus()
+    const sel = window.getSelection()
+    sel?.selectAllChildren(el)
+    sel?.collapseToEnd()
   }
 
   addCheckBoxFromPlaceholder() {

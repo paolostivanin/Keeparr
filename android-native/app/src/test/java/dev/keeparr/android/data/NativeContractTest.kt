@@ -332,6 +332,21 @@ class NativeContractTest {
         assertEquals(4L, appended.getJSONObject(2).getLong("id"))
         assertEquals(0, appended.getJSONObject(2).getInt("indentLevel"))
     }
+    @Test fun pastedLinesBecomeOneRowEachAfterTheEditedRowAtItsIndent() {
+        val original = JSONArray().put(JSONObject().put("id", 1).put("data", "First").put("done", true).put("indentLevel", 2))
+            .put(JSONObject().put("id", 2).put("data", "Second").put("done", false).put("indentLevel", 0))
+        val lines = ChecklistAdapter.lines("Carriola (38.90, reparto)\r\n\r\n  Tom & <Jerry>  \nTappeti bagno\n")
+        assertEquals(listOf("Carriola (38.90, reparto)", "Tom & <Jerry>", "Tappeti bagno"), lines)
+        val split = ChecklistAdapter.splitRow(original, 0, lines, 10)
+        assertEquals(listOf(1L, 10L, 11L, 2L), (0 until split.length()).map { split.getJSONObject(it).getLong("id") })
+        assertEquals(listOf("Carriola (38.90, reparto)", "Tom &amp; &lt;Jerry&gt;", "Tappeti bagno", "Second"),
+            (0 until split.length()).map { split.getJSONObject(it).getString("data") })
+        assertEquals(listOf(2, 2, 2, 0), (0 until split.length()).map { split.getJSONObject(it).getInt("indentLevel") })
+        // The edited row keeps its checked state, the new ones start unchecked, and the source is untouched.
+        assertEquals(listOf(true, false, false, false), (0 until split.length()).map { split.getJSONObject(it).getBoolean("done") })
+        assertEquals("First", original.getJSONObject(0).getString("data"))
+        assertEquals("", ChecklistAdapter.splitRow(original, 0, emptyList(), 10).getJSONObject(0).getString("data"))
+    }
     @Test fun styledTextWidgetRoundTripRetainsSupportedLinkMarkup() {
         val richHtml = fixtures.getJSONObject("content").getString("richChecklistItem")
         val editor = EditText(RuntimeEnvironment.getApplication())
