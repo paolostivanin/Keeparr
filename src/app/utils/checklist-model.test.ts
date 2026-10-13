@@ -23,6 +23,7 @@ function adapt(node: any): LineNode {
   return {
     nodeType: 1, nodeName: node.nodeName.toUpperCase(), textContent: null, className: attribute('class')?.value ?? '',
     outerHTML: parse5.serializeOuter(node), hasAttribute: (name: string) => !!attribute(name),
+    getAttribute: (name: string) => attribute(name)?.value ?? null,
     get childNodes() { return (node.childNodes || []).map(adapt); },
   } as LineNode;
 }

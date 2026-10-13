@@ -11,6 +11,7 @@ export interface LineNode {
   outerHTML?: string
   /** Element attribute lookup; absent on text nodes and in tree stand-ins that carry no attributes. */
   hasAttribute?: (name: string) => boolean
+  getAttribute?: (name: string) => string | null
 }
 
 export interface ChecklistItem {
@@ -23,6 +24,7 @@ export interface ChecklistItem {
 const TEXT_NODE = 3
 const ELEMENT_NODE = 1
 const BLOCK_TAGS = new Set(['P', 'DIV', 'LI', 'UL', 'OL', 'BLOCKQUOTE', 'PRE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'])
+const ATOMIC_BODY_TAGS = new Set(['TABLE', 'HR', 'IMG', 'VIDEO', 'AUDIO', 'IFRAME', 'OBJECT', 'EMBED', 'CANVAS', 'SVG', 'FIGURE', 'PICTURE'])
 
 export function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -34,7 +36,8 @@ export function escapeHtml(text: string): string {
  */
 function isKeeparrAsBody(node: LineNode): boolean {
   const classes = typeof node.className === 'string' ? node.className.split(/\s+/) : []
-  return node.nodeName === 'IMG' || classes.includes('editor-link-preview-slot') || classes.includes('inline-note-image-wrap')
+  return ATOMIC_BODY_TAGS.has(node.nodeName.toUpperCase()) || node.getAttribute?.('contenteditable')?.toLowerCase() === 'false' ||
+    classes.includes('editor-link-preview-slot') || classes.includes('inline-note-image-wrap')
 }
 
 /** Editor chrome (the inline image delete button) is neither text nor body content. */

@@ -190,9 +190,9 @@ object NoteHtml {
 
     /**
      * Same as the web's `splitBodyIntoLines(...).lines`: `<br>` and block elements end a line, whitespace collapses,
-     * blank lines are skipped, images and link-preview slots are not text.
+     * blank lines are skipped, and atomic embeds/link-preview slots are not checklist text.
      */
-    fun nonBlankLines(html: String, skipEmbeds: Boolean = false): List<String> {
+    fun nonBlankLines(html: String, skipEmbeds: Boolean = true): List<String> {
         val result = ArrayList<String>()
         val current = StringBuilder()
         fun flush() {

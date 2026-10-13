@@ -72,6 +72,7 @@ test('nonBlankLines equals the web splitBodyIntoLines over a parsed document', a
     if (n.nodeName.startsWith('#')) return { nodeType: 8, nodeName: n.nodeName, textContent: null, childNodes: [] };
     const className = n.attrs?.find((a: any) => a.name === 'class')?.value ?? '';
     return { nodeType: 1, nodeName: n.nodeName.toUpperCase(), textContent: null, className, outerHTML: parse5.serializeOuter(n),
+      getAttribute: (name: string) => n.attrs?.find((attribute: any) => attribute.name === name)?.value ?? null,
       get childNodes() { return (n.childNodes || []).map(adapt); } } as LineNode;
   };
   const bodyOf = (html: string) => parse5.parse(html).childNodes.find((c: any) => c.nodeName === 'html').childNodes.find((c: any) => c.nodeName === 'body');

@@ -27,6 +27,16 @@ test('splitBodyIntoLines keeps images and link previews in the body instead of d
   assert.equal(leftoverHtml, '<img src="a.png"><div class="editor-link-preview-slot"></div>');
 });
 
+test('splitBodyIntoLines preserves atomic embeds and non-editable blocks in the body', () => {
+  const body = root(el('div', [text('before')]), el('hr', [], { outerHTML: '<hr>' }),
+    el('table', [el('tr', [el('td', [text('A')])])], { outerHTML: '<table><tbody><tr><td>A</td></tr></tbody></table>' }),
+    el('div', [text('foreign')], { outerHTML: '<div contenteditable="false" data-kind="foreign">foreign</div>',
+      getAttribute: name => name === 'contenteditable' ? 'false' : null }), el('div', [text('after')]))
+  const { lines, leftoverHtml } = splitBodyIntoLines(body);
+  assert.deepEqual(lines, ['before', 'after']);
+  assert.equal(leftoverHtml, '<hr><table><tbody><tr><td>A</td></tr></tbody></table><div contenteditable="false" data-kind="foreign">foreign</div>');
+});
+
 test('the inline image wrapper is one leftover node: its delete button never becomes an item', () => {
   const tool = el('button', [text('close')], { hasAttribute: name => name === 'data-inline-image-tool' });
   const image = el('img', [], { outerHTML: '<img class="inline-note-image" src="a.png">' });

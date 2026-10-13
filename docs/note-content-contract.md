@@ -75,7 +75,7 @@ Everything under `editorHtml`, `noteColors` and `checklistOps`. Every entry has 
   - adjacent inline elements with the same tag and attributes are merged after an edit (not on a read);
   - `canonical(canonical(x)) == canonical(x)`.
 - **Preview text** shows list markers: unordered `• ◦ ▪ ▫` by depth, ordered `n.` (respecting `ol[start]`, restarting per list), two spaces of indent per level, depth capped at 4 for glyph and indent (level 5 is kept in the data and drawn at level 4). A stray text run inside a list has no marker and no indent. Quotes and headings have no marker. Lines of an item continued with `<br>` are not pinned: cases that involve them have no `preview`.
-- **nonBlankLines** is exactly what the web's `splitBodyIntoLines` returns for the parsed body (whitespace runs collapse to one space, nbsp becomes a space, blank lines are skipped, tables and `hr` do not split lines). Quirky results are recorded as they are and the case `note` says so. It is omitted where the web walker is not a sensible reference (`script-style-dropped`).
+- **nonBlankLines** is exactly what the web's `splitBodyIntoLines` returns for the parsed body (whitespace runs collapse to one space, nbsp becomes a space, blank lines are skipped, atomic embeds stay in the body and do not become checklist text). Quirky results are recorded as they are and the case `note` says so. It is omitted where the web walker is not a sensible reference (`script-style-dropped`).
 
 ### 6.2 `editorHtml`
 
