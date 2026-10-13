@@ -76,6 +76,10 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
     var themeOverride by remember { mutableStateOf<ThemeMode?>(null) }
     val signedIn = settingsReady && StartupGate.signedIn(signedInOverride, app.settings.token)
     val dark = StartupGate.dark(themeOverride, if (settingsReady) app.settings.themeMode else null, isSystemInDarkTheme())
+    // Platform dialogs and View resources follow the app theme, not just the system's. Changing the night mode recreates the
+    // activity, which is why the open note and the settings screen are saved state.
+    val themeMode = StartupGate.mode(themeOverride, app.settings.themeMode)
+    LaunchedEffect(settingsReady, themeMode) { if (settingsReady) applyNightMode(activity, themeMode) }
     var error by remember { mutableStateOf<String?>(null) }
     val sessions: EditorSessionStores = androidx.lifecycle.viewmodel.compose.viewModel(activity)
     // The open note survives activity re-creation (rotation, process restoration) as its syncId and is reloaded;
@@ -91,7 +95,7 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
         val id = editingId
         if (id != null && editing == null && signedIn) openEditor(repo.note(id))
     }
-    var showSettings by remember { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
     val incoming by activity.incoming.collectAsStateWithLifecycle()
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { error = problem.message ?: "Could not complete this action" } } }
     KeeparrTheme(dark) {
@@ -133,7 +137,7 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
                 } else HomeScreen(app, notes, reminders, conflicts, onEdit = { openEditor(it) }, onCreate = { checklist ->
                     action { val note = Note.create(app.settings.userId, checklist); repo.save(note); openEditor(note) }
                 }, onSettings = { showSettings = true }, onReauthenticate = { signedInOverride = false }, onError = { error = it })
-                if (showSettings) SettingsScreen(activity, app, reminders, occurrences, StartupGate.mode(themeOverride, app.settings.themeMode), onTheme = { themeOverride = it; app.settings.themeMode = it },
+                if (showSettings) SettingsScreen(activity, app, reminders, occurrences, themeMode, onTheme = { themeOverride = it; app.settings.themeMode = it; app.refreshWidgets(app) },
                     onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedInOverride = false; showSettings = false } }, onError = { error = it })
             }
             val visibleError = settingsWriteError ?: error
@@ -474,8 +478,10 @@ private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, modifier: M
     // Only this card's own highlight state is observed, so a changing drop target recomposes just two cards.
     val dragging by remember(note.syncId, reorder) { derivedStateOf { reorder.draggingId == note.syncId } }
     val dropTarget by remember(note.syncId, reorder) { derivedStateOf { reorder.targetId == note.syncId } }
-    val color = note.colorArgb?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
-    val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF1F1F1)
+    // The stored color is data; the dark variant is derived here at render time.
+    val displayed = note.colorArgb?.let { NotePalette.display(it, LocalDarkTheme.current) }
+    val color = displayed?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
+    val foreground = displayed?.let { Color(NotePalette.textColor(it)) } ?: MaterialTheme.colorScheme.onSurface
     val highlighted = selected || dropTarget
     val shape = MaterialTheme.shapes.small
     // A colored note gets a hairline in its own text color, so the border stays soft on every swatch in light and dark.

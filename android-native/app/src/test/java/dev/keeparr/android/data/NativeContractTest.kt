@@ -14,7 +14,6 @@ import org.robolectric.RuntimeEnvironment
 import dev.keeparr.android.widgets.singleNoteWidgetChecklistItems
 import dev.keeparr.android.widgets.boundedWidgetText
 import dev.keeparr.android.widgets.widgetChecklistLines
-import dev.keeparr.android.widgets.widgetForegroundColor
 import dev.keeparr.android.widgets.widgetNoteBodyText
 import dev.keeparr.android.BuildConfig
 import dev.keeparr.android.ui.canReorderNotes
@@ -267,17 +266,15 @@ class NativeContractTest {
     @Test fun noteWidgetChoosesReadableForegroundForDarkAndLightColors() {
         val darkRed = android.graphics.Color.parseColor("#5B0000")
         val lightYellow = android.graphics.Color.parseColor("#FFF8B8")
-        assertTrue(android.graphics.Color.luminance(widgetForegroundColor(darkRed)) > .8f)
-        assertTrue(android.graphics.Color.luminance(widgetForegroundColor(lightYellow)) < .2f)
+        assertEquals(0xFFE8EAED.toInt(), NotePalette.textColor(darkRed))
+        assertEquals(0xFF202124.toInt(), NotePalette.textColor(lightYellow))
     }
-    @Test fun nativeNotePaletteMatchesTheKeeparrWebPalette() {
-        assertEquals(listOf(
-            "", "#cbf0f8", "#fddcbb", "#fdcfe8", "#fff8b8", "#d7aefb", "#fef7cc", "#e8d7ff",
-            "#ccff90", "#ffd8b5", "#f8c7c0", "#e6f4d7", "#d2e3fc", "#ffb74d", "#abc4ff", "#ffc2d1",
-            "#ffab91", "#a7ffeb", "#e6ee9c", "#efe0c8", "#c5cae9",
-            "#5b2121", "#5b3a21", "#4a4a1a", "#1a4a1a", "#1a4a4a", "#1a2e4a", "#0f172a", "#2e1a4a",
-            "#4a1a2e", "#3a211a", "#334155", "#282a5c", "#5c1a4a", "#5c4a14", "#144a5c"
-        ), NotePalette.colors.map { it.hex })
+    @Test fun nativeNotePaletteMatchesTheSharedFixturePalette() {
+        val palette = fixtures.getJSONObject("noteColors").getJSONArray("palette")
+        val expected = (0 until palette.length()).map { palette.getJSONObject(it) }
+            .map { it.getString("light") to it.getString("dark") }
+        // Names are labels (the web calls "Dark blue" "Darkblue"), so the pairs are compared.
+        assertEquals(listOf("" to "") + expected, NotePalette.colors.map { it.hex to it.dark })
     }
     @Test fun reminderDateTimeUsesTheRequestedLocalZoneAndShortFormat() {
         assertEquals("Jan 1 · 10:30 AM", ReminderFormat.dateTime("2030-01-01T09:30:00Z",
