@@ -1,7 +1,9 @@
 const allowedFaults = new Set([
   'before-mutation',
   'after-mutation-before-receipt',
-  'after-receipt-before-response'
+  'after-receipt-before-response',
+  'after-rest-note-read',
+  'after-bootstrap-notes-read'
 ]);
 
 let armedFault = null;

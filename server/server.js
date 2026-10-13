@@ -2906,12 +2906,12 @@ async function broadcastNoteChange(noteId, action, userIds, options = {}) {
   );
   const payload = { type: 'notes-changed', action, noteId };
   if (options.syncId) payload.syncId = options.syncId;
-  broadcastRealtime(recipients, payload);
-  if (action === 'created' || action === 'deleted' || action === 'collaborators-updated') {
-    setTimeout(() => {
-      broadcastRealtime(recipients, { ...payload, followup: true });
-    }, 1200);
-  }
+  afterDatabaseCommit(() => {
+    broadcastRealtime(recipients, payload);
+    if (action === 'created' || action === 'deleted' || action === 'collaborators-updated') {
+      setTimeout(() => broadcastRealtime(recipients, { ...payload, followup: true }), 1200);
+    }
+  });
 }
 
 async function broadcastProfileUpdate(user) {
@@ -3741,8 +3741,7 @@ app.get('/api/users/me/mcp-access', requireAuth, asyncRoute(async (req, res) => 
 app.post('/api/users/me/mcp-access/enable', requireAuth, asyncRoute(async (req, res) => {
   const rawToken = `keeparr_mcp_${randomHex(32)}`;
   const now = new Date().toISOString();
-  await run('BEGIN IMMEDIATE');
-  try {
+  await withDatabaseTransaction(async () => {
     await run(
       `DELETE FROM external_unlock_challenges
        WHERE principalType = 'mcp' AND principalId IN (SELECT id FROM mcp_tokens WHERE userId = ?)`,
@@ -3754,11 +3753,7 @@ app.post('/api/users/me/mcp-access/enable', requireAuth, asyncRoute(async (req, 
       [req.user.id, mcpTokenHash(rawToken), `${rawToken.slice(0, 17)}…`, now]
     );
     await run('UPDATE users SET mcpEnabled = 1 WHERE id = ?', [req.user.id]);
-    await run('COMMIT');
-  } catch (error) {
-    await run('ROLLBACK');
-    throw error;
-  }
+  });
   const user = await get('SELECT * FROM users WHERE id = ?', [req.user.id]);
   const token = await get('SELECT tokenPrefix, createdAt, lastUsedAt FROM mcp_tokens WHERE userId = ? ORDER BY id DESC LIMIT 1', [req.user.id]);
   res.status(201).json({ ...mcpAccessResponse(user, token), accessToken: rawToken });
@@ -3806,8 +3801,7 @@ app.patch('/api/users/me/external-access/capabilities', requireAuth, asyncRoute(
 }));
 
 app.delete('/api/users/me/mcp-access', requireAuth, asyncRoute(async (req, res) => {
-  await run('BEGIN IMMEDIATE');
-  try {
+  await withDatabaseTransaction(async () => {
     await run(
       `DELETE FROM external_unlock_challenges
        WHERE principalType = 'mcp' AND principalId IN (SELECT id FROM mcp_tokens WHERE userId = ?)`,
@@ -3815,11 +3809,7 @@ app.delete('/api/users/me/mcp-access', requireAuth, asyncRoute(async (req, res) 
     );
     await run('DELETE FROM mcp_tokens WHERE userId = ?', [req.user.id]);
     await run('UPDATE users SET mcpEnabled = 0 WHERE id = ?', [req.user.id]);
-    await run('COMMIT');
-  } catch (error) {
-    await run('ROLLBACK');
-    throw error;
-  }
+  });
   res.status(204).end();
 }));
 
@@ -3839,21 +3829,15 @@ app.delete('/api/users/me/oauth-access/connections/:grantId', requireAuth, async
   if (!Number.isInteger(grantId) || grantId <= 0) return res.status(400).json({ error: 'Invalid OAuth connection.' });
   const grant = await get('SELECT id FROM oauth_grants WHERE id = ? AND userId = ?', [grantId, req.user.id]);
   if (!grant) return res.status(404).json({ error: 'OAuth connection not found.' });
-  await run('BEGIN IMMEDIATE');
-  try {
+  await withDatabaseTransaction(async () => {
     await run("DELETE FROM external_unlock_challenges WHERE principalType = 'oauth' AND principalId = ?", [grantId]);
     await run('DELETE FROM oauth_grants WHERE id = ? AND userId = ?', [grantId, req.user.id]);
-    await run('COMMIT');
-  } catch (error) {
-    await run('ROLLBACK');
-    throw error;
-  }
+  });
   res.status(204).end();
 }));
 
 app.delete('/api/users/me/oauth-access', requireAuth, asyncRoute(async (req, res) => {
-  await run('BEGIN IMMEDIATE');
-  try {
+  await withDatabaseTransaction(async () => {
     await run(
       `DELETE FROM external_unlock_challenges
        WHERE principalType = 'oauth' AND principalId IN (SELECT id FROM oauth_grants WHERE userId = ?)`,
@@ -3861,11 +3845,7 @@ app.delete('/api/users/me/oauth-access', requireAuth, asyncRoute(async (req, res
     );
     await run('DELETE FROM oauth_grants WHERE userId = ?', [req.user.id]);
     await run('UPDATE users SET oauthEnabled = 0 WHERE id = ?', [req.user.id]);
-    await run('COMMIT');
-  } catch (error) {
-    await run('ROLLBACK');
-    throw error;
-  }
+  });
   res.status(204).end();
 }));
 
@@ -4697,6 +4677,9 @@ function accessibleAttachmentRows(userId) {
 }
 
 async function syncSnapshotForUser(userId) {
+  // One queue lease covers all reads and the cursor, so no committed change can
+  // land between the document snapshot and its acknowledged feed position.
+  return withDatabaseExclusive(async () => {
   const notes = await all(
     `SELECT notes.*,
             COALESCE(pos.sortOrder, notes.sortOrder) AS effectiveSortOrder,
@@ -4714,6 +4697,7 @@ async function syncSnapshotForUser(userId) {
      ORDER BY userPinned DESC, effectiveSortOrder DESC, notes.id DESC`,
     [userId, userId, userId, userId, userId]
   );
+  await hitTestFault('after-bootstrap-notes-read');
   await hydrateNoteUserFields(notes, userId);
   const attachmentsByNoteId = new Map();
   if (notes.length) {
@@ -4737,6 +4721,7 @@ async function syncSnapshotForUser(userId) {
     cursor,
     serverTime: Date.now()
   };
+  });
 }
 
 async function syncCursorForUser(userId) {
@@ -6030,21 +6015,30 @@ app.post('/api/ai/action-plan/execute', requireAuth, asyncRoute(async (req, res)
   const executed = [];
   const failed = [];
 
-  await run('BEGIN IMMEDIATE TRANSACTION');
+  let transactionError = null;
   try {
-    for (let index = 0; index < actions.length; index += 1) {
-      const action = actions[index];
-      try {
-        const result = await executeSmartAction(req.user.id, action, state);
-        executed.push({ index, ...result });
-      } catch (error) {
-        failed.push({ index, type: action.type, error: error.message || 'Action failed.' });
-        if (!allowPartial) throw error;
+    await withDatabaseTransaction(async () => {
+      for (let index = 0; index < actions.length; index += 1) {
+        const action = actions[index];
+        try {
+          const result = await executeSmartAction(req.user.id, action, state);
+          executed.push({ index, ...result });
+        } catch (error) {
+          failed.push({ index, type: action.type, error: error.message || 'Action failed.' });
+          if (!allowPartial) throw error;
+        }
       }
-    }
-    await run('COMMIT');
+      for (const noteId of state.createdNoteIds) await broadcastNoteChange(noteId, 'created', [req.user.id]);
+      for (const noteId of state.updatedNoteIds) await broadcastNoteChange(noteId, 'updated');
+      for (const share of state.shareBroadcasts) await broadcastNoteChange(share.noteId, 'collaborators-updated', share.previousRecipients);
+      if (state.createdLabelIds.size) await cleanupUnusedLabels(req.user.id, Array.from(state.createdLabelIds));
+      afterDatabaseCommit(() => syncSmartReminderIntegrations(req.user.id, state.remindersToSync));
+    });
   } catch (error) {
-    await run('ROLLBACK');
+    transactionError = error;
+  }
+  if (transactionError) {
+    const error = transactionError;
     await insertAiActionHistory(req.user.id, transcript, actionPlan, { executed, failed }, 'failed');
     return res.status(400).json({
       ok: false,
@@ -6068,12 +6062,6 @@ app.post('/api/ai/action-plan/execute', requireAuth, asyncRoute(async (req, res)
     reminderIds: state.reminderIds
   };
   await insertAiActionHistory(req.user.id, transcript, actionPlan, response, status);
-
-  for (const noteId of state.createdNoteIds) await broadcastNoteChange(noteId, 'created', [req.user.id]);
-  for (const noteId of state.updatedNoteIds) await broadcastNoteChange(noteId, 'updated');
-  for (const share of state.shareBroadcasts) await broadcastNoteChange(share.noteId, 'collaborators-updated', share.previousRecipients);
-  if (state.createdLabelIds.size) await cleanupUnusedLabels(req.user.id, Array.from(state.createdLabelIds));
-  await syncSmartReminderIntegrations(req.user.id, state.remindersToSync);
 
   res.status(failed.length ? 207 : 200).json(response);
 }));
@@ -6141,81 +6129,62 @@ app.get('/api/notes/:id/collaborators', requireAuth, asyncRoute(async (req, res)
 
 app.put('/api/notes/:id/collaborators', requireAuth, asyncRoute(async (req, res) => {
   const noteId = Number(req.params.id);
-  const note = await getOwnedNote(noteId, req.user.id);
-  if (!note) return res.status(404).json({ error: 'Note not found.' });
-  if (!note.syncId) {
-    note.syncId = `note-${crypto.randomUUID()}`;
-    await run('UPDATE notes SET syncId = ? WHERE id = ?', [note.syncId, noteId]);
-  }
-  const previousRecipients = await getNoteRecipientIds(noteId);
-  const previousCollaborators = await all('SELECT userId FROM note_collaborators WHERE noteId = ?', [noteId]);
-  const previousCollaboratorIds = new Set(previousCollaborators.map(row => Number(row.userId)).filter(Boolean));
-
-  const userIds = Array.isArray(req.body.userIds) ? req.body.userIds.map(Number).filter(Boolean) : [];
-  const nextSet = new Set(userIds.filter(userId => userId !== req.user.id));
-  const newlyAddedUserIds = [];
-  await run('DELETE FROM note_collaborators WHERE noteId = ?', [noteId]);
-  for (const userId of nextSet) {
-    const exists = await get('SELECT id FROM users WHERE id = ?', [userId]);
-    if (exists) {
-      await run(
-        'INSERT OR IGNORE INTO note_collaborators (noteId, userId, createdAt) VALUES (?, ?, ?)',
-        [noteId, userId, new Date().toISOString()]
-      );
+  const outcome = await withDatabaseTransaction(async () => {
+    const note = await getOwnedNote(noteId, req.user.id);
+    if (!note) return { status: 404, error: 'Note not found.' };
+    if (!note.syncId) {
+      note.syncId = `note-${crypto.randomUUID()}`;
+      await run('UPDATE notes SET syncId = ? WHERE id = ?', [note.syncId, noteId]);
+    }
+    const previousRecipients = await getNoteRecipientIds(noteId);
+    const previousCollaborators = await all('SELECT userId FROM note_collaborators WHERE noteId = ?', [noteId]);
+    const previousCollaboratorIds = new Set(previousCollaborators.map(row => Number(row.userId)).filter(Boolean));
+    const userIds = Array.isArray(req.body.userIds) ? req.body.userIds.map(Number).filter(Boolean) : [];
+    const nextSet = new Set(userIds.filter(userId => userId !== req.user.id));
+    const newlyAddedUserIds = [];
+    await run('DELETE FROM note_collaborators WHERE noteId = ?', [noteId]);
+    for (const userId of nextSet) {
+      const exists = await get('SELECT id FROM users WHERE id = ?', [userId]);
+      if (!exists) continue;
+      await run('INSERT OR IGNORE INTO note_collaborators (noteId, userId, createdAt) VALUES (?, ?, ?)', [noteId, userId, new Date().toISOString()]);
       if (!previousCollaboratorIds.has(userId)) newlyAddedUserIds.push(userId);
     }
-  }
-  await moveNoteToTopForUsers(noteId, newlyAddedUserIds);
-  const collaborators = await getCollaboratorsForNote(noteId);
-  const nextRecipients = await getNoteRecipientIds(noteId);
-  const removedUserIds = previousCollaborators
-    .map(row => Number(row.userId))
-    .filter(userId => userId && !nextSet.has(userId));
-  if (removedUserIds.length) {
-    // Owner-initiated removal is a revocation. Only a collaborator's own
-    // unshare flow grants the temporary undo/rejoin capability.
-    await run(`DELETE FROM note_collaborator_rejoin_grants WHERE noteId = ? AND userId IN (${removedUserIds.map(() => '?').join(',')})`, [noteId, ...removedUserIds]);
-    const revokedStamp = serverLwwStamp();
-    await recordNoteSyncChange(noteId, 'delete', removedUserIds, {
-      syncId: note.syncId,
-      lwwPhysicalMs: revokedStamp.physicalMs,
-      lwwLogical: revokedStamp.logical,
-      lwwDeviceId: revokedStamp.deviceId,
-      lwwOperationId: revokedStamp.operationId
-    });
-    broadcastRealtime(removedUserIds, {
-      type: 'notes-changed',
-      action: 'access-revoked',
-      noteId,
-      syncId: note.syncId
-    });
-  }
-  await broadcastNoteChange(noteId, 'collaborators-updated', nextRecipients);
-  res.json(collaborators);
+    await moveNoteToTopForUsers(noteId, newlyAddedUserIds);
+    const collaborators = await getCollaboratorsForNote(noteId);
+    const nextRecipients = await getNoteRecipientIds(noteId);
+    const removedUserIds = previousCollaborators.map(row => Number(row.userId)).filter(userId => userId && !nextSet.has(userId));
+    if (removedUserIds.length) {
+      await run(`DELETE FROM note_collaborator_rejoin_grants WHERE noteId = ? AND userId IN (${removedUserIds.map(() => '?').join(',')})`, [noteId, ...removedUserIds]);
+      const revokedStamp = serverLwwStamp();
+      await recordNoteSyncChange(noteId, 'delete', removedUserIds, {
+        syncId: note.syncId, lwwPhysicalMs: revokedStamp.physicalMs, lwwLogical: revokedStamp.logical,
+        lwwDeviceId: revokedStamp.deviceId, lwwOperationId: revokedStamp.operationId
+      });
+      broadcastRealtime(removedUserIds, { type: 'notes-changed', action: 'access-revoked', noteId, syncId: note.syncId });
+    }
+    await broadcastNoteChange(noteId, 'collaborators-updated', nextRecipients);
+    return { status: 200, collaborators, previousRecipients };
+  });
+  if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
+  res.json(outcome.collaborators);
 }));
 
 app.post('/api/notes/:id/collaborators/rejoin', requireAuth, asyncRoute(async (req, res) => {
   const noteId = Number(req.params.id);
-  const note = await get('SELECT id FROM notes WHERE id = ?', [noteId]);
-  if (!note) return res.status(404).json({ error: 'Note not found.' });
-
-  // Only allow rejoin if this user was recently a collaborator on this note
-  // (granted at self-removal or owner-removal). Without this check any
-  // authenticated user could attach themselves to any note id.
-  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const grant = await get(
-    'SELECT noteId FROM note_collaborator_rejoin_grants WHERE noteId = ? AND userId = ? AND grantedAt >= ?',
-    [noteId, req.user.id, cutoff]
-  );
-  if (!grant) return res.status(403).json({ error: 'Rejoin not permitted.' });
-
-  await run(
-    'INSERT OR IGNORE INTO note_collaborators (noteId, userId, createdAt) VALUES (?, ?, ?)',
-    [noteId, req.user.id, new Date().toISOString()]
-  );
-  await moveNoteToTopForUsers(noteId, [req.user.id]);
-  await run('DELETE FROM note_collaborator_rejoin_grants WHERE noteId = ? AND userId = ?', [noteId, req.user.id]);
-  await broadcastNoteChange(noteId, 'collaborators-updated');
+  const outcome = await withDatabaseTransaction(async () => {
+    const note = await get('SELECT id FROM notes WHERE id = ?', [noteId]);
+    if (!note) return { status: 404, error: 'Note not found.' };
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const grant = await get('SELECT noteId FROM note_collaborator_rejoin_grants WHERE noteId = ? AND userId = ? AND grantedAt >= ?',
+      [noteId, req.user.id, cutoff]);
+    if (!grant) return { status: 403, error: 'Rejoin not permitted.' };
+    await run('INSERT OR IGNORE INTO note_collaborators (noteId, userId, createdAt) VALUES (?, ?, ?)', [noteId, req.user.id, new Date().toISOString()]);
+    await moveNoteToTopForUsers(noteId, [req.user.id]);
+    await run('DELETE FROM note_collaborator_rejoin_grants WHERE noteId = ? AND userId = ?', [noteId, req.user.id]);
+    await broadcastNoteChange(noteId, 'collaborators-updated');
+    return { status: 204 };
+  });
+  if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
   res.status(204).end();
 }));
 
@@ -6233,106 +6202,61 @@ app.post('/api/notes', requireAuth, asyncRoute(async (req, res) => {
   const now = new Date().toISOString();
   const trashedAt = noteData.trashed ? now : null;
   const syncId = String(noteData.syncId || noteData.clientId || `note-${crypto.randomUUID()}`);
-  const result = await run(
-    `INSERT INTO notes
-      (ownerUserId, syncId, noteTitle, noteBody, bgColor, bgImage, checkBoxes, images, isCbox, labels, binder, extraFields, locked, lockSalt, lockHash, archived, trashed, trashedAt, sortOrder, createdAt, updatedAt, lastEditorUserId, isDemo)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      req.user.id,
-      syncId,
-      String(noteData.noteTitle || ''),
-      noteData.noteBody || '',
-      noteData.bgColor || '',
-      noteData.bgImage || '',
-      JSON.stringify(noteData.checkBoxes || []),
-      JSON.stringify(noteData.images || []),
-      noteData.isCbox ? 1 : 0,
-      JSON.stringify(noteData.labels || []),
-      noteData.binder || '',
-      JSON.stringify(noteData.extraFields || {}),
-      noteData.locked ? 1 : 0,
-      noteData.lockSalt || '',
-      noteData.lockHash || '',
-      noteData.archived ? 1 : 0,
-      noteData.trashed ? 1 : 0,
-      trashedAt,
-      Date.now(),
-      now,
-      now,
-      req.user.id,
-      noteData.isDemo ? 1 : 0
-    ]
-  );
-  await syncNoteImagesForNote(result.id, req.user.id, noteData);
-  if (noteData.pinned) {
-    await run('INSERT OR IGNORE INTO user_pins (userId, noteId) VALUES (?, ?)', [req.user.id, result.id]);
-  }
-  await broadcastNoteChange(result.id, 'created', [req.user.id], { syncId });
-  const created = await getAccessibleNote(result.id, req.user.id);
-  res.status(201).json(dbNoteToApi(created));
+  const created = await withDatabaseTransaction(async () => {
+    const result = await run(
+      `INSERT INTO notes
+        (ownerUserId, syncId, noteTitle, noteBody, bgColor, bgImage, checkBoxes, images, isCbox, labels, binder, extraFields, locked, lockSalt, lockHash, archived, trashed, trashedAt, sortOrder, createdAt, updatedAt, lastEditorUserId, isDemo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.user.id, syncId, String(noteData.noteTitle || ''), noteData.noteBody || '', noteData.bgColor || '', noteData.bgImage || '',
+        JSON.stringify(noteData.checkBoxes || []), JSON.stringify(noteData.images || []), noteData.isCbox ? 1 : 0,
+        JSON.stringify(noteData.labels || []), noteData.binder || '', JSON.stringify(noteData.extraFields || {}),
+        noteData.locked ? 1 : 0, noteData.lockSalt || '', noteData.lockHash || '', noteData.archived ? 1 : 0,
+        noteData.trashed ? 1 : 0, trashedAt, Date.now(), now, now, req.user.id, noteData.isDemo ? 1 : 0]
+    );
+    await syncNoteImagesForNote(result.id, req.user.id, noteData);
+    if (noteData.pinned) await run('INSERT OR IGNORE INTO user_pins (userId, noteId) VALUES (?, ?)', [req.user.id, result.id]);
+    await broadcastNoteChange(result.id, 'created', [req.user.id], { syncId });
+    return dbNoteToApi(await getAccessibleNote(result.id, req.user.id));
+  });
+  res.status(201).json(created);
 }));
 
 app.put('/api/notes/:id', requireAuth, asyncRoute(async (req, res) => {
-  const note = await getAccessibleNote(Number(req.params.id), req.user.id);
-  if (!note) return res.status(404).json({ error: 'Note not found.' });
-  if (req.mcpToken && note.locked && !await mcpNoteIsUnlocked(req, note.id)) {
-    return res.status(423).json({ error: 'Unlock this note before modifying it through MCP.' });
-  }
-  const isOwner = note.ownerUserId === req.user.id;
-  const next = canonicalizeNotePayload({ ...dbNoteToApi(note), ...req.body });
-  const shouldPinForUser = Object.prototype.hasOwnProperty.call(req.body || {}, 'pinned')
-    ? !!req.body.pinned
-    : !!note.userPinned;
-  if (!isOwner) {
-    next.bgColor = note.bgColor || '';
-    next.bgImage = note.bgImage || '';
-    next.labels = parseJson(note.labels, []);
-    next.binder = note.binder || '';
-    next.archived = Boolean(note.archived);
-    next.trashed = Boolean(note.trashed);
-    // Preserve the owner/global note value; the requester's pin state lives in user_pins.
-    next.pinned = Boolean(note.pinned);
-    next.locked = Boolean(note.locked);
-    next.lockSalt = note.lockSalt || '';
-    next.lockHash = note.lockHash || '';
-  }
-  const trashedAt = nextTrashedAt(note, next);
-  await run(
-    `UPDATE notes SET
-      noteTitle = ?, noteBody = ?, bgColor = ?, bgImage = ?,
-      checkBoxes = ?, images = ?, isCbox = ?, labels = ?, binder = ?, extraFields = ?, locked = ?, lockSalt = ?, lockHash = ?, archived = ?, trashed = ?, trashedAt = ?, updatedAt = ?, lastEditorUserId = ?, isDemo = ?
-     WHERE id = ?`,
-    [
-      String(next.noteTitle || ''),
-      next.noteBody || '',
-      next.bgColor || '',
-      next.bgImage || '',
-      JSON.stringify(next.checkBoxes || []),
-      JSON.stringify(next.images || []),
-      next.isCbox ? 1 : 0,
-      JSON.stringify(next.labels || []),
-      next.binder || '',
-      JSON.stringify(next.extraFields || {}),
-      next.locked ? 1 : 0,
-      next.lockSalt || '',
-      next.lockHash || '',
-      next.archived ? 1 : 0,
-      next.trashed ? 1 : 0,
-      trashedAt,
-      new Date().toISOString(),
-      req.user.id,
-      next.isDemo ? 1 : 0,
-      Number(req.params.id)
-    ]
-  );
-  if (shouldPinForUser) {
-    await run('INSERT OR IGNORE INTO user_pins (userId, noteId) VALUES (?, ?)', [req.user.id, Number(req.params.id)]);
-  } else {
-    await run('DELETE FROM user_pins WHERE userId = ? AND noteId = ?', [req.user.id, Number(req.params.id)]);
-  }
-  await syncNoteImagesForNote(Number(req.params.id), note.ownerUserId, next);
-  await broadcastNoteChange(Number(req.params.id), 'updated');
-  await cleanupUnusedLabels(req.user.id);
+  const outcome = await withDatabaseTransaction(async () => {
+    const noteId = Number(req.params.id);
+    const note = await getAccessibleNote(noteId, req.user.id);
+    if (!note) return { status: 404, error: 'Note not found.' };
+    await hitTestFault('after-rest-note-read');
+    if (req.mcpToken && note.locked && !await mcpNoteIsUnlocked(req, note.id)) {
+      return { status: 423, error: 'Unlock this note before modifying it through MCP.' };
+    }
+    const isOwner = note.ownerUserId === req.user.id;
+    const next = canonicalizeNotePayload({ ...dbNoteToApi(note), ...req.body });
+    const shouldPinForUser = Object.prototype.hasOwnProperty.call(req.body || {}, 'pinned') ? !!req.body.pinned : !!note.userPinned;
+    if (!isOwner) {
+      next.bgColor = note.bgColor || ''; next.bgImage = note.bgImage || ''; next.labels = parseJson(note.labels, []);
+      next.binder = note.binder || ''; next.archived = Boolean(note.archived); next.trashed = Boolean(note.trashed);
+      next.pinned = Boolean(note.pinned); next.locked = Boolean(note.locked);
+      next.lockSalt = note.lockSalt || ''; next.lockHash = note.lockHash || '';
+    }
+    const trashedAt = nextTrashedAt(note, next);
+    await run(
+      `UPDATE notes SET
+        noteTitle = ?, noteBody = ?, bgColor = ?, bgImage = ?, checkBoxes = ?, images = ?, isCbox = ?, labels = ?, binder = ?, extraFields = ?, locked = ?, lockSalt = ?, lockHash = ?, archived = ?, trashed = ?, trashedAt = ?, updatedAt = ?, lastEditorUserId = ?, isDemo = ?
+       WHERE id = ?`,
+      [String(next.noteTitle || ''), next.noteBody || '', next.bgColor || '', next.bgImage || '', JSON.stringify(next.checkBoxes || []),
+        JSON.stringify(next.images || []), next.isCbox ? 1 : 0, JSON.stringify(next.labels || []), next.binder || '',
+        JSON.stringify(next.extraFields || {}), next.locked ? 1 : 0, next.lockSalt || '', next.lockHash || '',
+        next.archived ? 1 : 0, next.trashed ? 1 : 0, trashedAt, new Date().toISOString(), req.user.id, next.isDemo ? 1 : 0, noteId]
+    );
+    if (shouldPinForUser) await run('INSERT OR IGNORE INTO user_pins (userId, noteId) VALUES (?, ?)', [req.user.id, noteId]);
+    else await run('DELETE FROM user_pins WHERE userId = ? AND noteId = ?', [req.user.id, noteId]);
+    await syncNoteImagesForNote(noteId, note.ownerUserId, next);
+    await broadcastNoteChange(noteId, 'updated');
+    await cleanupUnusedLabels(req.user.id);
+    return { status: 204 };
+  });
+  if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
   res.status(204).end();
 }));
 
@@ -6356,67 +6280,55 @@ app.patch('/api/notes/:id/view-state', requireAuth, asyncRoute(async (req, res) 
 }));
 
 app.patch('/api/notes/:id', requireAuth, asyncRoute(async (req, res) => {
-  const existing = await getAccessibleNote(Number(req.params.id), req.user.id);
-  if (!existing) return res.status(404).json({ error: 'Note not found.' });
-  if (req.mcpToken && existing.locked && !await mcpNoteIsUnlocked(req, existing.id)) {
-    return res.status(423).json({ error: 'Unlock this note before modifying it through MCP.' });
-  }
+  const outcome = await withDatabaseTransaction(async () => {
+    const noteId = Number(req.params.id);
+    const existing = await getAccessibleNote(noteId, req.user.id);
+    if (!existing) return { status: 404, error: 'Note not found.' };
+    await hitTestFault('after-rest-note-read');
+    if (req.mcpToken && existing.locked && !await mcpNoteIsUnlocked(req, existing.id)) {
+      return { status: 423, error: 'Unlock this note before modifying it through MCP.' };
+    }
 
-  const isOwner = existing.ownerUserId === req.user.id;
-  const next = canonicalizeNotePayload({ ...dbNoteToApi(existing), ...req.body });
-  const shouldPinForUser = Object.prototype.hasOwnProperty.call(req.body || {}, 'pinned')
-    ? !!req.body.pinned
-    : !!existing.userPinned;
-  if (!isOwner) {
-    next.bgColor = existing.bgColor || '';
-    next.bgImage = existing.bgImage || '';
-    next.labels = parseJson(existing.labels, []);
-    next.binder = existing.binder || '';
-    next.archived = Boolean(existing.archived);
-    next.trashed = Boolean(existing.trashed);
-    // Preserve the owner/global note value; the requester's pin state lives in user_pins.
-    next.pinned = Boolean(existing.pinned);
-    next.locked = Boolean(existing.locked);
-    next.lockSalt = existing.lockSalt || '';
-    next.lockHash = existing.lockHash || '';
-  }
-  const trashedAt = nextTrashedAt(existing, next);
-  await run(
-    `UPDATE notes SET
-      noteTitle = ?, noteBody = ?, bgColor = ?, bgImage = ?,
-      checkBoxes = ?, images = ?, isCbox = ?, labels = ?, binder = ?, extraFields = ?, locked = ?, lockSalt = ?, lockHash = ?, archived = ?, trashed = ?, trashedAt = ?, updatedAt = ?, lastEditorUserId = ?, isDemo = ?
-     WHERE id = ?`,
-    [
-      String(next.noteTitle || ''),
-      next.noteBody || '',
-      next.bgColor || '',
-      next.bgImage || '',
-      JSON.stringify(next.checkBoxes || []),
-      JSON.stringify(next.images || []),
-      next.isCbox ? 1 : 0,
-      JSON.stringify(next.labels || []),
-      next.binder || '',
-      JSON.stringify(next.extraFields || {}),
-      next.locked ? 1 : 0,
-      next.lockSalt || '',
-      next.lockHash || '',
-      next.archived ? 1 : 0,
-      next.trashed ? 1 : 0,
-      trashedAt,
-      new Date().toISOString(),
-      req.user.id,
-      next.isDemo ? 1 : 0,
-      Number(req.params.id)
-    ]
-  );
-  if (shouldPinForUser) {
-    await run('INSERT OR IGNORE INTO user_pins (userId, noteId) VALUES (?, ?)', [req.user.id, Number(req.params.id)]);
-  } else {
-    await run('DELETE FROM user_pins WHERE userId = ? AND noteId = ?', [req.user.id, Number(req.params.id)]);
-  }
-  await syncNoteImagesForNote(Number(req.params.id), existing.ownerUserId, next);
-  await broadcastNoteChange(Number(req.params.id), 'updated');
-  await cleanupUnusedLabels(req.user.id);
+    // Merge the partial request against the latest serialized database state.
+    const isOwner = existing.ownerUserId === req.user.id;
+    const next = canonicalizeNotePayload({ ...dbNoteToApi(existing), ...req.body });
+    const shouldPinForUser = Object.prototype.hasOwnProperty.call(req.body || {}, 'pinned')
+      ? !!req.body.pinned
+      : !!existing.userPinned;
+    if (!isOwner) {
+      next.bgColor = existing.bgColor || '';
+      next.bgImage = existing.bgImage || '';
+      next.labels = parseJson(existing.labels, []);
+      next.binder = existing.binder || '';
+      next.archived = Boolean(existing.archived);
+      next.trashed = Boolean(existing.trashed);
+      next.pinned = Boolean(existing.pinned);
+      next.locked = Boolean(existing.locked);
+      next.lockSalt = existing.lockSalt || '';
+      next.lockHash = existing.lockHash || '';
+    }
+    const trashedAt = nextTrashedAt(existing, next);
+    await run(
+      `UPDATE notes SET
+        noteTitle = ?, noteBody = ?, bgColor = ?, bgImage = ?,
+        checkBoxes = ?, images = ?, isCbox = ?, labels = ?, binder = ?, extraFields = ?, locked = ?, lockSalt = ?, lockHash = ?, archived = ?, trashed = ?, trashedAt = ?, updatedAt = ?, lastEditorUserId = ?, isDemo = ?
+       WHERE id = ?`,
+      [
+        String(next.noteTitle || ''), next.noteBody || '', next.bgColor || '', next.bgImage || '',
+        JSON.stringify(next.checkBoxes || []), JSON.stringify(next.images || []), next.isCbox ? 1 : 0,
+        JSON.stringify(next.labels || []), next.binder || '', JSON.stringify(next.extraFields || {}),
+        next.locked ? 1 : 0, next.lockSalt || '', next.lockHash || '', next.archived ? 1 : 0,
+        next.trashed ? 1 : 0, trashedAt, new Date().toISOString(), req.user.id, next.isDemo ? 1 : 0, noteId
+      ]
+    );
+    if (shouldPinForUser) await run('INSERT OR IGNORE INTO user_pins (userId, noteId) VALUES (?, ?)', [req.user.id, noteId]);
+    else await run('DELETE FROM user_pins WHERE userId = ? AND noteId = ?', [req.user.id, noteId]);
+    await syncNoteImagesForNote(noteId, existing.ownerUserId, next);
+    await broadcastNoteChange(noteId, 'updated');
+    await cleanupUnusedLabels(req.user.id);
+    return { status: 204 };
+  });
+  if (outcome.error) return res.status(outcome.status).json({ error: outcome.error });
   res.status(204).end();
 }));
 
@@ -6529,8 +6441,16 @@ app.post('/api/notes/merge', requireAuth, asyncRoute(async (req, res) => {
   const isCbox = mergedCheckBoxes.length > 0 ? 1 : 0;
 
   const now = new Date().toISOString();
-  await run('BEGIN IMMEDIATE TRANSACTION');
-  try {
+  const newNoteId = await withDatabaseTransaction(async () => {
+    const latestSources = await all(`SELECT id, revision, updatedAt FROM notes WHERE id IN (${placeholders}) AND ownerUserId = ?`, [...orderedIds, req.user.id]);
+    if (latestSources.length !== sources.length || sources.some(source => {
+      const latest = latestSources.find(row => row.id === source.id);
+      return !latest || Number(latest.revision || 1) !== Number(source.revision || 1) || latest.updatedAt !== source.updatedAt;
+    })) {
+      const conflict = new Error('One or more notes changed while the merge was being prepared. Reload and retry.');
+      conflict.status = 409;
+      throw conflict;
+    }
     const result = await run(
       `INSERT INTO notes
        (ownerUserId, noteTitle, noteBody, bgColor, bgImage, checkBoxes, images, isCbox, labels, binder, extraFields, locked, lockSalt, lockHash, archived, trashed, trashedAt, sortOrder, createdAt, updatedAt, lastEditorUserId, isDemo)
@@ -6603,12 +6523,12 @@ app.post('/api/notes/merge', requireAuth, asyncRoute(async (req, res) => {
         // Failures are logged but don't block the merge — the reminder is
         // already gone from our DB and orphaning a remote event is recoverable.
         const caldav = await get('SELECT * FROM caldav_settings WHERE userId = ? AND enabled = 1', [req.user.id]);
-        for (const r of dropFull) {
-          if (caldav) {
-            deleteReminderFromCaldav(caldav, r.id).catch(err => console.error('CalDAV delete failed during merge:', err.message));
+        afterDatabaseCommit(() => {
+          for (const r of dropFull) {
+            if (caldav) deleteReminderFromCaldav(caldav, r.id).catch(err => console.error('CalDAV delete failed during merge:', err.message));
+            gcalDeleteReminder(req.user.id, r).catch(err => console.error('GCal delete failed during merge:', err.message));
           }
-          gcalDeleteReminder(req.user.id, r).catch(err => console.error('GCal delete failed during merge:', err.message));
-        }
+        });
       }
     }
 
@@ -6623,8 +6543,6 @@ app.post('/api/notes/merge', requireAuth, asyncRoute(async (req, res) => {
       [req.user.id, ...orderedIds]
     );
 
-    await run('COMMIT');
-
     const recipients = new Set([req.user.id]);
     for (const id of orderedIds) {
       const r = await getNoteRecipientIds(id);
@@ -6634,12 +6552,9 @@ app.post('/api/notes/merge', requireAuth, asyncRoute(async (req, res) => {
     for (const id of orderedIds) {
       await broadcastNoteChange(id, 'updated', Array.from(recipients));
     }
-
-    res.status(201).json({ id: newNoteId });
-  } catch (error) {
-    await run('ROLLBACK');
-    throw error;
-  }
+    return newNoteId;
+  });
+  res.status(201).json({ id: newNoteId });
 }));
 
 app.patch('/api/notes/labels/:labelId', requireAuth, asyncRoute(async (req, res) => {
@@ -8132,15 +8047,14 @@ app.post('/api/import/google-takeout', requireAuth, googleTakeoutUpload, asyncRo
     // the takeout import doesn't silently double everything. Fingerprint =
     // createdAt + first 200 chars of title + body, which Google's exports
     // keep stable across re-exports.
-    const existingFingerprints = new Set();
-    const existingRows = await all('SELECT noteTitle, noteBody, createdAt FROM notes WHERE ownerUserId = ?', [req.user.id]);
-    for (const row of existingRows) {
-      const fp = `${row.createdAt}|${(row.noteTitle || '').slice(0, 200)}|${(row.noteBody || '').slice(0, 200)}`;
-      existingFingerprints.add(fp);
-    }
-
-    await run('BEGIN IMMEDIATE TRANSACTION');
     try {
+      await withDatabaseTransaction(async () => {
+      const existingFingerprints = new Set();
+      const existingRows = await all('SELECT noteTitle, noteBody, createdAt FROM notes WHERE ownerUserId = ?', [req.user.id]);
+      for (const row of existingRows) {
+        const fp = `${row.createdAt}|${(row.noteTitle || '').slice(0, 200)}|${(row.noteBody || '').slice(0, 200)}`;
+        existingFingerprints.add(fp);
+      }
       for (const entry of jsonEntries) {
         try {
           let note;
@@ -8249,9 +8163,8 @@ app.post('/api/import/google-takeout', requireAuth, googleTakeoutUpload, asyncRo
           errors++;
         }
       }
-      await run('COMMIT');
+      });
     } catch (error) {
-      await run('ROLLBACK');
       if (error && /zip bomb|too many entries|too large|unsafe entry/i.test(error.message)) {
         return res.status(400).json({ error: error.message });
       }
