@@ -1278,6 +1278,8 @@ export class InputComponent implements OnInit {
   }
 
   reset() {
+    this.isEditing = false
+    this.noteToEdit = {} as NoteI
     this.noteTitle.nativeElement.innerHTML = ''
     if (this.noteBody) this.noteBody.nativeElement.innerHTML = ''
     this.notePin.nativeElement.dataset['pinned'] = 'false'

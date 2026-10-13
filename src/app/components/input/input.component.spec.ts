@@ -579,6 +579,25 @@ describe('InputComponent opening, closing and incoming versions', () => {
     expect(editor.drawingNeedsEncoding()).toBeTrue();
   });
 
+  it('returns a saved composer to new-note mode so the next save creates another note', async () => {
+    const { editor } = stubs({
+      isEditing: true, noteToEdit: { id: 5, syncId: 'saved-note' },
+      noteTitle: { nativeElement: document.createElement('div') }, noteBody: { nativeElement: document.createElement('div') },
+      notePin: { nativeElement: { dataset: {} } }, cboxSuggestionEligibleIds: new Set(), cboxSuggestionDraftValues: new Map(),
+      dismissedCboxSuggestionIds: new Set(), resetCboxHistory: () => undefined, clearDrawingSelection: () => undefined,
+      drawingHistory: { reset: () => undefined }, isCbox: { next: () => undefined }, inputLength: { next: () => undefined },
+      activePointers: new Map(), applyNoteSurface: () => undefined
+    });
+    spyOn(editor, 'saveNoteNow').and.resolveTo();
+
+    editor.reset();
+    await editor.saveNote();
+
+    expect(editor.isEditing).toBeFalse();
+    expect(editor.noteToEdit.id).toBeUndefined();
+    expect(editor.saveNoteNow).toHaveBeenCalledOnceWith(true);
+  });
+
   it('writes an incoming hybrid version after the templates exist, so closing keeps the body (W2)', () => {
     const body = document.createElement('div');
     const title = document.createElement('div');
