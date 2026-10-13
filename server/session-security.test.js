@@ -51,7 +51,8 @@ test('sessions are stored hashed, old ones are converted, and URLs never carry a
   const image = await harness.call(`/uploads/images/missing.png?ticket=${media.ticket}`);
   assert.ok(![401, 403].includes(image.status), `the ticket authorizes the image route (got ${image.status})`);
   assert.equal((await harness.call(`/notes?ticket=${media.ticket}`)).status, 401, 'a ticket is not a login');
-  assert.equal((await harness.call(`/uploads/images/missing.png?ticket=${media.ticket.slice(0, -1)}0`)).status, 401, 'a forged ticket is refused');
+  const forged = media.ticket.slice(0, -1) + (media.ticket.endsWith('0') ? '1' : '0'); // always differs from the real signature
+  assert.equal((await harness.call(`/uploads/images/missing.png?ticket=${forged}`)).status, 401, 'a forged ticket is refused');
 });
 
 test('realtime accepts a single-use ticket or the header, not a token in the URL', { timeout: 90_000 }, async t => {
