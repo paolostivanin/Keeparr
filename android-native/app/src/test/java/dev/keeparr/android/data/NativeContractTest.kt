@@ -53,6 +53,33 @@ class NativeContractTest {
     }
     private fun note(id: Long, order: Double, pinned: Boolean = false, binder: String = "") = Note(JSONObject()
         .put("id", id).put("syncId", "note-$id").put("sortOrder", order).put("pinned", pinned).put("binder", binder))
+    @Test fun sharedEditorFixturesLoad() {
+        // Loader smoke test (docs/note-content-contract.md): later work consumes these through NoteHtml/ChecklistModel/NotePalette.
+        val editor = fixtures.getJSONObject("editorHtml")
+        for (section in listOf("cases", "edits", "rows", "titles", "titleEdits")) {
+            val entries = editor.getJSONArray(section)
+            assertTrue("$section is empty", entries.length() > 0)
+            val ids = (0 until entries.length()).map { entries.getJSONObject(it) }.onEach {
+                assertTrue("$section/${it.optString("id")} has no note", it.optString("note").isNotBlank())
+            }.map { it.getString("id") }
+            assertEquals("$section ids are unique", ids.size, ids.toSet().size)
+        }
+        val cases = editor.getJSONArray("cases")
+        for (index in 0 until cases.length()) {
+            val case = cases.getJSONObject(index)
+            assertTrue(case.getString("id"), case.getJSONArray("lines").length() > 0 || case.getString("html").isEmpty())
+            assertTrue(case.getString("id"), case.has("canonical") && case.has("hasMeaningfulBody") && case.has("browserInnerText"))
+        }
+        assertTrue(editor.getJSONArray("authoredBody").length() > 0)
+        assertTrue(editor.getJSONArray("authoredRow").length() > 0)
+        val colors = fixtures.getJSONObject("noteColors")
+        assertEquals(35, colors.getJSONArray("palette").length())
+        assertEquals(0.12, colors.getDouble("darkThreshold"), 0.0)
+        val ops = fixtures.getJSONArray("checklistOps")
+        assertTrue(ops.length() > 0)
+        val opIds = (0 until ops.length()).map { ops.getJSONObject(it) }.onEach { assertTrue(it.getString("id"), it.optString("note").isNotBlank()) }.map { it.getString("id") }
+        assertEquals(opIds.size, opIds.toSet().size)
+    }
     @Test fun manualOrderIsSharedByWidgetsAndHome() {
         val notes = listOf(note(1, 80.0), note(2, 50.0, true), note(3, 100.0), note(4, 50.0, true), note(5, 1000.0, binder = "Work"))
         assertEquals(listOf(4L, 2L, 3L, 1L), NoteOrder.visible(notes).map { it.id })
