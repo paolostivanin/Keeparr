@@ -9,6 +9,7 @@ import dev.keeparr.android.data.EditorSnapshotPolicy
 import dev.keeparr.android.data.Note
 import dev.keeparr.android.data.copyJson
 import dev.keeparr.android.data.copyForEdit
+import dev.keeparr.android.data.text
 import dev.keeparr.android.data.KeeparrRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -187,11 +188,12 @@ class NoteEditorViewModel(
 
     @Synchronized internal fun acceptServerSnapshot(accepted: Note, submitted: Note? = null) {
         val current = Note(_draft.value)
+        val previousServerBase = serverBase
         val acceptedSubmission = submitted ?: accepted
         val noLaterEditThanAcceptedOperation = EditorSnapshotPolicy.sameEditableContent(current, acceptedSubmission)
-        serverBase = accepted
         val rebased = if (noLaterEditThanAcceptedOperation) accepted.raw.copyJson()
-            else _draft.value.copyJson().put("id", accepted.id).put("revision", accepted.revision)
+            else mergeAcknowledgedImages(_draft.value.copyJson().put("id", accepted.id).put("revision", accepted.revision), previousServerBase, accepted)
+        serverBase = accepted
         // Typing is not interrupted unless the answer changed what the fields show.
         if (!EditorSnapshotPolicy.sameEditableContent(Note(rebased), current)) {
             _externalEdits.value += 1
@@ -201,6 +203,23 @@ class NoteEditorViewModel(
         _draftGeneration.value += 1
         _dirty.value = !noLaterEditThanAcceptedOperation && !EditorSnapshotPolicy.sameEditableContent(Note(rebased), accepted)
         if (_incoming.value?.revision?.let { it <= accepted.revision } == true) _incoming.value = null
+    }
+
+    /** Keeps images uploaded by a predecessor operation when later typing is rebased onto its accepted revision. */
+    private fun mergeAcknowledgedImages(draft: JSONObject, previous: Note, accepted: Note): JSONObject {
+        val oldImages = previous.raw.optJSONArray("images") ?: JSONArray()
+        val acceptedImages = accepted.raw.optJSONArray("images") ?: return draft
+        val draftImages = draft.optJSONArray("images") ?: JSONArray()
+        val known = (0 until draftImages.length()).mapNotNull { draftImages.optJSONObject(it)?.text("id") }.toMutableSet()
+        val oldIds = (0 until oldImages.length()).mapNotNull { oldImages.optJSONObject(it)?.text("id") }.toSet()
+        val additions = (0 until acceptedImages.length()).mapNotNull { index ->
+            acceptedImages.optJSONObject(index)?.takeIf { image -> image.text("id").isNotBlank() && image.text("id") !in oldIds && known.add(image.text("id")) }
+        }
+        if (additions.isEmpty()) return draft
+        return draft.copyJson().put("images", JSONArray().also { merged ->
+            (0 until draftImages.length()).forEach { merged.put(draftImages.get(it)) }
+            additions.forEach(merged::put)
+        })
     }
 
     suspend fun flushAndQueueSync() {

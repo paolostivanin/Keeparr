@@ -249,6 +249,32 @@ class KeeparrRepositoryTest {
         assertFalse(editor.dirty.value)
     }
 
+    @Test fun acceptedImageUploadIsRebasedAlongsideTypingThatContinuedDuringUpload() = runBlocking {
+        val initial = Note(JSONObject().put("id", 57).put("syncId", "editor-image-rebase").put("revision", 3)
+            .put("ownerUserId", profile.userId).put("noteTitle", "Before").put("noteBody", "")
+            .put("checkBoxes", JSONArray()).put("images", JSONArray()).put("labels", JSONArray()))
+        repository.store.put(Record(profile.profile, "note", initial.syncId, initial.raw.toString()))
+        val editor = NoteEditorViewModel(repository, initial)
+        editor.change { it.put("noteTitle", "Typed during upload") }
+        withTimeoutOrNull(5_000) { while (editor.localSaving.value) delay(10) }
+            ?: error("editor draft did not persist")
+        val image = JSONObject().put("id", "uploaded-image").put("dataUrl", "/api/uploads/images/uploaded.png")
+        val submitted = Note(initial.raw.copyJson().put("images", JSONArray().put(image)))
+        val accepted = Note(submitted.raw.copyJson().put("revision", 4))
+        repository.store.put(Record(profile.profile, "note", accepted.syncId, accepted.raw.toString()))
+
+        editor.acceptServerSnapshot(accepted, submitted)
+        editor.change { it.put("noteBody", "More typing") }
+        withTimeoutOrNull(5_000) { while (editor.localSaving.value) delay(10) }
+            ?: error("rebased editor draft did not persist")
+
+        val saved = JSONObject(repository.store.pending(profile.profile).single { it.type == "note.upsert" }.payload)
+        assertEquals("Typed during upload", saved.getString("noteTitle"))
+        assertEquals("More typing", saved.getString("noteBody"))
+        assertEquals("uploaded-image", saved.getJSONArray("images").getJSONObject(0).getString("id"))
+        assertTrue(editor.dirty.value)
+    }
+
     @Test fun noteUploadAndSuccessorEditHaveExplicitOutboxDependencies() = runBlocking {
         val note = Note.create(profile.userId)
         repository.save(note)
