@@ -24,6 +24,8 @@ internal object HtmlParser {
     private val skippedTags = setOf("script", "style", "template", "head", "title", "meta", "link", "base", "noscript")
     private val legacyParagraph = setOf(HtmlAttr("dir", "ltr"), HtmlAttr("style", "margin-top:0; margin-bottom:0;"))
 
+    fun isEmbedElement(element: Element) = element.tagName() in embedTags || element.attr("contenteditable").equals("false", ignoreCase = true)
+
     fun parse(html: String): List<ParsedLine> = try {
         Run(html).run()
     } catch (problem: RuntimeException) {
@@ -61,7 +63,7 @@ internal object HtmlParser {
 
         fun attrsOf(element: Element) = element.attributes().map { HtmlAttr(it.key, it.value) }
 
-        fun isEmbed(element: Element) = element.tagName() in embedTags || element.attr("contenteditable").equals("false", ignoreCase = true)
+        fun isEmbed(element: Element) = isEmbedElement(element)
 
         fun isBlock(element: Element) = element.tagName() in blockTags
 

@@ -188,7 +188,7 @@ object NoteHtml {
      * Same as the web's `splitBodyIntoLines(...).lines`: `<br>` and block elements end a line, whitespace collapses,
      * blank lines are skipped, images and link-preview slots are not text.
      */
-    fun nonBlankLines(html: String): List<String> {
+    fun nonBlankLines(html: String, skipEmbeds: Boolean = false): List<String> {
         val result = ArrayList<String>()
         val current = StringBuilder()
         fun flush() {
@@ -205,6 +205,7 @@ object NoteHtml {
                     when {
                         tag == "script" || tag == "style" -> Unit
                         tag == "img" || node.hasClass("editor-link-preview-slot") -> Unit
+                        skipEmbeds && HtmlParser.isEmbedElement(node) -> Unit
                         tag == "br" -> flush()
                         else -> {
                             val block = tag in blockNames
