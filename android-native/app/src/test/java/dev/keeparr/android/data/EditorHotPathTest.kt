@@ -200,4 +200,55 @@ class EditorHotPathTest {
         assertEquals(beforeA, a.raw.toString())
         assertEquals(beforeB, b.raw.toString())
     }
+
+    @Test fun externalEditsBumpOnlyWhenSomethingOtherThanTypingReplacesContent() = runBlocking {
+        val (vm, _) = editor()
+        val start = vm.externalEdits.value
+        repeat(5) { vm.change("noteBody") { json -> json.put("noteBody", "typed $it") } }
+        assertEquals("typing never resets the editors", start, vm.externalEdits.value)
+        vm.awaitIdle()
+        vm.undo()
+        assertEquals(start + 1, vm.externalEdits.value)
+        vm.redo()
+        assertEquals(start + 2, vm.externalEdits.value)
+        vm.change("checkBoxes", external = true, structural = true) { it.put("isCbox", true) }
+        assertEquals(start + 3, vm.externalEdits.value)
+    }
+
+    @Test fun undoAllReturnsToTheNoteAsItWasOpenedEvenForALaterSession() = runBlocking {
+        val raw = Note.create(profile.userId).raw.put("id", 71).put("revision", 1).put("noteTitle", "Opened").put("noteBody", "<div>body</div>")
+        val (vm, _) = editor(raw)
+        vm.change("noteTitle") { it.put("noteTitle", "Changed") }
+        vm.change("noteBody") { it.put("noteBody", "<div>other</div>") }
+        val before = vm.externalEdits.value
+        vm.undoAll()
+        assertEquals("Opened", vm.draft.value.getString("noteTitle"))
+        assertEquals("<div>body</div>", vm.draft.value.getString("noteBody"))
+        assertEquals(before + 1, vm.externalEdits.value)
+        vm.awaitIdle()
+    }
+
+    @Test fun undoAndRedoStepThroughTextAndChecklistChanges() = runBlocking {
+        val (vm, _) = editor(Note.create(profile.userId, true).raw.put("id", 72).put("revision", 1))
+        vm.change("noteBody") { it.put("noteBody", "a") }
+        vm.change("noteBody") { it.put("noteBody", "ab") }
+        vm.change("checkBoxes", structural = true) { it.put("checkBoxes", JSONArray().put(JSONObject().put("id", 0).put("done", false).put("data", "x").put("indentLevel", 0))) }
+        assertTrue(vm.canUndo.value)
+        vm.undo()
+        assertEquals(0, vm.draft.value.getJSONArray("checkBoxes").length())
+        assertEquals("ab", vm.draft.value.getString("noteBody"))
+        vm.undo()
+        assertEquals("", vm.draft.value.getString("noteBody"))
+        assertFalse(vm.canUndo.value)
+        vm.redo(); vm.redo()
+        assertEquals(1, vm.draft.value.getJSONArray("checkBoxes").length())
+        assertFalse(vm.canRedo.value)
+        vm.awaitIdle()
+    }
+
+    @Test fun aCleanDraftNeverFollowsAnOlderRevision() {
+        val local = Note(JSONObject().put("id", 5).put("syncId", "n").put("revision", 5).put("noteTitle", "new"))
+        assertNull(EditorSnapshotPolicy.apply(local, Note(JSONObject().put("id", 5).put("syncId", "n").put("revision", 3).put("noteTitle", "old")), dirty = false))
+        assertNotNull(EditorSnapshotPolicy.apply(local, Note(JSONObject().put("id", 5).put("syncId", "n").put("revision", 6).put("noteTitle", "newer")), dirty = false))
+    }
 }

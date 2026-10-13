@@ -41,6 +41,8 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
     /** Rows only: Backspace with the caret at the very start of the row. Return true when it was handled. */
     var onBackspaceAtStart: (() -> Boolean)? = null
 
+    // The platform calls onSelectionChanged from the superclass constructor, before the fields below exist.
+    private var constructed = false
     private var suppress = 0
     private var snapshot: RichTextController.Snapshot? = null
     private var insertedStart = 0
@@ -91,6 +93,7 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
         setOnKeyListener { _, keyCode, event ->
             keyCode == KeyEvent.KEYCODE_DEL && event.action == KeyEvent.ACTION_DOWN && !event.isShiftPressed && interceptBackspace()
         }
+        constructed = true
     }
 
     // ---- document -----------------------------------------------------------------------------------------
@@ -157,7 +160,7 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
 
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
-        if (selStart < 0 || selEnd < 0) return
+        if (!constructed || selStart < 0 || selEnd < 0) return
         controller.onSelectionChanged(selStart, selEnd)
         onSelectionUpdated?.invoke(selStart, selEnd)
         reportCaret()

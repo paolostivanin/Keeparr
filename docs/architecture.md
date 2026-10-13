@@ -39,6 +39,17 @@ This document records the current authoritative state and write boundaries while
 
 Bodies, titles and checklist rows are HTML strings written by two clients. The normative vocabulary, escaping, editing semantics and shared fixtures (`test-fixtures/native-contract.json`) are in [the note content contract](note-content-contract.md). Both clients must pass the same fixtures; a fixture change needs a matching change on the web and Android sides.
 
+Android ownership map (`android-native/app/src/main/java/dev/keeparr/android/`):
+
+| Concern | Owner |
+|---|---|
+| Parse, write, canonical form, previews, titles, `commit` (original string back when unchanged) | `data/html/NoteHtml.kt` over `HtmlParser.kt` (line and frame model) |
+| Spans drawn and serialized (`BlockSpan`, `InlineTagSpan`, `EmbedSpan`, render-only heading size) | `data/html/HtmlSpans.kt`, `HtmlDocument.kt` |
+| Editing rules (Enter, Backspace, paste, B/I/U, blocks, indent, clear, embeds) | `data/html/RichTextOps.kt` (`RichTextController`) |
+| Checklist rows (indent, check cascade, move, split, merge, show/hide checkboxes) | `data/ChecklistModel.kt` |
+| Editable view (InputConnection and key interception, plain paste, embed taps) | `ui/editor/KeeparrEditText.kt`, `RichTextField.kt` |
+| Toolbar, undo/redo history, inline images | `ui/editor/FormatToolbar.kt`, `NoteHistory.kt` (held by `NoteEditorViewModel`), `InlineImages.kt`, `EmbedBinder.kt` |
+
 ## Durable-write invariants
 
 - A successful local note or staged attachment save means the local document and replayable intent have both committed.

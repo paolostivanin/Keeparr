@@ -50,13 +50,21 @@ internal object HtmlParser {
 
         fun run(): List<ParsedLine> {
             val nodes = Parser.htmlParser().setTrackPosition(true).parseFragmentInput(source, Element("body"), "").toMutableList()
-            // Trailing whitespace-only runs (a final newline after the last block) are not content.
-            while (nodes.isNotEmpty()) {
-                val last = nodes.last()
-                val droppable = last is Comment || last is DataNode || (last is TextNode && last.wholeText.all { it == ' ' || it == '\t' || it == '\n' || it == '\r' || it == '\u000c' })
-                if (!droppable) break
-                nodes.removeAt(nodes.size - 1)
+            // A whitespace-only run at the very end (a final newline after the last block) is not content. A run is
+            // everything after the last block or embed, so spaces that follow text in the same run stay.
+            var runStart = nodes.size
+            while (runStart > 0) {
+                val node = nodes[runStart - 1]
+                val blockish = node is Element && !skipped(node) && (isEmbed(node) || isBlock(node) || hasBlockChild(node))
+                if (blockish) break
+                runStart--
             }
+            val blank = (runStart until nodes.size).all { i ->
+                val node = nodes[i]
+                node is Comment || node is DataNode || (node is Element && skipped(node)) ||
+                    (node is TextNode && node.wholeText.all { it == ' ' || it == '\t' || it == '\n' || it == '\r' || it == '\u000c' })
+            }
+            if (blank) while (nodes.size > runStart) nodes.removeAt(nodes.size - 1)
             children(nodes, emptyList())
             return out
         }

@@ -137,12 +137,16 @@ object NoteHtml {
             if (leaf.isAnonymous && previous.path.lastOrNull()?.isAnonymous == true && samePath(previous.path.dropLast(1), info.path.dropLast(1))) return true
             return samePath(previous.path, info.path) && !leaf.isEmbed && (info.breakBefore != BreakKind.BLOCK || leaf.isAnonymous)
         }
+        // Trailing raw newlines of the top-level run are dropped when the note is read back, so empty lines there use <br>.
+        var tailEmptyFrom = lines.size
+        while (tailEmptyFrom > 0 && lines[tailEmptyFrom - 1].start == lines[tailEmptyFrom - 1].end) tailEmptyFrom--
+        fun rawNewlineIsLost(index: Int) = index >= tailEmptyFrom && resolved[index].path.size == 1 && resolved[index].path[0].isAnonymous
         for (index in lines.indices) {
             val line = lines[index]
             val info = resolved[index]
             val join = joins(index)
             if (join) {
-                if (info.breakBefore == BreakKind.NEWLINE) {
+                if (info.breakBefore == BreakKind.NEWLINE && !rawNewlineIsLost(index)) {
                     // The parser drops one newline right after <pre>, so a leading blank line needs two.
                     if (out.length == preStart) out.append('\n')
                     out.append('\n')
@@ -167,7 +171,7 @@ object NoteHtml {
             val empty = line.start == line.end
             val lastInLeaf = index == lines.lastIndex || !joins(index + 1)
             val trailing = (info.trailingBr && lastInLeaf && !(info.placeholderBr && !empty)) || (lastInLeaf && empty)
-            if (trailing) out.append(if (!join || info.trailingBr || info.breakBefore != BreakKind.NEWLINE) "<br>" else "\n")
+            if (trailing) out.append(if (!join || info.trailingBr || info.breakBefore != BreakKind.NEWLINE || rawNewlineIsLost(index)) "<br>" else "\n")
         }
         while (open.isNotEmpty()) {
             val frame = open.removeAt(open.size - 1)
