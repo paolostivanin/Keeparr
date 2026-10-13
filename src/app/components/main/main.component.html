@@ -6,7 +6,10 @@
       @if (syncState !== 'saved') {
         <div class="offline-sync-state" [class.is-error]="syncState === 'error'" role="status">
           <span class="material-symbols-outlined">{{ syncState === 'offline' ? 'cloud_off' : (syncState === 'error' || syncState === 'auth-required') ? 'sync_problem' : 'sync' }}</span>
-          <span>{{ syncState === 'offline' ? 'Saved offline' : syncState === 'auth-required' ? 'Sign in again to sync. Your changes are saved on this device.' : syncState === 'error' ? 'Sync needs attention' : 'Syncing' }}</span>
+          <span>{{ syncState === 'offline' ? 'Saved offline' : syncState === 'auth-required' ? 'Sign in again to sync. Your changes are saved on this device.' : syncState === 'error' ? 'Sync failed' : 'Syncing' }}@if (syncState === 'error' && (offlineSync.lastError$ | async); as lastError) {: {{ lastError }}}</span>
+          @if (syncState === 'error') {
+            <button type="button" class="offline-sync-retry" (click)="retrySync()">Retry</button>
+          }
         </div>
       }
     }

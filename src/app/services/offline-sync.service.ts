@@ -57,6 +57,8 @@ export class OfflineSyncService {
   readonly state$ = new BehaviorSubject<OfflineSyncState>(navigator.onLine ? 'saved' : 'offline');
   readonly cacheChanged$ = new Subject<OfflineCacheChange>();
   readonly attention$ = new BehaviorSubject<SyncAttentionItem[]>([]);
+  /** Why the last sync cycle failed, shown next to the error state; empty once a cycle succeeds. */
+  readonly lastError$ = new BehaviorSubject<string>('');
   private guardedNotes?: { partition: string; supported: boolean };
   private readonly apiUrl = environment.apiUrl;
   private readonly syncRequestTimeoutMs = 12000;
@@ -266,6 +268,7 @@ export class OfflineSyncService {
         .filter(entry => entry.type === 'attachment.upload');
       if (pendingUploads.length) await this.flushAttachmentUploads(pendingUploads);
       this.clearConnectionDegraded();
+      this.lastError$.next('');
       this.state$.next('saved');
     } catch (error) {
       if (this.isOfflineError(error)) {
@@ -275,8 +278,10 @@ export class OfflineSyncService {
         // Pending changes stay durable; syncing resumes after the user signs in again.
         this.state$.next('auth-required');
       } else {
+        this.lastError$.next(this.describeSyncError(error));
         this.state$.next('error');
         console.error('Offline sync failed', error);
+        this.scheduleDegradedRetries();
       }
     } finally {
       this.running = false;
@@ -672,6 +677,14 @@ export class OfflineSyncService {
         attachmentSyncIds: [...attachmentSyncIds]
       });
     }
+  }
+
+  private describeSyncError(error: unknown) {
+    if (error instanceof HttpErrorResponse) {
+      const message = typeof error.error?.error === 'string' ? error.error.error : '';
+      return message || `The server answered with HTTP ${error.status}.`;
+    }
+    return error instanceof Error && error.message ? error.message : 'Unknown error.';
   }
 
   private isOfflineError(error: unknown) {

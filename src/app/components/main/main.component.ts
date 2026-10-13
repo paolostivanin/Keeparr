@@ -180,6 +180,10 @@ export class MainComponent implements OnInit, OnDestroy {
     this.Shared.openMobileComposer.next(true)
   }
 
+  retrySync() {
+    this.offlineSync.syncNow().catch(console.error)
+  }
+
   async resolveSyncAttention(key: string, choice: 'mine' | 'theirs' | 'both') {
     try {
       if (choice === 'both') {
