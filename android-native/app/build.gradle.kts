@@ -45,6 +45,17 @@ android {
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     systemProperty("keeparr.native.fixture", rootProject.projectDir.parentFile.resolve("test-fixtures/native-contract.json").absolutePath)
 }
+// The note background SVGs live once, in the web assets. This copies the 12 known backgrounds (plus their _ph thumbnails and
+// any generated _dark variants) into a generated assets directory, so the app never carries a second copy in the repository.
+val backgroundNames = listOf("groceries", "tasks", "movies", "cafes", "romantic", "gym", "recipes", "travel", "study", "ideas", "meetings", "budget")
+val syncBackgrounds = tasks.register<Sync>("syncBackgrounds") {
+    from(rootProject.projectDir.parentFile.resolve("src/assets/images/backgrounds")) {
+        backgroundNames.forEach { include("$it.svg", "${it}_ph.svg", "${it}_dark.svg", "${it}_dark_ph.svg") }
+    }
+    into(layout.buildDirectory.dir("generated/backgrounds/assets/backgrounds"))
+}
+android.sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/backgrounds/assets"))
+tasks.named("preBuild") { dependsOn(syncBackgrounds) }
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")

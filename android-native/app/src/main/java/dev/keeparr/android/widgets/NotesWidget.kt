@@ -154,8 +154,10 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
         // picks by the system night mode without the row being rebuilt; a forced mode sends the one explicit color.
         val mode = app.settings.themeMode
         val colors = WidgetColors(app)
-        val card = colors.card(note.raw.text("bgColor"))
-        val foreground = colors.text(note.raw.text("bgColor"))
+        // A background image replaces the color on every client, and the widget does not draw the illustration.
+        val stored = if (note.raw.text("bgImage").isNotBlank()) "" else note.raw.text("bgColor")
+        val card = colors.card(stored)
+        val foreground = colors.text(stored)
         if (item != null) {
             val itemLabel = item?.let { Html.fromHtml(boundedWidgetText(it.text("data"), 4096), Html.FROM_HTML_MODE_COMPACT)
                 .toString().ifBlank { "Checklist item" }.let { text -> boundedWidgetText(text, 256) } }

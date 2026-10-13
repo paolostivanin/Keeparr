@@ -94,12 +94,12 @@ object NotePalette {
      * The color to draw for a stored bgColor: the stored value itself under the light theme, [darkColor] under the dark
      * theme. Null when there is no usable color. The result is opaque (the web drops any alpha as well).
      */
-    fun display(stored: String, dark: Boolean): Int? {
-        // CSS reads 8 digits as #rrggbbaa, which is what the web shows; `parse` keeps its historical #aarrggbb.
+    fun display(stored: String, dark: Boolean): Int? = parseStored(stored)?.let { display(it, dark) }
+
+    /** [parse] with the web's reading of a stored color: 8 hex digits are CSS `#rrggbbaa`, and the alpha is dropped. */
+    fun parseStored(stored: String): Int? {
         val text = stored.trim()
-        val css = if (Regex("^#[0-9a-fA-F]{8}$").matches(text)) text.substring(0, 7) else text
-        val color = parse(css) ?: return null
-        return display(color, dark)
+        return parse(if (Regex("^#[0-9a-fA-F]{8}$").matches(text)) text.substring(0, 7) else text)?.opaque()
     }
 
     /** [display] for an already parsed stored color. */

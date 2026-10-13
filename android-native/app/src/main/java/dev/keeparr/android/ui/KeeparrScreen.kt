@@ -502,7 +502,7 @@ private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, modifier: M
                     CustomAccessibilityAction("Move earlier") { onMove(-1); true }.takeIf { canMove(-1) },
                     CustomAccessibilityAction("Move later") { onMove(1); true }.takeIf { canMove(1) })
             }) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.noteBackgroundImage(note.background.takeUnless { note.locked }, LocalDarkTheme.current).padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (note.locked) { Icon(Icons.Outlined.Lock, "Locked note"); Text("Locked note", style = body) }
                 else {
                 note.imagePath?.let { MediaImage(app, it) }
