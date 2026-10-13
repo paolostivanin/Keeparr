@@ -28,7 +28,7 @@ import { DrawingHistory } from 'src/app/utils/drawing-history';
 import { Disposables } from 'src/app/utils/disposables';
 import { ChecklistHistory, normalizeChecklist, setChecklistIndent, toggleChecklistDone } from 'src/app/utils/checklist-model';
 import { decorateLinks, extractUrlsFromHtml, stripEditorChrome } from 'src/app/utils/editor-body';
-import { noteColorToHex } from 'src/app/utils/note-color';
+import { noteBgImagePath, noteColorToHex, noteSurfaceVars } from 'src/app/utils/note-color';
 import { environment } from 'src/environments/environment';
 import {
   EditorSessionPersister, EditorSessionTracker, NEW_NOTE_SESSION_KEY, applyEditorDraft, emptyEditorDraft,
@@ -180,6 +180,9 @@ export class InputComponent implements OnInit {
   isSavingCollaborators = false
   labelMenuError = ''
   hasBackgroundImage = false
+  /** Stored (light) color and background image of the open note; never read back from the DOM. */
+  noteColor = ''
+  noteBgImage = ''
   isDrawingNote = false
   isDrawingFullscreen = false
   // Set true when the loaded note has both a body and a checklist (hybrid note,
@@ -557,8 +560,8 @@ export class InputComponent implements OnInit {
       noteTitle: this.noteTitle.nativeElement.innerHTML,
       noteBody: this.noteBody?.nativeElement.innerHTML ? this.cleanEditorBodyForSave(this.noteBody.nativeElement.innerHTML) : '',
       pinned: this.notePin.nativeElement.dataset['pinned'] === "true", // converting string to bool,
-      bgColor: noteColorToHex(this.noteMain.nativeElement.style.backgroundColor),
-      bgImage: this.noteMain.nativeElement.style.backgroundImage || this.noteContainer.nativeElement.style.backgroundImage,
+      bgColor: noteColorToHex(this.noteColor),
+      bgImage: this.noteBgImage,
       checkBoxes: checkBoxesForSave,
       images: this.images.map(image => ({ ...image, dataUrl: this.auth.canonicalImageUrl(image.dataUrl) })),
       isCbox: this.isCbox.value,
@@ -784,8 +787,8 @@ export class InputComponent implements OnInit {
       noteTitle: this.noteTitle.nativeElement.innerHTML,
       noteBody: bodyHtml ? this.cleanEditorBodyForSave(bodyHtml) : '',
       pinned: this.notePin.nativeElement.dataset['pinned'] === 'true',
-      bgColor: this.noteMain.nativeElement.style.backgroundColor,
-      bgImage: this.noteMain.nativeElement.style.backgroundImage || this.noteContainer.nativeElement.style.backgroundImage,
+      bgColor: noteColorToHex(this.noteColor),
+      bgImage: this.noteBgImage,
       checkBoxes: this.currentCheckBoxesForSave(false),
       images: this.images.map(image => ({ ...image, dataUrl: this.auth.canonicalImageUrl(image.dataUrl) })),
       isCbox: this.isCbox.value,
@@ -1172,12 +1175,9 @@ export class InputComponent implements OnInit {
     this.noteTitle.nativeElement.innerHTML = ''
     if (this.noteBody) this.noteBody.nativeElement.innerHTML = ''
     this.notePin.nativeElement.dataset['pinned'] = 'false'
-    this.noteContainer.nativeElement.style.backgroundImage = ''
-    this.noteMain.nativeElement.style.backgroundImage = ''
-    this.noteMain.nativeElement.style.backgroundColor = ''
-    this.noteMain.nativeElement.style.borderColor = ''
-    this.noteMain.nativeElement.style.color = ''
-    this.hasBackgroundImage = false
+    this.noteColor = ''
+    this.noteBgImage = ''
+    this.applyNoteSurface()
     //
     this.checkBoxes = []
     this.cboxSuggestionEligibleIds.clear()
@@ -3434,12 +3434,9 @@ export class InputComponent implements OnInit {
     this.attachments = note.attachments || []
     this.isDrawingNote = this.images.some(image => image.id === 'drawing')
     this.notePin.nativeElement.dataset['pinned'] = String(note.pinned)
-    this.applyBackgroundImage(note.bgImage)
-    // applyBackgroundImage already sets this.hasBackgroundImage with the
-    // correct logic (treats empty `url("")` as "no image"); do not override it.
-    this.noteMain.nativeElement.style.backgroundColor = note.bgColor
-    this.noteMain.nativeElement.style.borderColor = note.bgColor
-    this.updateTextColor(note.bgColor)
+    this.noteColor = note.bgColor || ''
+    this.noteBgImage = note.bgImage || ''
+    this.applyNoteSurface()
     this.cboxSuggestionEligibleIds.clear()
     this.cboxSuggestionDraftValues.clear()
     this.dismissedCboxSuggestionIds.clear()
@@ -3788,59 +3785,32 @@ export class InputComponent implements OnInit {
   }
 
   colorMenu = {
+    // Picking a color clears the background image and the other way round, like the card menus.
     bgColor: (data: bgColors) => {
-      this.noteMain.nativeElement.style.backgroundColor = data
-      this.noteMain.nativeElement.style.borderColor = data
-      this.updateTextColor(data)
+      this.noteColor = noteColorToHex(data)
+      this.noteBgImage = ''
+      this.applyNoteSurface()
       this.queueCoEditAutosave()
     },
     bgImage: (data: bgImages) => {
-      this.applyBackgroundImage(data)
+      this.noteBgImage = data ? (data.startsWith('url(') ? data : `url(${data})`) : ''
+      this.applyNoteSurface()
       this.queueCoEditAutosave()
     }
   }
 
-  private applyBackgroundImage(data: string) {
-    const bgImage = data ? (data.startsWith('url(') ? data : `url(${data})`) : ''
-    this.noteContainer.nativeElement.style.backgroundImage = bgImage
-    this.noteMain.nativeElement.style.backgroundImage = bgImage
-    this.hasBackgroundImage = !!bgImage && bgImage !== 'url("")'
-    this.updateTextColor(this.noteMain.nativeElement.style.backgroundColor)
-  }
-
-  private updateTextColor(color: string) {
-    if (this.hasBackgroundImage || this.isLightColor(color)) {
-      this.noteMain.nativeElement.style.color = '#202124'
-    } else if (color) {
-      this.noteMain.nativeElement.style.color = '#e8eaed'
-    } else {
-      this.noteMain.nativeElement.style.color = ''
-    }
-  }
-
-  isLightColor(color: string) {
-    const rgb = this.parseColor(color)
-    if (!rgb) return false
-    return ((rgb.r * 299) + (rgb.g * 587) + (rgb.b * 114)) / 1000 > 160
-  }
-
-  private parseColor(color: string) {
-    if (!color) return null
-    const hex = color.trim().match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i)
-    if (hex) {
-      return {
-        r: parseInt(hex[1], 16),
-        g: parseInt(hex[2], 16),
-        b: parseInt(hex[3], 16)
-      }
-    }
-
-    const rgb = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i)
-    if (!rgb) return null
-    return {
-      r: Number(rgb[1]),
-      g: Number(rgb[2]),
-      b: Number(rgb[3])
+  /**
+   * Publishes the stored color/image as the note-surface CSS variables. `.note-surface`
+   * (styles.scss) picks the light or dark variant from the theme, so a theme change needs no
+   * work here and the dark variant is never saved.
+   */
+  private applyNoteSurface() {
+    const element = this.noteMain?.nativeElement
+    this.hasBackgroundImage = !!noteBgImagePath(this.noteBgImage)
+    if (!element) return
+    for (const [name, value] of Object.entries(noteSurfaceVars(this.noteColor, this.noteBgImage))) {
+      if (value) element.style.setProperty(name, value)
+      else element.style.removeProperty(name)
     }
   }
 
@@ -4111,10 +4081,9 @@ export class InputComponent implements OnInit {
       this.hydrateInlineImageButtons();
     }
     if (this.noteMain?.nativeElement) {
-      this.noteMain.nativeElement.style.backgroundColor = note.bgColor || "";
-      this.noteMain.nativeElement.style.borderColor = note.bgColor || "";
-      this.updateTextColor(note.bgColor);
-      this.applyBackgroundImage(note.bgImage);
+      this.noteColor = note.bgColor || '';
+      this.noteBgImage = note.bgImage || '';
+      this.applyNoteSurface();
     }
     // The saved baseline below covers these too, so the editor must show them as well: otherwise they would count as
     // unsaved edits forever, or be written back over the newer values when the note is closed.

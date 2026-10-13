@@ -1,6 +1,6 @@
-<div class="note-main" [class.note-main--link-only]="meta.linkOnly"
+<div class="note-main note-surface" [class.note-main--link-only]="meta.linkOnly"
   [class.note-main--untitled]="!presentation.hasVisibleTitle && !meta.linkOnly"
-  [ngStyle]="{'background-color': note.bgColor, 'border-color': note.bgColor, 'background-image': note.bgImage, 'color': meta.textColor}">
+  [style]="note.bgColor | noteSurface: note.bgImage">
   @if (ownerIsOtherUser()) {
     <div class="shared-indicator H pop" [attr.data-pop]="'Shared by ' + (note.ownerDisplayName || note.ownerUsername || 'another user')">
       @if (note.ownerAvatarDataUrl) {

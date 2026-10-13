@@ -703,12 +703,41 @@
   -webkit-overflow-scrolling: touch;
 }
 
+@mixin proposal-on-dark {
+  border-color: rgba(255, 255, 255, 0.34);
+  color: #e8eaed;
+
+  .smart-proposal-topline .material-symbols-outlined {
+    color: rgba(232, 234, 237, 0.78);
+  }
+
+  .smart-proposal-badge {
+    background: rgba(255, 255, 255, 0.18);
+    color: #fff;
+  }
+
+  .smart-proposal-checklist .material-symbols-outlined {
+    color: rgba(138, 180, 248, 0.78);
+  }
+
+  .smart-proposal-meta,
+  .smart-share-heading {
+    border-color: rgba(255, 255, 255, 0.2);
+    color: rgba(232, 234, 237, 0.78);
+  }
+
+  .smart-share-block,
+  .smart-reminder-block {
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+}
+
 .smart-proposal-card {
-  background: var(--proposal-bg);
+  background: var(--note-bg-eff, #fff);
   border: 2px dashed rgba(60, 64, 67, 0.38);
   border-radius: 18px;
   box-sizing: border-box;
-  color: #202124;
+  color: var(--note-fg-eff, #202124);
   display: block;
   font-family: var(--font-display);
   margin: 0;
@@ -735,32 +764,7 @@
   }
 
   &.is-dark-bg {
-    border-color: rgba(255, 255, 255, 0.34);
-    color: #e8eaed;
-
-    .smart-proposal-topline .material-symbols-outlined {
-      color: rgba(232, 234, 237, 0.78);
-    }
-
-    .smart-proposal-badge {
-      background: rgba(255, 255, 255, 0.18);
-      color: #fff;
-    }
-
-    .smart-proposal-checklist .material-symbols-outlined {
-      color: rgba(138, 180, 248, 0.78);
-    }
-
-    .smart-proposal-meta,
-    .smart-share-heading {
-      border-color: rgba(255, 255, 255, 0.2);
-      color: rgba(232, 234, 237, 0.78);
-    }
-
-    .smart-share-block,
-    .smart-reminder-block {
-      border-color: rgba(255, 255, 255, 0.2);
-    }
+    @include proposal-on-dark;
   }
 
   h3 {
@@ -771,6 +775,11 @@
     margin: 14px 0 12px;
     overflow-wrap: anywhere;
   }
+}
+
+// Every pastel is dark under the dark theme, so the light-on-dark details apply to all of them.
+:host-context(body:not(.light-theme)) .smart-proposal-card {
+  @include proposal-on-dark;
 }
 
 .smart-ghost-card {

@@ -8,7 +8,7 @@ function makeEditor() {
   Object.assign(editor, {
     noteTitle: title, noteBody: body, noteMain: { nativeElement: { style: {} } }, notePin: { nativeElement: { dataset: {} } },
     labels: [{ name: 'work', added: false }, { name: 'home', added: true }], isArchived: false, isTrashed: false, binderName: '',
-    applyBackgroundImage: jasmine.createSpy('applyBackgroundImage'), updateTextColor: () => undefined,
+    applyNoteSurface: jasmine.createSpy('applyNoteSurface'), noteColor: '', noteBgImage: '',
     noteToEdit: { id: 5, syncId: 'n5', revision: 7, noteTitle: 'title', noteBody: 'body', labels: [] },
     images: [], attachments: [], isDrawingNote: false, isCbox: { next: () => undefined },
     cd: { detectChanges: () => undefined }, auth: { authenticatedImageUrl: (value: string) => value },
@@ -74,7 +74,8 @@ describe('InputComponent incoming updates', () => {
     expect(editor.binderName).toBe('Projects');
     expect(editor.labels.map((label: { name: string; added: boolean }) => [label.name, label.added])).toEqual([['work', true], ['home', false]]);
     expect(editor.noteToEdit.labels).toEqual([{ name: 'work', added: true } as any]);
-    expect(editor.applyBackgroundImage).toHaveBeenCalledWith('');
+    expect(editor.noteBgImage).toBe('');
+    expect(editor.applyNoteSurface).toHaveBeenCalled();
   });
 
   it('re-attaches image delete buttons and link previews only when it replaced the body markup', () => {
@@ -449,5 +450,72 @@ describe('InputComponent formatting bars', () => {
       expect(editor.pointerSelecting).toBeFalse();
       expect(editor.scheduleSelectionFormattingUpdate).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('InputComponent note surface', () => {
+  let noteMain: HTMLElement;
+  afterEach(() => { noteMain?.remove(); document.body.classList.remove('light-theme'); });
+
+  function surfaceEditor() {
+    noteMain = document.createElement('div');
+    noteMain.className = 'note-main note-surface';
+    noteMain.style.backgroundColor = 'var(--note-bg-eff, rgb(1, 2, 3))';
+    document.body.appendChild(noteMain);
+    const editor = Object.create(InputComponent.prototype) as any;
+    Object.assign(editor, {
+      noteMain: { nativeElement: noteMain }, noteTitle: { nativeElement: { innerHTML: '' } }, notePin: { nativeElement: { dataset: {} } },
+      noteColor: '', noteBgImage: '', images: [], labels: [], isCbox: { value: false }, isEditing: false,
+      currentCheckBoxesForSave: () => [], auth: { canonicalImageUrl: (value: string) => value }
+    });
+    return editor;
+  }
+  const shown = () => getComputedStyle(noteMain).backgroundColor;
+
+  it('shows the dark variant under the dark theme and the stored color under the light theme, without a re-render', () => {
+    const editor = surfaceEditor();
+    editor.noteColor = '#fff8b8';
+    editor.applyNoteSurface();
+
+    expect(shown()).toBe('rgb(124, 74, 3)');
+    document.body.classList.add('light-theme');
+    expect(shown()).toBe('rgb(255, 248, 184)');
+    document.body.classList.remove('light-theme');
+    expect(shown()).toBe('rgb(124, 74, 3)');
+  });
+
+  it('never saves a dark variant, whichever theme is active', () => {
+    const editor = surfaceEditor();
+    editor.noteColor = '#fff8b8';
+    editor.applyNoteSurface();
+
+    expect(editor.liveEditorNote().bgColor).toBe('#fff8b8');
+    document.body.classList.add('light-theme');
+    expect(editor.liveEditorNote().bgColor).toBe('#fff8b8');
+    expect(noteMain.style.backgroundColor).toContain('var(');
+  });
+
+  it('keeps the stored background image and uses the text color of the active theme over it', () => {
+    const editor = surfaceEditor();
+    editor.noteBgImage = 'url(/assets/images/backgrounds/groceries.svg)';
+    editor.applyNoteSurface();
+
+    expect(editor.hasBackgroundImage).toBeTrue();
+    expect(editor.liveEditorNote().bgImage).toBe('url(/assets/images/backgrounds/groceries.svg)');
+    expect(noteMain.style.getPropertyValue('--note-bg-image-dark')).toBe('url("/assets/images/backgrounds/groceries_dark.svg")');
+    expect(getComputedStyle(noteMain).getPropertyValue('--note-fg-eff')).toBe('#e8eaed');
+    document.body.classList.add('light-theme');
+    expect(getComputedStyle(noteMain).getPropertyValue('--note-fg-eff')).toBe('#202124');
+  });
+
+  it('removes the color variables when the color is cleared', () => {
+    const editor = surfaceEditor();
+    editor.noteColor = '#fff8b8';
+    editor.applyNoteSurface();
+    editor.noteColor = '';
+    editor.applyNoteSurface();
+
+    expect(noteMain.style.getPropertyValue('--note-bg')).toBe('');
+    expect(shown()).toBe('rgb(1, 2, 3)');
   });
 });

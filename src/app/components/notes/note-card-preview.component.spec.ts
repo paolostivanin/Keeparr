@@ -3,6 +3,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { NoteI } from 'src/app/interfaces/notes';
 import { AuthService } from 'src/app/services/auth.service';
+import { NoteSurfacePipe } from 'src/app/pipes/note-surface.pipe';
 import { NoteCardPreviewComponent, NotePreviewMeta } from './note-card-preview.component';
 
 const meta: NotePreviewMeta = {
@@ -11,7 +12,6 @@ const meta: NotePreviewMeta = {
   bgKey: '',
   urls: [],
   linkOnly: false,
-  textColor: '#202124',
   displayBody: 'Body',
   bodySegments: [{ type: 'html', value: 'Body' }],
   hiddenLinkCount: 0,
@@ -49,7 +49,7 @@ describe('NoteCardPreviewComponent', () => {
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
-      declarations: [NoteCardPreviewComponent, PreviewHostComponent],
+      declarations: [NoteCardPreviewComponent, PreviewHostComponent, NoteSurfacePipe],
       providers: [{ provide: AuthService, useValue: { currentUser: { id: 1 }, authenticatedImageUrl: (value: string) => value } }],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).compileComponents();

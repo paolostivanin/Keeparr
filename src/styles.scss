@@ -94,6 +94,27 @@ body {
   scrollbar-gutter: stable;
 }
 
+// Note surfaces (cards, the editor, color swatches, proposals). The stored color/image arrive as
+// --note-bg*, --note-fg*, --note-link* (light) and their -dark counterparts (utils/note-color.ts,
+// `noteSurface` pipe). Dark is the default theme, so a theme change is a pure CSS switch and the
+// dark variant never reaches the stored note. Unset variables fall through to each component's own
+// default, e.g. `background-color: var(--note-bg-eff, transparent)`.
+.note-surface {
+  --note-bg-eff: var(--note-bg-dark);
+  --note-fg-eff: var(--note-fg-dark);
+  --note-link-eff: var(--note-link-dark);
+  --note-img-eff: var(--note-bg-image-dark);
+  --sw-img-eff: var(--sw-img-dark);
+}
+
+body.light-theme .note-surface {
+  --note-bg-eff: var(--note-bg);
+  --note-fg-eff: var(--note-fg);
+  --note-link-eff: var(--note-link);
+  --note-img-eff: var(--note-bg-image);
+  --sw-img-eff: var(--sw-img);
+}
+
 // The theme class lives on <body>, so the root (scrollbars, overscroll) follows it explicitly.
 html:has(body.light-theme) {
   color-scheme: light;
@@ -284,9 +305,6 @@ body.light-theme .tp-ui-modal[data-theme="basic"] {
   }
 }
 
-:host-context(.dark-theme) .status-dot {
-  border-color: #202124;
-}
 *::-webkit-scrollbar {
   height: 16px;
   overflow: visible;
@@ -697,25 +715,13 @@ app-input .note-body a,
 app-input .cbox-note a,
 app-notes .body a,
 app-notes .cbox-note a {
-  color: #1a73e8;
+  // #1a73e8 / #8ab4f8 are fixed. They cannot reach 4.5:1 on every pastel (Lavender light 2.4:1, Cream dark 3.5:1),
+  // which docs/note-content-contract.md records as the one exception; links stay underlined and weighted.
+  color: var(--note-link-eff, #1a73e8);
   font-weight: 500;
   text-decoration: underline;
   text-decoration-thickness: 1.5px;
   text-underline-offset: 3px;
-}
-
-body.dark-theme app-input .note-body a,
-body.dark-theme app-input .cbox-note a,
-body.dark-theme app-notes .body a,
-body.dark-theme app-notes .cbox-note a {
-  color: #fbbc04;
-}
-
-body.dark-theme app-input .note-body a:hover,
-body.dark-theme app-input .cbox-note a:hover,
-body.dark-theme app-notes .body a:hover,
-body.dark-theme app-notes .cbox-note a:hover {
-  color: #ffd666;
 }
 
 app-navbar .form:focus-within .input {

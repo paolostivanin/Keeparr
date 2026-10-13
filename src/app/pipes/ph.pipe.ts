@@ -6,9 +6,9 @@ import { Pipe, PipeTransform } from '@angular/core';
 })
 export class ph implements PipeTransform {
 
-  transform(value: string) {
+  transform(value: string, dark = false) {
     let x = `url(${value})`
-    return x.replace('.svg', '_ph.svg')
+    return x.replace('.svg', dark ? '_dark_ph.svg' : '_ph.svg')
 
   }
 

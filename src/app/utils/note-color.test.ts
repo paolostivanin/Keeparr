@@ -112,7 +112,19 @@ test('noteSurfaceVars exposes light and dark variables', () => {
   assert.equal(image['--note-bg-image-dark'], 'url("/assets/images/backgrounds/groceries_dark.svg")');
   assert.equal(image['--note-fg'], '#202124');
   assert.equal(image['--note-fg-dark'], '#e8eaed');
-  assert.equal(noteSurfaceVars('', 'url(x.svg)')['--note-bg-image-dark'], 'url("url(x.svg)")');
+  // Every stored form of the same illustration maps to the same dark file.
+  for (const stored of ['url(/assets/images/backgrounds/groceries.svg)', 'url("/assets/images/backgrounds/groceries.svg")', "url('/assets/images/backgrounds/groceries.svg')"]) {
+    assert.equal(noteSurfaceVars('', stored)['--note-bg-image-dark'], 'url("/assets/images/backgrounds/groceries_dark.svg")', stored);
+  }
+  const origin = noteSurfaceVars('', 'url("http://localhost:4200/assets/images/backgrounds/gym.svg")');
+  assert.equal(origin['--note-bg-image'], 'url("http://localhost:4200/assets/images/backgrounds/gym.svg")');
+  assert.equal(origin['--note-bg-image-dark'], 'url("http://localhost:4200/assets/images/backgrounds/gym_dark.svg")');
+  // Unknown values are kept as they are in both themes.
+  assert.equal(noteSurfaceVars('', 'url(x.svg)')['--note-bg-image-dark'], 'url("x.svg")');
+  assert.equal(noteSurfaceVars('', '/assets/images/backgrounds/image-1.svg')['--note-bg-image-dark'], 'url("/assets/images/backgrounds/image-1.svg")');
+  // An image picked after a color keeps the color underneath.
+  const both = noteSurfaceVars('#fff8b8', 'url(/assets/images/backgrounds/groceries.svg)');
+  assert.deepEqual([both['--note-bg'], both['--note-bg-dark'], both['--note-fg'], both['--note-fg-dark']], ['#fff8b8', '#7c4a03', '#202124', '#e8eaed']);
 });
 
 test('fixture noteColors matches the palette and the reference code', () => {

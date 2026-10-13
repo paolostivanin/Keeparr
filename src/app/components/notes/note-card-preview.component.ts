@@ -11,7 +11,6 @@ export interface NotePreviewMeta {
   bgKey: string;
   urls: string[];
   linkOnly: boolean;
-  textColor: string;
   displayBody: string;
   bodySegments: NoteBodySegment[];
   hiddenLinkCount: number;

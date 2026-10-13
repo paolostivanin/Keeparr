@@ -9,6 +9,7 @@ import { SharedService } from 'src/app/services/shared.service';
 import { NotesService } from 'src/app/services/notes.service';
 import { ShareUserI } from 'src/app/interfaces/users';
 import { bgColors } from 'src/app/interfaces/tooltip';
+import { NOTE_TEXT_DARK_THEME, noteTextColor } from 'src/app/utils/note-color';
 import { LocationSavedPlacesService, type LocationSavedPlace } from 'src/app/services/location-saved-places.service';
 import { androidSmartCaptureUiAllowed, isNativePhonePlatform } from 'src/app/utils/platform';
 import { OfflineSyncService } from 'src/app/services/offline-sync.service';
@@ -1117,26 +1118,10 @@ export class MainComponent implements OnInit, OnDestroy {
     ].join('::');
   }
 
+  /** True when the stored color needs light text under the light theme (the dark theme always does). */
   proposalHasDarkBackground(action: KeeparrAction) {
     const color = String((action as any).bgColor || '');
-    return !!color && !this.isLightColor(color);
-  }
-
-  private isLightColor(color: string) {
-    const rgb = this.parseColor(color);
-    if (!rgb) return false;
-    return ((rgb.r * 299) + (rgb.g * 587) + (rgb.b * 114)) / 1000 > 160;
-  }
-
-  private parseColor(color: string) {
-    if (!color) return null;
-    const hex = color.trim().match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
-    if (!hex) return null;
-    return {
-      r: parseInt(hex[1], 16),
-      g: parseInt(hex[2], 16),
-      b: parseInt(hex[3], 16)
-    };
+    return !!color && noteTextColor(color) === NOTE_TEXT_DARK_THEME;
   }
 
   proposalDisplayActions() {

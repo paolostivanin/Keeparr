@@ -12,6 +12,7 @@ import { NoteCardControlsComponent } from './components/notes/note-card-controls
 import { NoteCardActionsComponent } from './components/notes/note-card-actions.component';
 import { InputComponent } from './components/input/input.component';
 import { ph } from './pipes/ph.pipe';
+import { NoteSurfacePipe } from './pipes/note-surface.pipe';
 import { AppRoutingModule } from './app-routing.module';
 import { CboxSortPipe } from './pipes/cbox-sort.pipe';
 import { CboxDonePipe } from './pipes/cbox-done.pipe';
@@ -34,6 +35,7 @@ import { ConnectionHeadersInterceptor } from './services/connection-headers.inte
         NoteCardActionsComponent,
         InputComponent,
         ph,
+        NoteSurfacePipe,
         CboxSortPipe,
         CboxDonePipe,
         NotesToolsPipe,

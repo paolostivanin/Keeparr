@@ -162,24 +162,41 @@ export function darkIllustrationColor(hex: string): string {
   return toHex(hslToRgb(h, Math.min(s, 0.45), 0.10 + (1 - l) * 0.6));
 }
 
-const BACKGROUND_IMAGE = /^(\/assets\/images\/backgrounds\/)(groceries|tasks|movies|cafes|romantic|gym|recipes|travel|study|ideas|meetings|budget)\.svg$/;
+const BACKGROUND_NAMES = 'groceries|tasks|movies|cafes|romantic|gym|recipes|travel|study|ideas|meetings|budget';
+const BACKGROUND_IMAGE = new RegExp(`^(.*/assets/images/backgrounds/)(${BACKGROUND_NAMES})\\.svg$`);
 
 function cssUrl(path: string): string {
   return `url("${path.replace(/["\\\n]/g, encodeURIComponent)}")`;
 }
 
 /**
+ * The path inside a stored `bgImage`: `url("...")`, `url(...)` and a bare path are accepted
+ * (the web has stored all three; the readback form includes the page origin). '' for none.
+ */
+export function noteBgImagePath(bgImage: string): string {
+  const value = (bgImage || '').trim();
+  const wrapped = value.match(/^url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*?))\s*\)$/i);
+  return wrapped ? (wrapped[1] ?? wrapped[2] ?? wrapped[3] ?? '').trim() : value;
+}
+
+/** The dark-theme counterpart path of one of the 12 bundled illustrations, else the path itself. */
+export function darkNoteBgImagePath(path: string): string {
+  const known = path.match(BACKGROUND_IMAGE);
+  return known ? `${known[1]}${known[2]}_dark.svg` : path;
+}
+
+/**
  * CSS custom properties for a note surface. `bgColor`/`bgImage` are the stored
  * values. Light variables render under the light theme, `-dark` under the dark
- * theme. An unset color yields '' for the `--note-bg*` variables (remove the
- * property); an unset image yields 'none'.
+ * theme (`.note-surface` in styles.scss picks). An unset color yields '' for the
+ * `--note-bg*` variables (remove the property); an unset image yields 'none'.
  */
 export function noteSurfaceVars(bgColor: string, bgImage: string): Record<string, string> {
-  const hasImage = !!(bgImage || '').trim();
-  const light = hasImage ? '' : (parseColor(bgColor) ? toHex(parseColor(bgColor)!) : (bgColor || '').trim());
-  const dark = hasImage ? '' : darkNoteColor(light);
-  const image = (bgImage || '').trim();
-  const known = image.match(BACKGROUND_IMAGE);
+  const path = noteBgImagePath(bgImage);
+  const hasImage = !!path;
+  // A note can hold both (an image picked after a color); the color then shows through the illustration.
+  const light = parseColor(bgColor) ? toHex(parseColor(bgColor)!) : (bgColor || '').trim();
+  const dark = darkNoteColor(light);
   return {
     '--note-bg': light,
     '--note-bg-dark': dark,
@@ -187,7 +204,7 @@ export function noteSurfaceVars(bgColor: string, bgImage: string): Record<string
     '--note-fg-dark': noteTextColor(dark, true),
     '--note-link': noteLinkColor(light, false),
     '--note-link-dark': noteLinkColor(dark, true),
-    '--note-bg-image': hasImage ? cssUrl(image) : 'none',
-    '--note-bg-image-dark': hasImage ? cssUrl(known ? `${known[1]}${known[2]}_dark.svg` : image) : 'none',
+    '--note-bg-image': hasImage ? cssUrl(path) : 'none',
+    '--note-bg-image-dark': hasImage ? cssUrl(darkNoteBgImagePath(path)) : 'none',
   };
 }

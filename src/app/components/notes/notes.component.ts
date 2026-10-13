@@ -266,16 +266,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
-  isLightColor(color: string) {
-    const rgb = this.parseColor(color)
-    if (!rgb) return false
-    return ((rgb.r * 299) + (rgb.g * 587) + (rgb.b * 114)) / 1000 > 160
-  }
-
-  noteTextColor(note: NoteI) {
-    return this.noteMeta(note).textColor
-  }
-
   noteDisplayBody(note: NoteI) {
     return this.noteMeta(note).displayBody
   }
@@ -317,9 +307,8 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private noteMeta(note: NoteI) {
     const rawBody = note.noteBody || ''
     const title = note.noteTitle || ''
-    const themeKey = document.body.classList.contains('light-theme') ? 'l' : 'd'
     const richLinkPreviews = this.preferences.value.richLinkPreviews
-    const bgKey = `${note.bgColor || ''}|${note.bgImage || ''}|${note.isCbox ? 1 : 0}|${themeKey}|links:${richLinkPreviews ? 1 : 0}`
+    const bgKey = `${note.isCbox ? 1 : 0}|links:${richLinkPreviews ? 1 : 0}`
     const cached = this.noteMetaCache.get(note)
     if (cached && cached.rawBody === rawBody && cached.title === title && cached.bgKey === bgKey) return cached
 
@@ -333,12 +322,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     const plainBody = body.replace(/<[^>]+>/g, ' ')
     const bodyWithoutUrls = plainBody.replace(/https?:\/\/\S+/g, '').replace(/&nbsp;/g, ' ').trim()
     const linkOnly = !note.isCbox && urls.length > 0 && !title.trim() && !bodyWithoutUrls
-    const isLightMode = document.body.classList.contains('light-theme');
-    const defaultTextColor = isLightMode ? '#202124' : '#e8eaed';
-    const textColor = this.hasRealBgImage(note.bgImage) || (note.bgColor && this.isLightColor(note.bgColor)) ? '#202124' : (note.bgColor ? '#e8eaed' : defaultTextColor);
 
     const displayBody = richLinkPreviews && urls.length ? this.hideLinksInHtml(body) : body
-    const next = { rawBody, title, bgKey, urls, linkOnly, textColor, displayBody, bodySegments, hiddenLinkCount, visibleUrls }
+    const next = { rawBody, title, bgKey, urls, linkOnly, displayBody, bodySegments, hiddenLinkCount, visibleUrls }
     this.noteMetaCache.set(note, next)
     return next
   }
@@ -435,10 +421,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     return value.startsWith('url(') ? value : `url(${value})`
   }
 
-  private hasRealBgImage(data?: string | null) {
-    return !!this.normalizeBgImage(data)
-  }
-
   private hideLinksInHtml(html: string) {
     const div = document.createElement('div')
     div.innerHTML = html || ''
@@ -524,26 +506,6 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private updateCurrentPageName() {
     this.renderContextDirty = true
     this.currentPageName = this.currentPage.binder ? `binder:${this.currentPage.binder}` : this.currentPage.label ? this.currentPage.label : this.currentPage.archive ? 'archived' : (this.currentPage.trash ? 'trashed' : this.currentPage.reminders ? 'reminders' : this.currentPage.attachments ? 'attachments' : this.currentPage.shared ? 'shared' : 'home')
-  }
-
-  private parseColor(color: string) {
-    if (!color) return null
-    const hex = color.trim().match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i)
-    if (hex) {
-      return {
-        r: parseInt(hex[1], 16),
-        g: parseInt(hex[2], 16),
-        b: parseInt(hex[3], 16)
-      }
-    }
-
-    const rgb = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i)
-    if (!rgb) return null
-    return {
-      r: Number(rgb[1]),
-      g: Number(rgb[2]),
-      b: Number(rgb[3])
-    }
   }
 
   buildMasonry() {
