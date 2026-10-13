@@ -237,14 +237,14 @@
 <div #selectionColorTt data-tooltip="true" data-is-tooltip-open="false" class="colorMenu">
   <div class="first-row">
     @for (color of bgColors | keyvalue: originalOrder; track color) {
-      <div [attr.data-bg-color]="color.key" [style.background-color]="color.value"
+      <div class="note-surface" [attr.data-bg-color]="color.key" [style]="color.value | noteSurface"
         (click)="selectionColorMenu.bgColor(color.value)" [class.nocolor]="color.value === ''">
       </div>
     }
   </div>
   <div class="second-row">
     @for (image of bgImages | keyvalue; track image) {
-      <div [attr.data-bg-image]="image.key" [style.background-image]="image.value | ph"
+      <div class="note-surface" [attr.data-bg-image]="image.key" [style.--sw-img]="image.value | ph" [style.--sw-img-dark]="image.value | ph: true"
         (click)="selectionColorMenu.bgImage(image.value)" [class.noimage]="image.value === ''">
         @if (bgImageLabels[image.key]) {
           <span>{{bgImageLabels[image.key]}}</span>

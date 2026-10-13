@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, EventEmitter, Input, Output } from 
 import { CheckboxI, NoteAttachmentI, NoteI, NoteImageI } from 'src/app/interfaces/notes';
 import { AuthService } from 'src/app/services/auth.service';
 import { normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
+import { hasMeaningfulBody } from 'src/app/utils/keeparr-html';
 
 export type NoteBodySegment = { type: 'html'; value: string } | { type: 'url'; value: string };
 
@@ -11,7 +12,6 @@ export interface NotePreviewMeta {
   bgKey: string;
   urls: string[];
   linkOnly: boolean;
-  textColor: string;
   displayBody: string;
   bodySegments: NoteBodySegment[];
   hiddenLinkCount: number;
@@ -76,7 +76,6 @@ export class NoteCardPreviewComponent {
       .replace(/<[^>]*>/g, '')
       .replace(/&nbsp;|&#160;|&#x[a-f0-9]*a0;/gi, '')
       .trim();
-    const bodyText = (this.note.noteBody || '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
     const sourceItems = this.note.checkBoxes || [];
     const visibleItems = this.moveCompletedChecklistItemsToBottom
       ? sourceItems.filter(item => !item.done)
@@ -93,7 +92,7 @@ export class NoteCardPreviewComponent {
     }
     const value: NoteCardPresentation = Object.freeze({
       hasVisibleTitle: titleText.length > 0,
-      isHybrid: !!this.note.isCbox && bodyText.length > 0,
+      isHybrid: !!this.note.isCbox && hasMeaningfulBody(this.note.noteBody),
       checklistItems: Object.freeze(checklistItems),
       completedChecklistCount: sourceItems.filter(item => item.done).length,
       checklistPreview: Object.freeze({

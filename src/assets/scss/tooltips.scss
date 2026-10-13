@@ -74,6 +74,8 @@
                 margin: 2px;
                 border: 2px solid transparent;
                 text-align: center;
+                // Swatches are `.note-surface` elements: the stored color, or its dark variant in the dark theme.
+                background-color: var(--note-bg-eff);
 
                 &:hover {
                     border-color: white !important;
@@ -101,6 +103,7 @@
                 border: 2px solid transparent;
                 border-radius: 12px;
                 text-align: center;
+                background-image: var(--sw-img-eff);
                 background-repeat: no-repeat;
                 background-position: center top;
                 background-size: 40px 40px;

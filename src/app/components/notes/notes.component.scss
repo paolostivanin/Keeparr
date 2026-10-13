@@ -270,9 +270,12 @@
 
   .note-main {
     position: relative;
-    background-color: transparent;
+    // --note-*-eff come from `.note-surface` (styles.scss): the note's own color, else these defaults.
+    background-color: var(--note-bg-eff, transparent);
+    background-image: var(--note-img-eff, none);
+    color: var(--note-fg-eff, inherit);
     box-shadow: var(--elev-1);
-    border: 1px solid var(--border);
+    border: 1px solid var(--note-bg-eff, var(--border));
     border-radius: var(--radius-sm);
     transition: box-shadow var(--dur-base) var(--ease-standard);
     min-height: 60px;
@@ -1223,17 +1226,9 @@ app-note-card-actions {
   }
 }
 
-:host-context(.dark-theme) {
-  .note-main {
-    color: #e8eaed;
-    border-color: #5f6368;
-  }
-}
-
 :host-context(.light-theme) {
   .note-main {
-    color: #202124;
-    border-color: #dadce0;
+    border-color: var(--note-bg-eff, #dadce0);
   }
 }
 

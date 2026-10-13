@@ -253,21 +253,64 @@ class WidgetBehaviorTest {
         assertTrue("the description and tap target are the row, which contains the icon", (content as android.view.ViewGroup).findViewById<android.view.View>(AppR.id.checklist_item_check) != null)
     }
 
+    private fun title(view: android.view.View) = view.findViewById<TextView>(AppR.id.row_title).currentTextColor
+    private fun colored(hex: String) = note(1.0) { raw.put("bgColor", hex) }
+
     @Test fun aNoteWithoutAColorFollowsTheWidgetColorsAndAColoredNoteKeepsItsOwn() {
-        fun title(view: android.view.View) = view.findViewById<TextView>(AppR.id.row_title).currentTextColor
         assertEquals(app.getColor(AppR.color.widget_text), title(render(Row(note(1.0)))))
-        val dark = note(1.0) { raw.put("bgColor", "#5B0000") }
-        assertEquals(widgetForegroundColor(android.graphics.Color.parseColor("#5B0000")), title(render(Row(dark))))
-        val light = note(1.0) { raw.put("bgColor", "#FFF8B8") }
-        assertEquals(widgetForegroundColor(android.graphics.Color.parseColor("#FFF8B8")), title(render(Row(light))))
+        assertEquals(0xFF202124.toInt(), app.getColor(AppR.color.widget_text))
+        assertEquals(NotePalette.textColor(0xFF5B0000.toInt()), title(render(Row(colored("#5B0000")))))
+        assertEquals(0xFF202124.toInt(), title(render(Row(colored("#FFF8B8")))))
+    }
+
+    @Test fun aRowCarriesTheLightAndTheDarkVariantAndLetsTheHostPick() {
+        val cream = WidgetColors(app).card("#FFF8B8")
+        assertEquals(WidgetColor(0xFFFFF8B8.toInt(), 0xFF7C4A03.toInt()), cream)
+        assertEquals(WidgetColor(0xFF202124.toInt(), 0xFFE8EAED.toInt()), WidgetColors(app).text("#FFF8B8").let {
+            // Text on the light variant is dark, on the dark variant light.
+            WidgetColor(it.light, it.dark)
+        })
+        val noColor = WidgetColors(app)
+        assertEquals(WidgetColor(0xFFFFFFFF.toInt(), 0xFF303134.toInt()), noColor.card(""))
+        assertEquals(WidgetColor(0xFF202124.toInt(), 0xFFE8EAED.toInt()), noColor.text(""))
     }
 
     @org.robolectric.annotation.Config(qualifiers = "night")
-    @Test fun inDarkModeANoteWithoutAColorGetsLightTextOnTheDarkCard() {
-        val view = render(Row(note(1.0)))
-        assertEquals(0xFFE8EAED.toInt(), view.findViewById<TextView>(AppR.id.row_title).currentTextColor)
-        assertEquals(0xFFE8EAED.toInt(), app.getColor(AppR.color.widget_text))
+    @Test fun underSystemModeANightHostGetsTheDarkVariantOfAColoredNote() {
+        profile.themeMode = ThemeMode.System
+        assertEquals(0xFFE8EAED.toInt(), title(render(Row(colored("#FFF8B8")))))
+        assertEquals(0xFFE8EAED.toInt(), title(render(Row(note(1.0)))))
         assertEquals(0xFF303134.toInt(), app.getColor(AppR.color.widget_note_card))
+    }
+
+    @Test fun underSystemModeADayHostGetsTheLightVariantOfAColoredNote() {
+        profile.themeMode = ThemeMode.System
+        assertEquals(0xFF202124.toInt(), title(render(Row(colored("#FFF8B8")))))
+    }
+
+    @org.robolectric.annotation.Config(qualifiers = "night")
+    @Test fun aForcedLightModeIgnoresASystemNightHost() {
+        profile.themeMode = ThemeMode.Light
+        assertEquals(0xFF202124.toInt(), title(render(Row(colored("#FFF8B8")))))
+        assertEquals("the default card too", 0xFF202124.toInt(), title(render(Row(note(1.0)))))
+    }
+
+    @Test fun aForcedDarkModeIgnoresASystemDayHost() {
+        profile.themeMode = ThemeMode.Dark
+        assertEquals(0xFFE8EAED.toInt(), title(render(Row(colored("#FFF8B8")))))
+        assertEquals("the default card too", 0xFFE8EAED.toInt(), title(render(Row(note(1.0)))))
+        val checklist = checklistNote("Milk" to false)
+        assertEquals(0xFFE8EAED.toInt(), render(Row(checklist, checklist.items[0], 0), single = true)
+            .findViewById<TextView>(AppR.id.checklist_item_row).currentTextColor)
+    }
+
+    @Test fun aForcedModeAlsoColorsTheFrame() {
+        fun status(mode: ThemeMode): Int {
+            val views = RemoteViews(app.packageName, AppR.layout.notes_widget).also { applyFrameColors(app, it, mode) }
+            return views.apply(app, FrameLayout(app)).findViewById<TextView>(AppR.id.widget_status).currentTextColor
+        }
+        assertEquals(0xFFBDC1C6.toInt(), status(ThemeMode.Dark))
+        assertEquals(0xFF6C6250.toInt(), status(ThemeMode.Light))
     }
 
     @Test fun tapsToggleOnlyIdentifiableItemsOfUnlockedNotes() {

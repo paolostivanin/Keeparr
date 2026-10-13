@@ -1,6 +1,7 @@
 package dev.keeparr.android.ui
 
 import android.app.Activity
+import android.app.UiModeManager
 import android.content.Context
 import android.content.ContextWrapper
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -10,9 +11,16 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
+import android.view.View
+import dev.keeparr.android.data.ThemeMode
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -93,18 +101,66 @@ private val KeeparrShapes = Shapes(
     large = RoundedCornerShape(28.dp), extraLarge = RoundedCornerShape(28.dp),
 )
 
+/** True while the app is drawn in its dark theme (which can differ from the system's: see ThemeMode). */
+val LocalDarkTheme = staticCompositionLocalOf { false }
+
+/**
+ * Owns the status and navigation bar icon colors. They follow the app theme unless a screen (the note editor) overrides
+ * them to match its own background; the override is removed when that screen leaves the composition.
+ */
+@Stable
+class SystemBarsController internal constructor(private val view: View?) {
+    private var themeDark = false
+    private var overrideLightBackground: Boolean? = null
+
+    internal fun theme(dark: Boolean) { themeDark = dark; apply() }
+
+    /** [lightBackground] true draws dark icons, false light icons, null goes back to the theme. */
+    fun override(lightBackground: Boolean?) { overrideLightBackground = lightBackground; apply() }
+
+    private fun apply() {
+        val view = view ?: return
+        val window = view.context.findActivity()?.window ?: return
+        val controller = WindowCompat.getInsetsController(window, view)
+        val darkIcons = overrideLightBackground ?: !themeDark
+        controller.isAppearanceLightStatusBars = darkIcons
+        controller.isAppearanceLightNavigationBars = darkIcons
+    }
+}
+
+val LocalSystemBars = staticCompositionLocalOf { SystemBarsController(null) }
+
+/** Makes the system bar icons readable on a screen whose background is [lightBackground]; restored on dispose. */
+@Composable
+fun SystemBarsOverride(lightBackground: Boolean) {
+    val bars = LocalSystemBars.current
+    DisposableEffect(bars, lightBackground) {
+        bars.override(lightBackground)
+        onDispose { bars.override(null) }
+    }
+}
+
 @Composable
 fun KeeparrTheme(dark: Boolean, content: @Composable () -> Unit) {
     // enableEdgeToEdge() picks system bar icon colors from the system night mode, but the in-app theme can differ from it.
     val view = LocalView.current
-    if (!view.isInEditMode) SideEffect {
-        view.context.findActivity()?.window?.let { window ->
-            val controller = WindowCompat.getInsetsController(window, view)
-            controller.isAppearanceLightStatusBars = !dark
-            controller.isAppearanceLightNavigationBars = !dark
-        }
+    val bars = remember(view) { SystemBarsController(view.takeUnless { it.isInEditMode }) }
+    SideEffect { bars.theme(dark) }
+    CompositionLocalProvider(LocalDarkTheme provides dark, LocalSystemBars provides bars) {
+        MaterialTheme(colorScheme = if (dark) DarkColors else LightColors, typography = KeeparrTypography, shapes = KeeparrShapes, content = content)
     }
-    MaterialTheme(colorScheme = if (dark) DarkColors else LightColors, typography = KeeparrTypography, shapes = KeeparrShapes, content = content)
+}
+
+/** The platform night mode for a ThemeMode, so platform dialogs and View resources match the app theme. */
+internal fun nightModeFor(mode: ThemeMode): Int = when (mode) {
+    ThemeMode.System -> UiModeManager.MODE_NIGHT_AUTO
+    ThemeMode.Light -> UiModeManager.MODE_NIGHT_NO
+    ThemeMode.Dark -> UiModeManager.MODE_NIGHT_YES
+}
+
+/** Follows [mode] with the application night mode (a no-op when it is already set). */
+internal fun applyNightMode(context: Context, mode: ThemeMode) {
+    context.getSystemService(UiModeManager::class.java)?.setApplicationNightMode(nightModeFor(mode))
 }
 
 private tailrec fun Context.findActivity(): Activity? = this as? Activity ?: (this as? ContextWrapper)?.baseContext?.findActivity()

@@ -10,7 +10,7 @@
     <div class="picture H pop" data-pop="New note with image" (mousedown)="rememberBodySelection()" (click)="openImagePicker($event)"></div>
   </div>
   <!--? new note -->
-  <div #noteMain class="note-main" [class.detail-bg]="isEditing && hasBackgroundImage"
+  <div #noteMain class="note-main note-surface" [class.detail-bg]="isEditing && hasBackgroundImage"
     [class.drawing-note]="isDrawingNote" [class.drawing-fullscreen]="isDrawingFullscreen"
     (dragstart)="dragInlineImage($event)" (dragend)="dragEndInlineImage()" (dragover)="dragOverImages($event)"
     (drop)="dropImages($event)" hidden>
@@ -185,8 +185,8 @@
       @if (editorSaveStateLabel; as saveStateLabel) {
         <div class="editor-save-state" [class.warning]="draftStorageFailed || noteSaveFailed" role="status" aria-live="polite">{{ saveStateLabel }}</div>
       }
-      <div [hidden]="noteTitle.innerHTML.length" class="note-title ph"> Title</div>
-      <div #noteTitle (input)="onNoteTitleInput()" (paste)="pasteEvent($event)" (focus)="rememberTextHistoryTarget(noteTitle)"
+      <div [hidden]="noteTitle.textContent.length" class="note-title ph"> Title</div>
+      <div #noteTitle (input)="onNoteTitleInput()" (keydown)="onNoteTitleKeyDown($event)" (paste)="pasteEvent($event)" (drop)="onTextDrop($event)" (focus)="rememberTextHistoryTarget(noteTitle)"
         class="note-title" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text">
       </div>
       <ng-container [ngTemplateOutlet]="imagesTemplate" [ngTemplateOutletContext]="{ placement: 'top' }">
@@ -229,13 +229,13 @@
   @if (showSelectionFormatting && canFormatText()) {
     <div class="text-format-toolbar selection-format-toolbar" [ngStyle]="selectionFormattingStyle"
       (mousedown)="$event.preventDefault()" (click)="$event.stopPropagation()">
-      <button type="button" (mousedown)="applyTextFormat('h1',$event)" (click)="$event.detail === 0 && applyTextFormat('h1',$event)">H1</button>
-      <button type="button" (mousedown)="applyTextFormat('h2',$event)" (click)="$event.detail === 0 && applyTextFormat('h2',$event)">H2</button>
-      <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)" (click)="$event.detail === 0 && applyTextFormat('body',$event)">Aa</button>
+      <button type="button" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('h1',$event)" (click)="$event.detail === 0 && applyTextFormat('h1',$event)">H1</button>
+      <button type="button" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('h2',$event)" (click)="$event.detail === 0 && applyTextFormat('h2',$event)">H2</button>
+      <button type="button" class="body-format" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('body',$event)" (click)="$event.detail === 0 && applyTextFormat('body',$event)">Aa</button>
       <span></span>
-      <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)" (click)="$event.detail === 0 && applyTextFormat('bullet',$event)">&bull;</button>
-      <button type="button" aria-label="Indent" title="Indent (Tab)" (mousedown)="applyTextFormat('indent',$event)" (click)="$event.detail === 0 && applyTextFormat('indent',$event)">&rarr;</button>
-      <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" (mousedown)="applyTextFormat('outdent',$event)" (click)="$event.detail === 0 && applyTextFormat('outdent',$event)">&larr;</button>
+      <button type="button" aria-label="Bullet list" title="Bullet list" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('bullet',$event)" (click)="$event.detail === 0 && applyTextFormat('bullet',$event)">&bull;</button>
+      <button type="button" aria-label="Indent" title="Indent (Tab)" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('indent',$event)" (click)="$event.detail === 0 && applyTextFormat('indent',$event)">&rarr;</button>
+      <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('outdent',$event)" (click)="$event.detail === 0 && applyTextFormat('outdent',$event)">&larr;</button>
       <span></span>
       <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)" (click)="$event.detail === 0 && applyTextFormat('bold',$event)">B</button>
       <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)" (click)="$event.detail === 0 && applyTextFormat('italic',$event)">I</button>
@@ -254,13 +254,13 @@
     <div class="icons-container">
       @if (showTextFormatting && canFormatText()) {
         <div class="text-format-toolbar" (mousedown)="$event.preventDefault()" (click)="$event.stopPropagation()">
-          <button type="button" (mousedown)="applyTextFormat('h1',$event)" (click)="$event.detail === 0 && applyTextFormat('h1',$event)">H1</button>
-          <button type="button" (mousedown)="applyTextFormat('h2',$event)" (click)="$event.detail === 0 && applyTextFormat('h2',$event)">H2</button>
-          <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)" (click)="$event.detail === 0 && applyTextFormat('body',$event)">Aa</button>
+          <button type="button" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('h1',$event)" (click)="$event.detail === 0 && applyTextFormat('h1',$event)">H1</button>
+          <button type="button" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('h2',$event)" (click)="$event.detail === 0 && applyTextFormat('h2',$event)">H2</button>
+          <button type="button" class="body-format" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('body',$event)" (click)="$event.detail === 0 && applyTextFormat('body',$event)">Aa</button>
           <span></span>
-          <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)" (click)="$event.detail === 0 && applyTextFormat('bullet',$event)">&bull;</button>
-          <button type="button" aria-label="Indent" title="Indent (Tab)" (mousedown)="applyTextFormat('indent',$event)" (click)="$event.detail === 0 && applyTextFormat('indent',$event)">&rarr;</button>
-          <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" (mousedown)="applyTextFormat('outdent',$event)" (click)="$event.detail === 0 && applyTextFormat('outdent',$event)">&larr;</button>
+          <button type="button" aria-label="Bullet list" title="Bullet list" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('bullet',$event)" (click)="$event.detail === 0 && applyTextFormat('bullet',$event)">&bull;</button>
+          <button type="button" aria-label="Indent" title="Indent (Tab)" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('indent',$event)" (click)="$event.detail === 0 && applyTextFormat('indent',$event)">&rarr;</button>
+          <button type="button" aria-label="Outdent" title="Outdent (Shift+Tab)" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('outdent',$event)" (click)="$event.detail === 0 && applyTextFormat('outdent',$event)">&larr;</button>
           <span></span>
           <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)" (click)="$event.detail === 0 && applyTextFormat('bold',$event)">B</button>
           <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)" (click)="$event.detail === 0 && applyTextFormat('italic',$event)">I</button>
@@ -307,13 +307,13 @@
     <div class="mobile-bottom-bar">
       @if (showTextFormatting && canFormatText()) {
         <div class="text-format-toolbar mobile-format-toolbar" (mousedown)="$event.preventDefault()" (click)="$event.stopPropagation()">
-          <button type="button" (mousedown)="applyTextFormat('h1',$event)" (click)="$event.detail === 0 && applyTextFormat('h1',$event)">H1</button>
-          <button type="button" (mousedown)="applyTextFormat('h2',$event)" (click)="$event.detail === 0 && applyTextFormat('h2',$event)">H2</button>
-          <button type="button" class="body-format" (mousedown)="applyTextFormat('body',$event)" (click)="$event.detail === 0 && applyTextFormat('body',$event)">Aa</button>
+          <button type="button" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('h1',$event)" (click)="$event.detail === 0 && applyTextFormat('h1',$event)">H1</button>
+          <button type="button" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('h2',$event)" (click)="$event.detail === 0 && applyTextFormat('h2',$event)">H2</button>
+          <button type="button" class="body-format" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('body',$event)" (click)="$event.detail === 0 && applyTextFormat('body',$event)">Aa</button>
           <span></span>
-          <button type="button" aria-label="Bullet list" title="Bullet list" (mousedown)="applyTextFormat('bullet',$event)" (click)="$event.detail === 0 && applyTextFormat('bullet',$event)">&bull;</button>
-          <button type="button" aria-label="Indent" title="Indent" (mousedown)="applyTextFormat('indent',$event)" (click)="$event.detail === 0 && applyTextFormat('indent',$event)">&rarr;</button>
-          <button type="button" aria-label="Outdent" title="Outdent" (mousedown)="applyTextFormat('outdent',$event)" (click)="$event.detail === 0 && applyTextFormat('outdent',$event)">&larr;</button>
+          <button type="button" aria-label="Bullet list" title="Bullet list" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('bullet',$event)" (click)="$event.detail === 0 && applyTextFormat('bullet',$event)">&bull;</button>
+          <button type="button" aria-label="Indent" title="Indent" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('indent',$event)" (click)="$event.detail === 0 && applyTextFormat('indent',$event)">&rarr;</button>
+          <button type="button" aria-label="Outdent" title="Outdent" [disabled]="!blockFormatEnabled()" (mousedown)="applyTextFormat('outdent',$event)" (click)="$event.detail === 0 && applyTextFormat('outdent',$event)">&larr;</button>
           <span></span>
           <button type="button" class="bold" (mousedown)="applyTextFormat('bold',$event)" (click)="$event.detail === 0 && applyTextFormat('bold',$event)">B</button>
           <button type="button" class="italic" (mousedown)="applyTextFormat('italic',$event)" (click)="$event.detail === 0 && applyTextFormat('italic',$event)">I</button>
@@ -779,7 +779,7 @@
 <!--* note template -->
 <ng-template #noteTemplate>
   <div [hidden]="noteBody.innerHTML.length" class="note-body ph">Take a note…</div>
-  <div #noteBody (input)="onNoteBodyInput(noteBody)" (keydown)="onNoteBodyKeyDown($event)" (paste)="pasteEvent($event)" (focus)="rememberTextHistoryTarget(noteBody)"
+  <div #noteBody (input)="onNoteBodyInput(noteBody)" (keydown)="onNoteBodyKeyDown($event)" (paste)="pasteEvent($event)" (drop)="onTextDrop($event)" (focus)="rememberTextHistoryTarget(noteBody)"
     (click)="onNoteBodyClick($event)" (contextmenu)="downloadInlineImage($event)"
     class="note-body" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text">
   </div>
@@ -812,7 +812,7 @@
     <div class="cbox-plus-icon"></div>
     <div class="cbox-note-container">
       <div class="cbox-note ph">List item</div>
-      <div #cboxPh (keydown)="cboxPhKeyDown($event)" (input)="cboxPhInput()" (paste)="onCboxPhPaste($event)" (focus)="rememberTextHistoryTarget(cboxPh)" class="cbox-note" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text">
+      <div #cboxPh (keydown)="cboxPhKeyDown($event)" (input)="cboxPhInput($event)" (compositionend)="cboxPhInput()" (paste)="onCboxPhPaste($event)" (drop)="onTextDrop($event)" (focus)="rememberTextHistoryTarget(cboxPh)" class="cbox-note" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text">
       </div>
     </div>
   </div>
@@ -856,13 +856,18 @@
           (touchend)="toggleCboxDone(cb.id, $event)"
           (click)="toggleCboxDone(cb.id, $event)"></div>
         <div class="cbox-note-container">
+          @if (isStructuredRow(cb)) {
+            <div class="cbox-note cbox-structured" contenteditable="false" role="note"
+              [class.cbox-done]="cb.done">Structured checklist item</div>
+          } @else {
           <div #cboxInput [attr.data-cbox-last]="last" [attr.data-cbox-id]="cb.id" [class.cbox-done]="cb.done"
-            (input)="onCboxInput(cb.id, cboxInput)" (blur)="cboxTools(cb.id).update(cboxInput); cboxInputBlur(cb.id)" (keydown)="cBoxKeyDown($event,cb.id)" (paste)="onCboxPaste($event, cb.id)"
+            (input)="onCboxInput(cb.id, cboxInput)" (blur)="cboxTools(cb.id).update(cboxInput); cboxInputBlur(cb.id)" (keydown)="cBoxKeyDown($event,cb.id)" (paste)="onCboxPaste($event, cb.id)" (drop)="onTextDrop($event)" (mousedown)="cboxInputMouseDown()"
             (touchstart)="cboxTextTouchStart($event, cb.id, cboxInput)" (touchmove)="cboxTextTouchMove($event, cb.id, cboxInput)"
             (touchcancel)="cboxTextTouchCancel(cb.id, cboxInput)"
             (focus)="cboxInputFocus($event)" (touchend)="focusCboxFromTouch($event, cb.id, cboxInput)"
-            class="cbox-note" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text" [innerHTML]="cb.data">
+            class="cbox-note" contenteditable="true" spellcheck="true" autocomplete="off" autocorrect="off" autocapitalize="sentences" inputmode="text" [appRowHtml]="cb.data">
           </div>
+          }
         </div>
         <div class="cbox-cancel-icon H" (click)="cboxTools(cb.id!).remove()"></div>
       </div>
@@ -962,14 +967,14 @@
 <div #colorMenuTt data-tooltip="true" data-is-tooltip-open="false" class="colorMenu">
   <div class="first-row">
     @for (color of bgColors | keyvalue: originalOrder; track color) {
-      <div [attr.data-bg-color]="color.key" [style.background-color]="color.value"
+      <div class="note-surface" [attr.data-bg-color]="color.key" [style]="color.value | noteSurface"
         (click)="colorMenu.bgColor(color.value)" [class.nocolor]="color.value === ''">
       </div>
     }
   </div>
   <div class="second-row">
     @for (image of bgImages | keyvalue; track image) {
-      <div [attr.data-bg-image]="image.key" [style.background-image]="image.value | ph"
+      <div class="note-surface" [attr.data-bg-image]="image.key" [style.--sw-img]="image.value | ph" [style.--sw-img-dark]="image.value | ph: true"
         (click)="colorMenu.bgImage(image.value)" [class.noimage]="image.value === ''">
         @if (bgImageLabels[image.key]) {
           <span>{{bgImageLabels[image.key]}}</span>

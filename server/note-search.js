@@ -26,6 +26,24 @@ function searchTokensFromQuery(query) {
     .filter(Boolean);
 }
 
+// Search terms per whitespace word. Each group is a list of alternatives (OR); an alternative is a list of
+// tokens (AND). The accent-stripped tokens are always an alternative. A word with non-ASCII letters also
+// matches literally and as the numeric character references older Android builds stored ("Caff&#232;").
+function searchGroupsFromQuery(query) {
+  return searchTextFromQuery(query).split(/\s+/).filter(Boolean).map(word => {
+    const stripped = searchTokensFromQuery(word);
+    const alternatives = stripped.length ? [stripped] : [];
+    if (/[^\x00-\x7f]/.test(word)) {
+      const lower = word.toLowerCase();
+      const encode = format => Array.from(lower, ch => (ch.codePointAt(0) > 127 ? format(ch.codePointAt(0)) : ch)).join('');
+      for (const variant of [lower, encode(code => `&#${code};`), encode(code => `&#x${code.toString(16)};`)]) {
+        if (!alternatives.some(alt => alt.length === 1 && alt[0] === variant)) alternatives.push([variant]);
+      }
+    }
+    return alternatives;
+  }).filter(group => group.length);
+}
+
 function searchOperatorsFromQuery(query) {
   const operators = {
     hasImage: false,
@@ -79,7 +97,7 @@ function noteOperatorWhere(operators) {
 
 function noteSearchWhere(tokens, options = {}) {
   const params = [];
-  const conditions = tokens.map(token => {
+  const tokenCondition = token => {
     const like = `%${token}%`;
     if (options.protectLockedContent) {
       params.push(like, like, like, like, like, like, like, like);
@@ -104,8 +122,14 @@ function noteSearchWhere(tokens, options = {}) {
       OR LOWER(COALESCE(checkBoxes, '')) LIKE ?
       OR LOWER(COALESCE(labels, '')) LIKE ?
       OR LOWER(COALESCE(attachmentNames, '')) LIKE ?)`;
+  };
+  // An entry is a token (string) or a group of alternatives from searchGroupsFromQuery.
+  const conditions = tokens.map(entry => {
+    if (typeof entry === 'string') return tokenCondition(entry);
+    const alternatives = entry.map(alt => `(${alt.map(tokenCondition).join(' AND ')})`);
+    return alternatives.length === 1 ? alternatives[0] : `(${alternatives.join(' OR ')})`;
   });
   return { clause: conditions.join(' AND '), params };
 }
 
-module.exports = { searchTextFromQuery, searchTokensFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere };
+module.exports = { searchTextFromQuery, searchTokensFromQuery, searchGroupsFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere };

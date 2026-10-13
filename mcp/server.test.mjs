@@ -85,6 +85,20 @@ test('checklist operations preserve existing items and update one item', async (
   assert.equal(changes.isCbox, true);
 });
 
+test('checklist indent levels stop at 3, the server maximum', async () => {
+  let updates = 0;
+  await withMcpClient(stubKeeparrClient({
+    getNote: async () => ({ id: 3, checkBoxes: [] }),
+    updateNote: async (_id, next) => { updates += 1; return next; }
+  }), async client => {
+    const tooDeep = await client.callTool({ name: 'keeparr_manage_checklist', arguments: { noteId: 3, action: 'add', text: 'x', indentLevel: 4 } }).catch(error => ({ isError: true, error }));
+    assert.equal(tooDeep.isError, true);
+    const allowed = await client.callTool({ name: 'keeparr_manage_checklist', arguments: { noteId: 3, action: 'add', text: 'x', indentLevel: 3 } });
+    assert.equal(allowed.isError, undefined);
+  });
+  assert.equal(updates, 1);
+});
+
 test('owner-only organization fields are checked before update', async () => {
   let ownerChecks = 0;
   let updates = 0;

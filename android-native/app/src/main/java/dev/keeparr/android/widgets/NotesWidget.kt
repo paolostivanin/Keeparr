@@ -50,6 +50,7 @@ class NotesWidget : AppWidgetProvider() {
                     Intent(context, MainActivity::class.java).setAction(CREATE).setData("keeparrnative://widget/add/$id".toUri())
                         .putExtra("createNote", true), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
                 applyStatus(app, views)
+                applyFrameColors(app, views, app.settings.themeMode)
                 AppWidgetManager.getInstance(context).updateAppWidget(id, views)
             }
         }
@@ -150,19 +151,23 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
         val note = row.note
         val item = row.item
         val reminder = reminders[note.syncId]
-        // A note with its own color keeps explicit colors. One without follows the widget's light/dark color resources, which the
-        // host resolves, so it also flips with the system theme without the row being rebuilt.
-        val color = NotePalette.parse(note.raw.text("bgColor"))
-        val foreground = color?.let(::widgetForegroundColor)
+        // A note's own color is shown as its light or dark variant. Under ThemeMode.System both are handed to the host, which
+        // picks by the system night mode without the row being rebuilt; a forced mode sends the one explicit color.
+        val mode = app.settings.themeMode
+        val colors = WidgetColors(app)
+        // A background image replaces the color on every client, and the widget does not draw the illustration.
+        val stored = if (note.raw.text("bgImage").isNotBlank()) "" else note.raw.text("bgColor")
+        val card = colors.card(stored)
+        val foreground = colors.text(stored)
         if (item != null) {
             val itemLabel = item?.let { NoteHtml.plainText(boundedWidgetText(it.text("data"), 4096))
                 .ifBlank { "Checklist item" }.let { text -> boundedWidgetText(text, 256) } }
             val done = item.optBoolean("done")
             val itemRow = RemoteViews(app.packageName, R.layout.widget_checklist_item_row)
-            itemRow.tint(R.id.checklist_card_background, "setColorFilter", color, R.color.widget_note_card)
-            itemRow.tint(R.id.checklist_item_row, "setTextColor", foreground, R.color.widget_text)
+            itemRow.tint(R.id.checklist_card_background, "setColorFilter", mode, card)
+            itemRow.tint(R.id.checklist_item_row, "setTextColor", mode, foreground)
             itemRow.setImageViewResource(R.id.checklist_item_check, checkIcon(done))
-            itemRow.tint(R.id.checklist_item_check, "setColorFilter", foreground, R.color.widget_text)
+            itemRow.tint(R.id.checklist_item_check, "setColorFilter", mode, foreground)
             itemRow.setTextViewText(R.id.checklist_item_row, itemLabel)
             itemRow.setContentDescription(R.id.checklist_item_content,
                 "${if (done) "Complete" else "Incomplete"}: $itemLabel. Toggle checklist item")
@@ -173,11 +178,11 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
             val title = if (note.locked) "Locked note" else (if (note.pinned) "📌 " else "") + NoteHtml.titleText(note.title)
             setTextViewText(R.id.row_title, boundedWidgetText(title, 160))
             setViewVisibility(R.id.row_title, if (title.isBlank()) View.GONE else View.VISIBLE)
-            tint(R.id.row_title, "setTextColor", foreground, R.color.widget_text)
+            tint(R.id.row_title, "setTextColor", mode, foreground)
             val body = widgetNoteBodyText(note, single)
             setTextViewText(R.id.row_body, boundedWidgetText(body, if (single) 4096 else 1024))
             setViewVisibility(R.id.row_body, if (body.isBlank()) View.GONE else View.VISIBLE)
-            tint(R.id.row_body, "setTextColor", foreground, R.color.widget_text)
+            tint(R.id.row_body, "setTextColor", mode, foreground)
             setInt(R.id.row_body, "setMaxLines", if (single) WIDGET_SINGLE_NOTE_MAX_LINES else WIDGET_CARD_MAX_LINES)
             // A recycled row view still holds the previous note's lines, so they are always cleared first.
             removeAllViews(R.id.row_checks)
@@ -186,28 +191,85 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
                 addView(R.id.row_checks, RemoteViews(app.packageName, R.layout.widget_check_line).apply {
                     setImageViewResource(R.id.check_line_icon, checkIcon(done))
                     setContentDescription(R.id.check_line_icon, if (done) "Complete" else "Incomplete")
-                    tint(R.id.check_line_icon, "setColorFilter", foreground, R.color.widget_text)
+                    tint(R.id.check_line_icon, "setColorFilter", mode, foreground)
                     setTextViewText(R.id.check_line_text, text)
-                    tint(R.id.check_line_text, "setTextColor", foreground, R.color.widget_text)
+                    tint(R.id.check_line_text, "setTextColor", mode, foreground)
                 })
             }
             setViewVisibility(R.id.row_checks, if (lines.isEmpty()) View.GONE else View.VISIBLE)
             if (reminder != null) {
                 val label = "⏰ ${ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder))}"
                 setTextViewText(R.id.row_reminder, label)
-                tint(R.id.row_reminder, "setTextColor", foreground, R.color.widget_text)
+                tint(R.id.row_reminder, "setTextColor", mode, foreground)
                 setContentDescription(R.id.row_reminder, "Reminder ${ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder))}")
                 setViewVisibility(R.id.row_reminder, View.VISIBLE)
             } else setViewVisibility(R.id.row_reminder, View.GONE)
             setViewVisibility(R.id.row_shared, if (note.shared) View.VISIBLE else View.GONE)
-            tint(R.id.row_shared, "setColorFilter", foreground, R.color.widget_text)
-            tint(R.id.widget_card_background, "setColorFilter", color, R.color.widget_note_card)
+            tint(R.id.row_shared, "setColorFilter", mode, foreground)
+            tint(R.id.widget_card_background, "setColorFilter", mode, card)
             setOnClickFillInIntent(R.id.widget_row, widgetFillIn(row))
         }
     }
 
-private fun RemoteViews.tint(viewId: Int, method: String, explicit: Int?, fallback: Int) =
-    if (explicit != null) setInt(viewId, method, explicit) else setColor(viewId, method, fallback)
+/** A color for the light and for the dark theme. */
+internal data class WidgetColor(val light: Int, val dark: Int)
+
+/** The widget's colors per theme: a note's own color through [NotePalette], everything else from the color resources. */
+internal class WidgetColors(private val app: KeeparrApplication) {
+    // Resolving the resources in each night configuration gives both variants whatever the system mode is, which a forced
+    // ThemeMode needs because the host only knows the system's.
+    private val lightResources = app.createConfigurationContext(configuration(night = false))
+    private val darkResources = app.createConfigurationContext(configuration(night = true))
+
+    private fun configuration(night: Boolean) = android.content.res.Configuration(app.resources.configuration).apply {
+        uiMode = (uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK.inv()) or
+            if (night) android.content.res.Configuration.UI_MODE_NIGHT_YES else android.content.res.Configuration.UI_MODE_NIGHT_NO
+    }
+
+    fun resource(@androidx.annotation.ColorRes id: Int) = WidgetColor(lightResources.getColor(id), darkResources.getColor(id))
+
+    /** The card background for a note's stored color, or the widget's default card when it has none. */
+    fun card(stored: String): WidgetColor = NotePalette.parse(stored)?.let {
+        WidgetColor(NotePalette.display(it, false), NotePalette.display(it, true))
+    } ?: resource(R.color.widget_note_card)
+
+    /** The text color drawn on [card] for the same stored color. */
+    fun text(stored: String): WidgetColor {
+        val card = card(stored)
+        return if (NotePalette.parse(stored) == null) resource(R.color.widget_text)
+        else WidgetColor(NotePalette.textColor(card.light), NotePalette.textColor(card.dark))
+    }
+}
+
+internal fun RemoteViews.tint(viewId: Int, method: String, mode: ThemeMode, color: WidgetColor) = when (mode) {
+    ThemeMode.System -> setColorInt(viewId, method, color.light, color.dark)
+    ThemeMode.Light -> setInt(viewId, method, color.light)
+    ThemeMode.Dark -> setInt(viewId, method, color.dark)
+}
+
+/** Same for a ColorStateList method, which is how a shape drawable background is recolored without losing its corners. */
+private fun RemoteViews.tintList(viewId: Int, method: String, mode: ThemeMode, color: WidgetColor) {
+    fun list(value: Int) = android.content.res.ColorStateList.valueOf(value)
+    when (mode) {
+        ThemeMode.System -> setColorStateList(viewId, method, list(color.light), list(color.dark))
+        ThemeMode.Light -> setColorStateList(viewId, method, list(color.light), list(color.light))
+        ThemeMode.Dark -> setColorStateList(viewId, method, list(color.dark), list(color.dark))
+    }
+}
+
+/**
+ * The frame's default colors. Under ThemeMode.System the layout's own color resources already follow the host's night mode;
+ * a forced mode has to say so explicitly.
+ */
+internal fun applyFrameColors(app: KeeparrApplication, views: RemoteViews, mode: ThemeMode) {
+    if (mode == ThemeMode.System) return
+    val colors = WidgetColors(app)
+    views.tintList(R.id.widget_frame, "setBackgroundTintList", mode, colors.resource(R.color.widget_background))
+    views.tintList(R.id.widget_status, "setBackgroundTintList", mode, colors.resource(R.color.widget_card))
+    views.tint(R.id.widget_status, "setTextColor", mode, colors.resource(R.color.widget_text_status))
+    views.tintList(R.id.widget_add, "setBackgroundTintList", mode, colors.resource(R.color.widget_fab))
+    views.tintList(R.id.widget_add, "setImageTintList", mode, colors.resource(R.color.widget_fab_icon))
+}
 
 private fun checkIcon(done: Boolean) = if (done) R.drawable.ic_widget_check_on else R.drawable.ic_widget_check_off
 
@@ -239,9 +301,6 @@ internal fun widgetChecklistLines(note: Note): List<Pair<Boolean, String>> =
     if (note.checklist && !note.locked) note.items.take(WIDGET_CARD_MAX_LINES).map {
         it.optBoolean("done") to boundedWidgetText(widgetPlainText(it.text("data"), 512), 128)
     } else emptyList()
-
-internal fun widgetForegroundColor(background: Int): Int =
-    if (Color.luminance(background) > .4f) Color.rgb(41, 39, 32) else Color.rgb(245, 243, 239)
 
 /** A tap toggles only an identifiable checklist item of an unlocked note; every other tap opens the note. */
 internal fun widgetFillIn(row: Row): Intent = Intent().putExtra("noteSyncId", row.note.syncId).apply {

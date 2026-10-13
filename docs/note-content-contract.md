@@ -50,7 +50,7 @@ Invariants:
 | Row Backspace at its true start | non-empty: merge into the previous **visible** row; empty: delete the row and focus the previous row's end |
 | Row multi-line paste | first line goes into the row at the caret, the remaining lines become new rows after it, the text after the caret stays behind the last line |
 
-The Backspace-at-list-item rule is the plan's wording; real Chrome merges a non-first item into the previous item on the first press. The fixtures follow the plan (`backspace-bullet-middle-of-list`), so the web editor needs custom handling there before a karma replay of that edit can pass.
+The Backspace-at-list-item rule is the plan's wording; real Chrome merges a non-first item into the previous item on the first press. The fixtures follow the plan (`backspace-bullet-middle-of-list`), so the web editor handles Backspace at the start of a list item, heading or quote line itself (`InputComponent.backspaceAtBodyLineStart`: the item becomes a `div` and splits the list, a heading becomes a `div`, a quote line leaves one quote level); the second press is the browser's own merge. `input.component.spec.ts` replays these fixtures in Chrome. That list edit is made on the DOM, so it is not a step of the browser's undo history.
 
 Toolbar: body offers H1, H2, Normal, bullet, indent, outdent, B, I, U, Clear, Undo, Redo. A checklist row offers B, I, U, Clear, Undo, Redo (block buttons disabled). The title offers none.
 

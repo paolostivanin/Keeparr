@@ -25,7 +25,7 @@ const repeatRuleSchema = z.object({
 const checklistItemSchema = z.object({
   text: z.string().max(20_000),
   done: z.boolean().optional().default(false),
-  indentLevel: z.number().int().min(0).max(4).optional().default(0),
+  indentLevel: z.number().int().min(0).max(3).optional().default(0),
   format: bodyFormatSchema.optional().default('plain_text')
 });
 
@@ -181,7 +181,7 @@ export function createKeeparrMcpServer(client, { oauth = false } = {}) {
     inputSchema: {
       noteId: noteIdSchema, action: z.enum(['add', 'update', 'delete', 'move']), itemId: z.number().int().positive().optional(),
       text: z.string().max(20_000).optional(), format: bodyFormatSchema.optional().default('plain_text'), done: z.boolean().optional(),
-      indentLevel: z.number().int().min(0).max(4).optional(), beforeItemId: z.number().int().positive().nullable().optional()
+      indentLevel: z.number().int().min(0).max(3).optional(), beforeItemId: z.number().int().positive().nullable().optional()
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
   }, safely(async ({ noteId, action, itemId, text, format, done, indentLevel, beforeItemId }) => {

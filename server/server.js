@@ -22,7 +22,7 @@ const { mountClientCapabilities } = require('./client-capabilities');
 const { mountSyncMutationRoute } = require('./sync-routes');
 const { orderedAccessibleIds, parseOrderPositions } = require('./note-order');
 const { plainText, parseJson, escapeHtml, notePreviewText, noteLinkCount } = require('./note-text');
-const { searchTextFromQuery, searchTokensFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere } = require('./note-search');
+const { searchTextFromQuery, searchTokensFromQuery, searchGroupsFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere } = require('./note-search');
 const { compareVersion } = require('./version-compare');
 const { neutralizeActiveHtml, neutralizeChecklist } = require('./html-safety');
 const {
@@ -1485,7 +1485,7 @@ async function accessibleNoteSummaryRows(userId, options = {}) {
   const limit = Math.min(Math.max(Number(options.limit) || 20, 1), 50);
   const query = String(options.query || '').trim();
   const noteId = Number(options.noteId || 0);
-  const searchTokens = searchTokensFromQuery(query);
+  const searchTokens = searchGroupsFromQuery(query);
   const searchWhere = noteSearchWhere(searchTokens, { protectLockedContent: !!options.protectLockedContent });
   const whereClauses = [];
   const params = [userId, userId, userId, userId];
@@ -5614,7 +5614,7 @@ app.get('/api/notes', requireAuth, asyncRoute(async (req, res) => {
   if (req.query.view === 'card') {
     const limit = Math.min(Math.max(Number(req.query.limit) || 80, 1), 200);
     const cursor = decodeNotesCursor(req.query.cursor);
-    const searchTokens = searchTokensFromQuery(req.query.q);
+    const searchTokens = searchGroupsFromQuery(req.query.q);
     const searchWhere = noteSearchWhere(searchTokens);
     const searchOperators = searchOperatorsFromQuery(req.query.q);
     const operatorWhere = noteOperatorWhere(searchOperators);

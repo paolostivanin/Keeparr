@@ -88,19 +88,23 @@
 
 //? new note  ------------------------
 .note-main {
-  border: 1px solid #5f6368;
+  // --note-*-eff come from `.note-surface` (styles.scss): the note's own color, else these defaults.
+  --detail-bg: #202124;
+  border: 1px solid var(--note-bg-eff, #5f6368);
   border-radius: 8px;
-  background-color: #202124;
+  background-color: var(--note-bg-eff, #202124);
+  background-image: var(--note-img-eff, none);
+  color: var(--note-fg-eff, #e8eaed);
   background-position: right bottom;
   background-repeat: no-repeat;
   background-size: cover;
   position: relative;
 
   &.detail-bg {
-    background-color: #fff !important;
+    background-color: var(--detail-bg) !important;
     background-position: center bottom;
     background-size: cover;
-    color: #202124 !important;
+    color: var(--note-fg-eff, #e8eaed) !important;
     // The detail/edit modal needs to constrain itself to the modal's height
     // and let its own content scroll, so users can reach the bottom of long
     // merged notes when the browser window is shorter than the content.
@@ -139,6 +143,7 @@
   }
 
   .note-container {
+    background-image: var(--note-img-eff, none);
     background-position-x: right;
     background-position-y: bottom;
     background-size: cover;
@@ -215,7 +220,7 @@
       overflow-wrap: anywhere;
 
       &.ph {
-        color: rgba(255, 255, 255, 0.6);
+        color: color-mix(in srgb, currentColor 60%, transparent);
         position: absolute;
         width: 100%;
         pointer-events: none;
@@ -1319,19 +1324,15 @@
   }
 
   .note-main {
-    background-color: #fff;
-    border-color: #e0e0e0;
-    color: #202124;
+    --detail-bg: #fff;
+    background-color: var(--note-bg-eff, #fff);
+    border-color: var(--note-bg-eff, #e0e0e0);
+    color: var(--note-fg-eff, #202124);
 
     .note-container {
       .note-image {
         background-color: #fff;
         border-color: #dadce0;
-      }
-
-      .note-title.ph,
-      .note-body.ph {
-        color: #5f6368;
       }
 
     }
@@ -1368,9 +1369,9 @@
     width: 28px;
     height: 28px;
     border-radius: 50%;
-    border: 2px solid #fff;
+    border: 2px solid var(--note-bg-eff, var(--surface));
     overflow: hidden;
-    background: #fff;
+    background: var(--note-bg-eff, var(--surface));
     pointer-events: auto;
     margin-left: -8px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.3);
@@ -1417,11 +1418,6 @@
       margin-left: -6px;
     }
   }
-}
-
-:host-context(.dark-theme) .active-editors-presence .editor-avatar {
-  border-color: #202124;
-  background: #202124;
 }
 
 .editor-save-state {

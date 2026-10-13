@@ -134,8 +134,8 @@
 
         <div class="smart-proposal-grid">
           @for (action of estimateActions(); track $index) {
-            <article class="smart-proposal-card smart-ghost-card"
-              [style.--proposal-bg]="smartProposalColors[$index % smartProposalColors.length]">
+            <article class="smart-proposal-card smart-ghost-card note-surface"
+              [style]="smartProposalColors[$index % smartProposalColors.length] | noteSurface">
               <div class="smart-proposal-topline">
                 <span class="smart-proposal-badge">{{estimateBadge(action)}}</span>
                 <span class="material-symbols-outlined">{{estimateIcon(action)}}</span>
@@ -189,11 +189,11 @@
           @for (proposal of proposalDisplayActions(); track proposal.index) {
             @let action = proposal.action;
             @let actionIndex = proposal.index;
-            <article class="smart-proposal-card"
+            <article class="smart-proposal-card note-surface"
               [class.is-selected]="isSmartActionSelected(actionIndex)"
               [class.is-update]="proposalBadge(action) !== 'New'"
               [class.is-dark-bg]="proposalHasDarkBackground(action)"
-              [style.--proposal-bg]="proposalColor(action, actionIndex)">
+              [style]="proposalColor(action, actionIndex) | noteSurface">
               <button type="button" class="smart-proposal-check"
                 [class.checked]="isSmartActionSelected(actionIndex)"
                 [attr.aria-label]="isSmartActionSelected(actionIndex) ? 'Unselect proposal' : 'Select proposal'"

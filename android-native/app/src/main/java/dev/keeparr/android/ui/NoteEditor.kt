@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items as listItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -33,7 +34,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -208,6 +209,15 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         } }) { Text("Unlock") } }, dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } })
         return
     }
+    // The stored color is data; the dark variant is derived at render time. Everything below draws on `color`/`foreground`.
+    // A background image replaces the color (as on the web) and the text takes the theme's own color over it.
+    val bgImage = note.raw.text("bgImage")
+    val background = NoteBackground.parse(bgImage)
+    val displayedColor = if (bgImage.isNotBlank()) null else NotePalette.display(note.raw.text("bgColor"), LocalDarkTheme.current)
+    val color = displayedColor?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
+    val foreground = displayedColor?.let { Color(NotePalette.textColor(it)) } ?: MaterialTheme.colorScheme.onSurface
+    NoteSurfaceTheme(color, foreground) {
+    SystemBarsOverride(lightBackground = NotePalette.textColor(color.toArgb()) == NotePalette.TEXT_LIGHT_THEME)
     Scaffold(topBar = {
         TopAppBar(title = {},
             navigationIcon = { IconButton(onClick = ::close) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Save and go back") } }, actions = {
@@ -262,8 +272,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                 }
             })
     }, bottomBar = {
-        val color = NotePalette.parse(note.raw.text("bgColor"))?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
-        Surface(color = color, tonalElevation = 2.dp) {
+        Surface(color = color, contentColor = foreground, tonalElevation = 2.dp) {
             Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 IconButton(onClick = { picker.launch(arrayOf("*/*")) }) { Icon(Icons.Outlined.AttachFile, "Add image or attachment") }
@@ -280,10 +289,8 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
             }
         }
     }) { padding ->
-        val color = NotePalette.parse(note.raw.text("bgColor"))?.let { Color(it) } ?: MaterialTheme.colorScheme.background
-        val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF5F3EF)
         Surface(Modifier.fillMaxSize().padding(padding), color = color, contentColor = foreground) {
-        Column(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, indication = null) { focusEditorEnd() }
+        Column(Modifier.fillMaxSize().noteBackgroundImage(background, LocalDarkTheme.current, anchor = BackgroundAnchor.BottomCenter).clickable(remember { MutableInteractionSource() }, indication = null) { focusEditorEnd() }
             .verticalScroll(rememberScrollState()).imePadding().padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             incoming?.let { serverNote ->
@@ -395,8 +402,13 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
          }
          }
     }
-    if (palette) NoteColorPicker(note.raw.text("bgColor"), onDismiss = { palette = false }, onSelect = { selected ->
+    }
+    if (palette) NoteColorPicker(note.raw.text("bgColor"), background, onDismiss = { palette = false }, onSelect = { selected ->
         change { it.put("bgColor", selected).put("bgImage", "") }
+        palette = false
+    }, onSelectImage = { selected ->
+        // Like the web, picking an image leaves bgColor alone; picking a color (above) is what clears the image.
+        change { it.put("bgImage", selected?.stored ?: "") }
         palette = false
     })
     if (organizeDialog) {
@@ -430,7 +442,8 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
 }
 
 @Composable
-private fun NoteColorPicker(selectedColor: String, onDismiss: () -> Unit, onSelect: (String) -> Unit) {
+private fun NoteColorPicker(selectedColor: String, selectedImage: NoteBackground?, onDismiss: () -> Unit, onSelect: (String) -> Unit,
+    onSelectImage: (NoteBackground?) -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -440,15 +453,30 @@ private fun NoteColorPicker(selectedColor: String, onDismiss: () -> Unit, onSele
                 horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 items(NotePalette.colors) { swatch ->
                     val isSelected = NotePalette.sameColor(selectedColor, swatch.hex)
+                    // The swatch shows the variant the note will be drawn in under the current theme.
                     val color = if (swatch.hex.isEmpty()) MaterialTheme.colorScheme.surfaceVariant
-                        else Color(android.graphics.Color.parseColor(swatch.hex))
-                    val foreground = if (color.luminance() > .4f) Color(0xFF272727) else Color(0xFFF5F3EF)
+                        else Color(android.graphics.Color.parseColor(if (LocalDarkTheme.current) swatch.dark else swatch.hex))
+                    val foreground = Color(NotePalette.textColor(color.toArgb()))
                     Box(Modifier.size(48.dp).clip(CircleShape).background(color)
                         .border(if (isSelected) 3.dp else 1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, CircleShape)
                         .semantics { contentDescription = "${swatch.name} background color"; selected = isSelected; role = Role.RadioButton }
                         .clickable { onSelect(swatch.hex) }, contentAlignment = androidx.compose.ui.Alignment.Center) {
                         if (swatch.hex.isEmpty()) Text("×", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         else if (isSelected) Icon(Icons.Outlined.Check, "Selected color", tint = foreground)
+                    }
+                }
+            }
+            Text("Backgrounds", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val dark = LocalDarkTheme.current
+            androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                listItems(listOf<NoteBackground?>(null) + NoteBackground.entries) { image ->
+                    val isSelected = image == selectedImage
+                    Box(Modifier.size(64.dp).clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.surfaceVariant)
+                        .noteBackgroundImage(image, dark, thumbnail = true, anchor = BackgroundAnchor.Center)
+                        .border(if (isSelected) 3.dp else 1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.small)
+                        .semantics { contentDescription = "${image?.label ?: "No"} background image"; selected = isSelected; role = Role.RadioButton }
+                        .clickable { onSelectImage(image) }, contentAlignment = androidx.compose.ui.Alignment.Center) {
+                        if (image == null) Text("×", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -459,6 +487,7 @@ private fun NoteColorPicker(selectedColor: String, onDismiss: () -> Unit, onSele
 @Composable
 private fun StyledEditor(initial: String, reset: String, textColor: Color, handle: BodyEditorHandle, onChange: (String) -> Unit) {
     var editor by remember { mutableStateOf<EditText?>(null) }
+    val linkColor = LocalNoteLinkColor.current
     DisposableEffect(handle) { onDispose { handle.view = null } }
     var lastEmitted by remember { mutableStateOf(initial) }
     var suppressTextWatcher by remember { mutableStateOf(false) }
@@ -533,7 +562,7 @@ private fun StyledEditor(initial: String, reset: String, textColor: Color, handl
                 }
             }); editor = this; handle.view = this
         } }, modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp), update = { view ->
-            view.setTextColor(android.graphics.Color.argb(255, (textColor.red * 255).toInt(), (textColor.green * 255).toInt(), (textColor.blue * 255).toInt()))
+            view.applyNoteColors(textColor.toArgb(), linkColor)
             if (reset != lastEmitted) {
                 val selectionStart = view.selectionStart.coerceAtLeast(0)
                 val selectionEnd = view.selectionEnd.coerceAtLeast(0)
