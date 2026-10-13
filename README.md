@@ -28,8 +28,8 @@ Keeparr is a self-hosted notes app built for quick capture: text notes, checklis
 - Real-time collaborative sharing of notes between users on the same instance.
 - Offline viewing and editing on web and Android, with automatic sync when the client reconnects.
 - Google Keep Takeout import.
-- Built-in SQLite backups and restore.
-- Local accounts with optional 2FA and user management; optional OpenID Connect single sign-on.
+- Built-in backups (database, images and attachments in one zip, scheduled with retention) and restore.
+- Local accounts with optional 2FA and user management; optional OpenID Connect single sign-on. Sessions are stored hashed and never sent in URLs.
 - Local and remote MCP server for authenticated agent access, and OAuth 2.1 for scoped third-party integrations.
 
 ## Clients
@@ -50,9 +50,9 @@ docker compose up -d
 
 Open `http://localhost:6767` and create the first admin account.
 
-Keeparr stores its database, uploads, attachments and generated server data in `./data`. Back that folder up, or use the built-in backup tools.
+Keeparr stores its database, uploads, attachments and generated server data in `./data`. Admins can schedule backups (the newest 7 automated ones are kept) from User Management; they live in `data/backups`, so copy them off the machine too. See [deployment](docs/deployment.md#backups-and-restore).
 
-The compose file pulls the multi-arch (amd64, arm64) image `ghcr.io/paolostivanin/keeparr:latest`. Release tags are also published as `2.2.0`, `2.2` and `2`; pin one of those in `docker-compose.yml` if you do not want to follow `latest`. To build from the local source instead, add the dev override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
+The compose file pulls the multi-arch (amd64, arm64) image `ghcr.io/paolostivanin/keeparr:latest`. Release tags are also published as `2.3.0`, `2.3` and `2`; pin one of those in `docker-compose.yml` if you do not want to follow `latest`. To build from the local source instead, add the dev override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
 
 ### Updating
 
@@ -82,6 +82,7 @@ Set environment variables in `docker-compose.yml` (commented examples are includ
 | `KEEPARR_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_NAME`, `_SCOPES` | Optional OIDC single sign-on. See [oidc.md](docs/oidc.md). |
 | `KEEPARR_SETUP_TOKEN` | Optional secret required on the first-administrator form, until the first account exists. |
 | `KEEPARR_ALLOW_RESTORE` | Temporarily enables restore from backup during setup. |
+| `KEEPARR_RESTORE_MAX_BYTES` | Upload limit for a restore. Defaults to 2 GB. |
 | `KEEPARR_TAKEOUT_UPLOAD_MAX` / `KEEPARR_TAKEOUT_UPLOAD_MAX_BYTES` | Google Takeout ZIP upload cap. Defaults to `5GB`. |
 | `KEEPARR_LINK_PREVIEW_SCREENSHOTS` | Set to `0` to stop using a third-party screenshot service for link previews. |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Web push identity. Keys are generated into `data/vapid.json` if unset. |
