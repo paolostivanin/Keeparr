@@ -80,6 +80,39 @@ describe('NoteCardPreviewComponent', () => {
     expect(cards[1].nativeElement.querySelector('.title').textContent.trim()).toBe('Updated note');
   });
 
+  it('treats a checklist note as hybrid when its body holds visible text, an image or an embed, like the editor (W20)', () => {
+    const hybrid = (noteBody: string) => {
+      fixture.componentInstance.notes = [{ ...note(9, 'List'), isCbox: true, noteBody, checkBoxes: [{ id: 1, done: false, data: 'a', indentLevel: 0 }] }];
+      fixture.changeDetectorRef.markForCheck();
+      fixture.detectChanges();
+      return (fixture.debugElement.query(By.directive(NoteCardPreviewComponent)).componentInstance as NoteCardPreviewComponent).presentation.isHybrid;
+    };
+    expect(hybrid('<div class="inline-note-image-wrap" contenteditable="false"><img class="inline-note-image" src="/api/uploads/images/a.png" alt=""></div><div><br></div>')).toBeTrue();
+    expect(hybrid('<table><tbody><tr><td>x</td></tr></tbody></table>')).toBeTrue();
+    expect(hybrid('<div>text</div>')).toBeTrue();
+    expect(hybrid('<div>&nbsp;</div><div><br></div>')).toBeFalse();
+    expect(hybrid('')).toBeFalse();
+  });
+
+  it('exposes the stored color as light and dark variables and lets the theme pick (P2.2)', () => {
+    document.body.classList.remove('light-theme');
+    fixture.componentInstance.notes = [{ ...note(9, 'Cream'), bgColor: '#fff8b8' }];
+    fixture.changeDetectorRef.markForCheck();
+    fixture.detectChanges();
+    const main = fixture.nativeElement.querySelector('.note-main') as HTMLElement;
+    try {
+      expect(main.classList.contains('note-surface')).toBeTrue();
+      expect(getComputedStyle(main).getPropertyValue('--note-bg-eff').trim()).toBe('#7c4a03');
+      expect(getComputedStyle(main).getPropertyValue('--note-fg-eff').trim()).toBe('#e8eaed');
+      document.body.classList.add('light-theme');
+      expect(getComputedStyle(main).getPropertyValue('--note-bg-eff').trim()).toBe('#fff8b8');
+      expect(getComputedStyle(main).getPropertyValue('--note-fg-eff').trim()).toBe('#202124');
+      expect(getComputedStyle(main).getPropertyValue('--note-link-eff').trim()).toBe('#1a73e8');
+    } finally {
+      document.body.classList.remove('light-theme');
+    }
+  });
+
   it('opens from the keyboard on the card itself but not from keys pressed in a control inside it', () => {
     const card = fixture.debugElement.queryAll(By.directive(NoteCardPreviewComponent))[0];
     const open = jasmine.createSpy('open');

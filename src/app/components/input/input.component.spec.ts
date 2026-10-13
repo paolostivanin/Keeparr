@@ -1,5 +1,7 @@
 import { InputComponent } from './input.component';
 import { NoteI } from 'src/app/interfaces/notes';
+import { ChecklistHistory } from 'src/app/utils/checklist-model';
+import { EditorSessionTracker, emptyEditorDraft } from 'src/app/utils/editor-session';
 
 function makeEditor() {
   const editor = Object.create(InputComponent.prototype) as any;
@@ -310,13 +312,20 @@ describe('InputComponent checklist paste', () => {
     expect(editor.checkBoxes[1].data).toBe('&lt;b&gt;two&lt;/b&gt;');
   });
 
-  it('leaves a single pasted line to the browser', () => {
+  it('inserts a single pasted line as plain text instead of leaving the clipboard markup to the browser (W16)', () => {
     const { editor, row } = checklistEditor();
-    const event = pasteEvent('just one line\n', row);
+    row.focus();
+    const range = document.createRange();
+    range.setStart(row.firstChild!, 4);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    const event = pasteEvent('<b>x</b> line\n', row);
 
     editor.onCboxPaste(event, 1);
 
-    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(row.textContent).toBe('head<b>x</b> linetail');
+    expect(row.querySelector('b')).toBeNull();
     expect(editor.checkBoxes.length).toBe(2);
   });
 
@@ -455,6 +464,7 @@ describe('InputComponent formatting bars', () => {
 
 describe('InputComponent note surface', () => {
   let noteMain: HTMLElement;
+  beforeEach(() => document.body.classList.remove('light-theme'));
   afterEach(() => { noteMain?.remove(); document.body.classList.remove('light-theme'); });
 
   function surfaceEditor() {
@@ -517,5 +527,721 @@ describe('InputComponent note surface', () => {
 
     expect(noteMain.style.getPropertyValue('--note-bg')).toBe('');
     expect(shown()).toBe('rgb(1, 2, 3)');
+  });
+});
+
+describe('InputComponent opening, closing and incoming versions', () => {
+  function stubs(extra: Record<string, unknown> = {}) {
+    const editor = Object.create(InputComponent.prototype) as any;
+    const closeModal = { next: jasmine.createSpy('closeModal') };
+    Object.assign(editor, {
+      notePin: { nativeElement: { dataset: { pinned: 'false' } } }, noteMain: { nativeElement: document.createElement('div') },
+      noteColor: '', noteBgImage: '', images: [], attachments: [], pendingAttachmentFiles: [], labels: [], labelsDirty: false,
+      isArchived: false, isTrashed: false, binderName: '', isCbox: { value: false, next: () => undefined },
+      selectedCollaboratorIds: [], pendingReminderDate: null, pendingReminderLocation: null, drawingDirty: false,
+      auth: { canonicalImageUrl: (value: string) => value, canonicalImageHtml: (value: string) => value, authenticatedImageUrl: (value: string) => value },
+      Shared: { closeModal }, endEditorSession: jasmine.createSpy('endEditorSession'),
+      notesService: { update: jasmine.createSpy('update').and.resolveTo(), editorSessions: () => undefined },
+      currentCheckBoxesForSave: () => [], cboxInput: undefined, cboxPh: undefined,
+      autosavesInFlight: new Set(), createInFlight: undefined,
+      ...extra
+    });
+    return { editor, closeModal };
+  }
+
+  it('keeps the title and body of a drawing note, and a drawing opened and closed untouched writes nothing (W1)', async () => {
+    const drawing = { id: 'drawing', dataUrl: 'data:image/png;base64,AAAA', name: 'Drawing|bg:none', placement: 'top' as const };
+    const note = { id: 5, syncId: 'n5', revision: 3, noteTitle: 'Sketch of the plan', noteBody: '<div>notes beside it</div>', pinned: false, bgColor: '', bgImage: '', isCbox: false, checkBoxes: [], images: [drawing], labels: [], binder: '', archived: false, trashed: false } as NoteI;
+    const hiddenStandIn = document.createElement('div');
+    hiddenStandIn.hidden = true;
+    const { editor, closeModal } = stubs({ isEditing: true, isDrawingNote: true, noteToEdit: note, images: [drawing], noteTitle: { nativeElement: hiddenStandIn }, noteBody: undefined });
+    editor.saveBaselineSnapshot = editor.noteSaveSnapshot(note);
+    spyOn(editor, 'syncDrawingImage');
+
+    expect(editor.editorTitleHtml()).toBe('Sketch of the plan');
+    expect(editor.editorBodyHtml()).toBe('<div>notes beside it</div>');
+    expect(editor.liveEditorNote().noteTitle).toBe('Sketch of the plan');
+
+    await editor.saveNote();
+
+    expect(editor.syncDrawingImage).not.toHaveBeenCalled();
+    expect(editor.notesService.update).not.toHaveBeenCalled();
+    expect(closeModal.next).toHaveBeenCalledWith(true);
+  });
+
+  it('encodes a drawing only when it changed or was never encoded', () => {
+    const { editor } = stubs({ isDrawingNote: true, images: [{ id: 'drawing' }] });
+    expect(editor.drawingNeedsEncoding()).toBeFalse();
+    editor.drawingDirty = true;
+    expect(editor.drawingNeedsEncoding()).toBeTrue();
+    editor.drawingDirty = false;
+    editor.images = [];
+    expect(editor.drawingNeedsEncoding()).toBeTrue();
+  });
+
+  it('writes an incoming hybrid version after the templates exist, so closing keeps the body (W2)', () => {
+    const body = document.createElement('div');
+    const title = document.createElement('div');
+    const { editor } = stubs({
+      isEditing: true, isDrawingNote: false, noteTitle: { nativeElement: title }, noteBody: undefined,
+      noteToEdit: { id: 5, syncId: 'n5', revision: 7, noteTitle: 'title', noteBody: '' },
+      checkBoxes: [], cboxDragImage: undefined, resetCboxHistory: () => undefined, normalizeCheckBoxes: (value: unknown) => value,
+      decorateLinksForEditor: (value: string) => value, hasMeaningfulBody: (value: string) => !!value,
+      hydrateEditorLinkPreviews: () => undefined, hydrateInlineImageButtons: () => undefined,
+      updateHtmlWithCursorPreservation: (element: HTMLElement, html: string) => { element.innerHTML = html; },
+      noteSaveSnapshot: () => '{}', hasUnsavedEdits: () => false
+    });
+    // The body element only exists once the hybrid mode has been rendered.
+    editor.cd = { detectChanges: () => { editor.noteBody = { nativeElement: body }; } };
+
+    editor.applyExternalUpdate(remote({ isCbox: true, noteBody: '<div>kept</div>', checkBoxes: [{ id: 1, done: false, data: 'a', indentLevel: 0 }] }));
+
+    expect(body.innerHTML).toBe('<div>kept</div>');
+    expect(editor.isHybridNote).toBeTrue();
+    expect(editor.noteToEdit.noteBody).toBe('<div>kept</div>');
+  });
+
+  it('puts an image dropped on a checklist into a body above it and keeps every item (W3)', async () => {
+    const insertInlineImage = jasmine.createSpy('insertInlineImage');
+    const next = jasmine.createSpy('next');
+    const { editor } = stubs({
+      isEditing: false, isHybridNote: false, isCbox: { value: true, next },
+      fileToImage: async () => ({ id: 'i', dataUrl: '/x.png', name: 'x', placement: 'bottom' }), insertInlineImage,
+      noteBody: { nativeElement: { innerHTML: '<div>img</div>' } }, updateInputLength: () => undefined, queueCoEditAutosave: () => undefined,
+      cd: { detectChanges: () => undefined }
+    });
+
+    await editor.addImageFiles([new File(['x'], 'x.png', { type: 'image/png' })]);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(editor.isHybridNote).toBeTrue();
+    expect(insertInlineImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates one note when the outside click or Back repeats during a slow create (W13)', async () => {
+    let release!: () => void;
+    const { editor } = stubs({ isEditing: false });
+    const saveNoteNow = spyOn(editor, 'saveNoteNow').and.callFake(() => new Promise<void>(resolve => { release = resolve; }));
+
+    const first = editor.saveNote();
+    const second = editor.saveNote();
+    const third = editor.saveNote(false);
+    expect(saveNoteNow).toHaveBeenCalledTimes(1);
+    expect(second).toBe(first);
+    expect(third).toBe(first);
+    release();
+    await first;
+
+    editor.isEditing = false;
+    editor.saveNote();
+    expect(saveNoteNow).toHaveBeenCalledTimes(2);
+  });
+
+  it('closing waits for a pending autosave, so the updates run one after another (W14)', async () => {
+    const order: string[] = [];
+    let finishAutosave!: () => void;
+    const { editor } = stubs({ isEditing: true });
+    spyOn(editor, 'saveNoteNow').and.callFake((closeAfterSave: boolean) => {
+      if (!closeAfterSave) {
+        order.push('autosave:start');
+        return new Promise<void>(resolve => { finishAutosave = () => { order.push('autosave:end'); resolve(); }; });
+      }
+      order.push('close:start');
+      return Promise.resolve();
+    });
+
+    editor.saveNote(false);
+    const closing = editor.saveNote(true);
+    await Promise.resolve();
+    expect(order).toEqual(['autosave:start']);
+    finishAutosave();
+    await closing;
+
+    expect(order).toEqual(['autosave:start', 'autosave:end', 'close:start']);
+  });
+
+  it('restores a recovered draft without overwriting what was typed before it loaded (W15)', () => {
+    const base = emptyEditorDraft();
+    const tracker = new EditorSessionTracker('p', 'new', null, () => base);
+    const record = { ...tracker.snapshot, draft: { ...base, noteTitle: 'old draft title', noteBody: '<div>old draft body</div>' }, dirtyFields: ['noteTitle', 'noteBody'] as any };
+    const loaded: NoteI[] = [];
+    const { editor } = stubs({
+      isEditing: false, userInputSinceOpen: true, noteTitle: { nativeElement: { innerHTML: 'typed title' } },
+      noteBody: { nativeElement: { innerHTML: '' } }, hasMeaningfulBody: () => false,
+      loadNoteIntoEditor: (note: NoteI) => loaded.push(note), editorSessionPersister: { put: () => undefined },
+      noteSaveSnapshot: () => '{}'
+    });
+
+    editor.restoreEditorSession(tracker, record);
+
+    expect(loaded.length).toBe(1);
+    expect(loaded[0].noteTitle).toBe('typed title');
+    expect(loaded[0].noteBody).toBe('<div>old draft body</div>');
+  });
+
+  it('restores everything when nothing was typed meanwhile, and nothing when everything was', () => {
+    const base = emptyEditorDraft();
+    const tracker = new EditorSessionTracker('p', 'new', null, () => base);
+    const record = { ...tracker.snapshot, draft: { ...base, noteTitle: 'draft title' }, dirtyFields: ['noteTitle'] as any };
+    const loaded: NoteI[] = [];
+    const { editor } = stubs({
+      isEditing: false, userInputSinceOpen: false, loadNoteIntoEditor: (note: NoteI) => loaded.push(note),
+      editorSessionPersister: { put: () => undefined }, noteSaveSnapshot: () => '{}'
+    });
+    editor.restoreEditorSession(tracker, record);
+    expect(loaded[0].noteTitle).toBe('draft title');
+
+    loaded.length = 0;
+    editor.userInputSinceOpen = true;
+    editor.noteTitle = { nativeElement: { innerHTML: 'typed' } };
+    editor.noteBody = { nativeElement: { innerHTML: '' } };
+    editor.hasMeaningfulBody = () => false;
+    editor.restoreEditorSession(tracker, record);
+    expect(loaded.length).toBe(0);
+  });
+});
+
+describe('InputComponent checklist rows', () => {
+  let host: HTMLElement;
+  beforeEach(() => { host = document.createElement('div'); document.body.appendChild(host); });
+  afterEach(() => { host.remove(); window.getSelection()?.removeAllRanges(); });
+
+  function rowsEditor(rows: Array<{ id: number; data: unknown; done?: boolean; indentLevel?: number }>) {
+    const container = document.createElement('div');
+    host.append(container);
+    const history = new ChecklistHistory();
+    const editor = Object.create(InputComponent.prototype) as any;
+    const render = () => {
+      container.replaceChildren();
+      for (const cb of editor.checkBoxes) {
+        if (typeof cb.data !== 'string') continue;
+        const el = document.createElement('div');
+        el.contentEditable = 'true';
+        el.dataset['cboxId'] = String(cb.id);
+        el.innerHTML = cb.data;
+        container.append(el);
+      }
+    };
+    Object.assign(editor, {
+      checkBoxes: rows.map(row => ({ done: false, indentLevel: 0, ...row })),
+      cboxHistory: history, cboxSuggestionEligibleIds: new Set<number>(), cboxSuggestionDraftValues: new Map<number, string>(),
+      dismissedCboxSuggestionIds: new Set<number>(), inputLength: { value: { title: 0, body: 0, cb: 0 }, next: () => undefined },
+      preferences: { value: { moveCompletedChecklistItemsToBottom: false } }, noteToEdit: {}, isCbox: { value: true },
+      cboxPh: { nativeElement: document.createElement('div') }, queueCoEditAutosave: () => undefined,
+      noteContainer: { nativeElement: container }, cd: { detectChanges: render }, completedCboxSuggestions: () => []
+    });
+    editor.syncCboxDomIntoModel = () => {
+      editor.checkBoxes = editor.checkBoxes.map((cb: any) => {
+        const el = container.querySelector<HTMLElement>(`[data-cbox-id="${cb.id}"]`);
+        return el ? { ...cb, data: el.innerHTML } : cb;
+      });
+    };
+    render();
+    history.reset(editor.checkBoxes);
+    const rowEl = (id: number) => container.querySelector<HTMLElement>(`[data-cbox-id="${id}"]`)!;
+    const caret = (el: Node, offset: number) => {
+      const range = document.createRange();
+      range.setStart(el, offset);
+      range.collapse(true);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+    };
+    const key = (extra: Partial<KeyboardEvent>) => ({ key: 'Enter', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, isComposing: false, keyCode: 13, preventDefault: jasmine.createSpy('preventDefault'), ...extra }) as unknown as KeyboardEvent;
+    /** Presses a key in a row: the event targets that row's element. */
+    const press = (id: number, init: Partial<KeyboardEvent>) => {
+      const event = key({ ...init, target: rowEl(id) } as Partial<KeyboardEvent>);
+      editor.cBoxKeyDown(event, id);
+      return event;
+    };
+    return { editor, container, rowEl, caret, key, press, render };
+  }
+
+  it('Enter splits the row at the caret and keeps formatting on both sides (P4)', () => {
+    const { editor, rowEl, caret, press } = rowsEditor([{ id: 1, data: '<b>hel</b>lo world' }, { id: 2, data: 'next' }]);
+    const row = rowEl(1);
+    row.focus();
+    caret(row.lastChild!, 2);
+
+    const event = press(1, { key: 'Enter' });
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(editor.checkBoxes.map((cb: any) => [cb.id, cb.data])).toEqual([[1, '<b>hel</b>lo'], [3, ' world'], [2, 'next']]);
+    expect(document.activeElement).toBe(rowEl(3));
+  });
+
+  it('Enter at the end of a row adds an empty row and leaves the text alone', () => {
+    const { editor, rowEl, caret, press } = rowsEditor([{ id: 1, data: 'milk' }]);
+    caret(rowEl(1).firstChild!, 4);
+    press(1, { key: 'Enter' });
+    expect(editor.checkBoxes.map((cb: any) => cb.data)).toEqual(['milk', '']);
+  });
+
+  it('Backspace at the true start merges the row into the previous visible row and puts the caret at the junction (W4)', () => {
+    const { editor, rowEl, caret, press } = rowsEditor([{ id: 1, data: 'Milk' }, { id: 2, data: '<b>shake</b>' }]);
+    caret(rowEl(2).firstChild!, 0);
+
+    const event = press(2, { key: 'Backspace' });
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(editor.checkBoxes.map((cb: any) => cb.data)).toEqual(['Milk<b>shake</b>']);
+    const selection = window.getSelection()!;
+    const probe = document.createRange();
+    probe.setStart(rowEl(1), 0);
+    probe.setEnd(selection.anchorNode!, selection.anchorOffset);
+    expect(probe.toString()).toBe('Milk');
+  });
+
+  it('Backspace does nothing special inside later text of a row, and not before the start (W4)', () => {
+    const { editor, rowEl, caret, press } = rowsEditor([{ id: 1, data: 'a' }, { id: 2, data: '<b>x</b>milk' }]);
+    caret(rowEl(2).lastChild!, 0); // after <b>x</b>: offset 0 of a later text node
+    const event = press(2, { key: 'Backspace' });
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(editor.checkBoxes.length).toBe(2);
+  });
+
+  it('Backspace in an empty row deletes it and focuses the end of the previous row (W4)', () => {
+    const { editor, rowEl, caret, press } = rowsEditor([{ id: 1, data: 'one' }, { id: 2, data: '' }]);
+    caret(rowEl(2), 0);
+    press(2, { key: 'Backspace' });
+    expect(editor.checkBoxes.map((cb: any) => cb.id)).toEqual([1]);
+    expect(document.activeElement).toBe(rowEl(1));
+    expect(window.getSelection()!.anchorOffset).toBe(3);
+  });
+
+  it('Backspace merges into the previous visible row, not a hidden one in between (W4, A15)', () => {
+    const { editor, rowEl, caret, press } = rowsEditor([{ id: 1, data: 'a' }, { id: 2, data: 'hidden', done: true }, { id: 3, data: 'c' }]);
+    editor.preferences.value.moveCompletedChecklistItemsToBottom = true;
+    // The completed row is in the collapsed section: it is not in the DOM.
+    rowEl(2).remove();
+    caret(rowEl(3).firstChild!, 0);
+    press(3, { key: 'Backspace' });
+    expect(editor.checkBoxes.map((cb: any) => [cb.id, cb.data])).toEqual([[1, 'ac'], [2, 'hidden']]);
+  });
+
+  it('creates rows from typed text only: Ctrl+V, Enter and Space create nothing in the placeholder (W5)', () => {
+    const { editor, key } = rowsEditor([]);
+    const addCheckBox = spyOn(editor, 'addCheckBox');
+    const paste = key({ key: 'v', ctrlKey: true });
+    editor.cboxPhKeyDown(paste);
+    expect(paste.preventDefault).not.toHaveBeenCalled();
+    const enter = key({ key: 'Enter' });
+    editor.cboxPhKeyDown(enter);
+    expect(enter.preventDefault).toHaveBeenCalled();
+    editor.cboxPh.nativeElement.textContent = ' ';
+    editor.cboxPhInput();
+    expect(addCheckBox).not.toHaveBeenCalled();
+    expect(editor.cboxPh.nativeElement.childNodes.length).toBe(0);
+  });
+
+  it('makes a row from typed text, escaped, and waits for an input method to finish composing (W5)', () => {
+    const { editor } = rowsEditor([]);
+    const addCheckBox = spyOn(editor, 'addCheckBox');
+    spyOn(editor, 'focusLastCboxInput');
+    editor.cboxPh.nativeElement.textContent = 'ni';
+    editor.cboxPhInput({ isComposing: true } as unknown as Event);
+    expect(addCheckBox).not.toHaveBeenCalled();
+    editor.cboxPh.nativeElement.textContent = 'a < b';
+    editor.cboxPhInput();
+    expect(addCheckBox).toHaveBeenCalledOnceWith('a &lt; b');
+  });
+
+  it('Ctrl+Z restores a deleted row and Ctrl+Shift+Z / Ctrl+Y bring the deletion back (W11)', () => {
+    const { editor, press } = rowsEditor([{ id: 1, data: 'a' }, { id: 2, data: 'b' }]);
+    editor.checkBoxes = editor.checkBoxes.filter((cb: any) => cb.id !== 2);
+    editor.cboxHistory.push(editor.checkBoxes);
+
+    const undo = press(1, { key: 'z', ctrlKey: true });
+    expect(undo.preventDefault).toHaveBeenCalled();
+    expect(editor.checkBoxes.map((cb: any) => cb.id)).toEqual([1, 2]);
+
+    press(1, { key: 'Z', ctrlKey: true, shiftKey: true });
+    expect(editor.checkBoxes.map((cb: any) => cb.id)).toEqual([1]);
+    press(1, { key: 'z', metaKey: true });
+    press(1, { key: 'y', ctrlKey: true });
+    expect(editor.checkBoxes.map((cb: any) => cb.id)).toEqual([1]);
+  });
+
+  it('leaves Ctrl+Z to the browser while the latest change is typed text (W11)', () => {
+    const { editor, press } = rowsEditor([{ id: 1, data: 'a' }]);
+    editor.cboxHistory.textInput();
+    const undo = press(1, { key: 'z', ctrlKey: true });
+    expect(undo.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('keeps the caret where a mouse press put it, but still moves it to the end on keyboard focus (W17)', async () => {
+    const { editor, rowEl, caret } = rowsEditor([{ id: 1, data: 'middle of a row' }]);
+    const row = rowEl(1);
+    const focusEvent = { target: row } as unknown as FocusEvent;
+    editor.rememberTextHistoryTarget = () => undefined;
+
+    row.focus();
+    editor.cboxInputMouseDown();
+    caret(row.firstChild!, 3);
+    editor.cboxInputFocus(focusEvent);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(window.getSelection()!.anchorOffset).toBe(3);
+
+    caret(row.firstChild!, 3);
+    editor.cboxInputFocus(focusEvent);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    const toCaret = document.createRange();
+    toCaret.setStart(row, 0);
+    toCaret.setEnd(window.getSelection()!.anchorNode!, window.getSelection()!.anchorOffset);
+    expect(toCaret.toString().length).toBe('middle of a row'.length);
+  });
+
+  it('shows a structured row as a label and never as markup (W18)', () => {
+    const { editor } = rowsEditor([]);
+    expect(editor.isStructuredRow({ id: 1, done: false, data: { type: 'keeparr-future-item' } })).toBeTrue();
+    expect(editor.isStructuredRow({ id: 2, done: false, data: '<b>x</b>' })).toBeFalse();
+  });
+
+  it('Show checkboxes keeps an inline image in the body and never makes an item from its delete button (W9)', () => {
+    const body = document.createElement('div');
+    body.innerHTML = '<div>a</div><div class="inline-note-image-wrap" contenteditable="false"><img class="inline-note-image" src="/api/uploads/images/abc.png" alt="pic">'
+      + '<button type="button" data-inline-image-tool="delete"><span class="material-symbols-outlined">close</span></button></div><div><br></div><div>b</div>';
+    host.append(body);
+    const restored: string[] = [];
+    spyOn(window, 'requestAnimationFrame').and.returnValue(0); // the focus-the-new-row frame must not outlive this test
+    const { editor } = rowsEditor([]);
+    Object.assign(editor, {
+      noteBody: { nativeElement: body }, isHybridNote: false, isCbox: { value: false, next: () => undefined },
+      auth: { canonicalImageHtml: (value: string) => value }, hasMeaningfulBody: (value: string) => !!value,
+      decorateLinksForEditor: (value: string) => value, resetCboxHistory: () => undefined, updateInputLength: () => undefined,
+      restoreBodyHtmlAfterTemplateSwap: (html: string) => restored.push(html)
+    });
+
+    editor.showCheckboxes();
+
+    expect(editor.checkBoxes.map((cb: any) => cb.data)).toEqual(['a', 'b']);
+    expect(editor.isHybridNote).toBeTrue();
+    expect(restored.join('')).toContain('inline-note-image-wrap');
+    expect(restored.join('')).not.toContain('data-inline-image-tool');
+  });
+
+  it('Hide checkboxes puts the kept body back without dead preview cards and decorates it afresh (W10)', () => {
+    const body = document.createElement('div');
+    body.innerHTML = '<span class="editor-link-preview-slot" contenteditable="false" data-url="https://x.test/" data-original-html="https://x.test/" data-hydrated="true">'
+      + '<span class="editor-link-preview-card"><button class="editor-link-preview-remove"></button></span></span>';
+    host.append(body);
+    const { editor } = rowsEditor([{ id: 1, data: 'item' }]);
+    const decorated: string[] = [];
+    Object.assign(editor, {
+      noteBody: { nativeElement: body }, isHybridNote: true, isCbox: { value: true, next: () => undefined },
+      auth: { canonicalImageHtml: (value: string) => value }, decorateLinksForEditor: (html: string) => { decorated.push(html); return 'decorated body'; },
+      hydrateEditorLinkPreviews: jasmine.createSpy('hydrateEditorLinkPreviews'), hydrateInlineImageButtons: jasmine.createSpy('hydrateInlineImageButtons'),
+      resetCboxHistory: () => undefined, updateInputLength: () => undefined, updateCheckboxMenuLabel: () => undefined,
+      placeCaretAtEnd: () => undefined
+    });
+    spyOn(window, 'confirm').and.returnValue(true);
+
+    editor.hideCheckboxes();
+
+    expect(decorated.length).toBe(1);
+    expect(decorated[0]).not.toContain('editor-link-preview-card');
+    expect(decorated[0]).toContain('https://x.test/');
+    expect(decorated[0]).toContain('<div>item</div>');
+    expect(body.innerHTML).toBe('decorated body');
+    expect(editor.hydrateEditorLinkPreviews).toHaveBeenCalled();
+    expect(editor.hydrateInlineImageButtons).toHaveBeenCalled();
+  });
+});
+
+describe('InputComponent title and formatting scope', () => {
+  let host: HTMLElement;
+  beforeEach(() => { host = document.createElement('div'); document.body.appendChild(host); });
+  afterEach(() => { host.remove(); window.getSelection()?.removeAllRanges(); });
+
+  function textEditor() {
+    const title = document.createElement('div');
+    title.contentEditable = 'true';
+    const body = document.createElement('div');
+    body.contentEditable = 'true';
+    body.innerHTML = '<div>first</div>';
+    const rowContainer = document.createElement('div');
+    const row = document.createElement('div');
+    row.contentEditable = 'true';
+    row.dataset['cboxId'] = '1';
+    row.textContent = 'row text';
+    rowContainer.append(row);
+    host.append(title, body, rowContainer);
+    const editor = Object.create(InputComponent.prototype) as any;
+    Object.assign(editor, {
+      noteTitle: { nativeElement: title }, noteBody: { nativeElement: body }, noteContainer: { nativeElement: host },
+      isEditing: false, isDrawingNote: false, isCbox: { value: false }, noteToEdit: {},
+      scheduleSelectionFormattingUpdate: () => undefined, updateInputLength: () => undefined, queueCoEditAutosave: () => undefined
+    });
+    const select = (node: Node, offset = 1, end = offset) => {
+      const range = document.createRange();
+      range.setStart(node, offset);
+      range.setEnd(node, end);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+    };
+    const click = () => ({ preventDefault: () => undefined, stopPropagation: () => undefined }) as unknown as Event;
+    return { editor, title, body, row, select, click };
+  }
+
+  it('applies no formatting command in the title (W7)', () => {
+    const { editor, title, select, click } = textEditor();
+    title.textContent = 'a title';
+    select(title.firstChild!, 0, 3);
+    const exec = spyOn(document, 'execCommand');
+    for (const command of ['bold', 'italic', 'underline', 'clear', 'h1', 'h2', 'body', 'bullet', 'indent', 'outdent'] as const) editor.applyTextFormat(command, click());
+    expect(exec).not.toHaveBeenCalled();
+    expect(editor.blockFormatEnabled()).toBeFalse();
+  });
+
+  it('blocks Ctrl+B/I/U in the title and moves Enter to the body (W7)', () => {
+    const { editor, title, body } = textEditor();
+    const event = (init: Partial<KeyboardEvent>) => ({ key: 'b', ctrlKey: true, metaKey: false, altKey: false, isComposing: false, keyCode: 66, preventDefault: jasmine.createSpy('preventDefault'), ...init }) as unknown as KeyboardEvent;
+    for (const letter of ['b', 'i', 'u', 'B']) {
+      const keyEvent = event({ key: letter });
+      editor.onNoteTitleKeyDown(keyEvent);
+      expect(keyEvent.preventDefault).toHaveBeenCalled();
+    }
+    const other = event({ key: 'a' });
+    editor.onNoteTitleKeyDown(other);
+    expect(other.preventDefault).not.toHaveBeenCalled();
+
+    const enter = event({ key: 'Enter', ctrlKey: false, keyCode: 13 });
+    editor.onNoteTitleKeyDown(enter);
+    expect(enter.preventDefault).toHaveBeenCalled();
+    expect(document.activeElement).toBe(body);
+    title.blur();
+  });
+
+  it('applies inline commands in the body and in rows, block commands only in the body (W7)', () => {
+    const { editor, body, row, select, click } = textEditor();
+    const exec = spyOn(document, 'execCommand').and.returnValue(true);
+
+    select(row.firstChild!, 0, 3);
+    editor.applyTextFormat('bold', click());
+    editor.applyTextFormat('clear', click());
+    expect(exec.calls.allArgs().map(args => args[0])).toEqual(['bold', 'removeFormat']);
+    expect(editor.blockFormatEnabled()).toBeFalse();
+    exec.calls.reset();
+    editor.applyTextFormat('h1', click());
+    editor.applyTextFormat('bullet', click());
+    expect(exec).not.toHaveBeenCalled();
+
+    select(body.querySelector('div')!.firstChild!, 0, 3);
+    editor.applyTextFormat('h1', click());
+    editor.applyTextFormat('italic', click());
+    expect(exec.calls.allArgs().map(args => args[0])).toEqual(['formatBlock', 'italic']);
+    expect(editor.blockFormatEnabled()).toBeTrue();
+  });
+
+  it('lets the floating bar follow selections in rows but not in the title (W7)', () => {
+    const { editor, title, row } = textEditor();
+    title.textContent = 'a title';
+    const rangeIn = (node: Node) => { const range = document.createRange(); range.setStart(node, 0); range.setEnd(node, 3); return range; };
+    expect(editor.selectionBelongsToTextEditor(rangeIn(title.firstChild!))).toBeFalse();
+    expect(editor.selectionBelongsToTextEditor(rangeIn(row.firstChild!))).toBeTrue();
+  });
+
+  it('reads an emptied title (a lone <br>) as empty and keeps an unchanged legacy title as it was (W7)', () => {
+    const { editor, title } = textEditor();
+    title.innerHTML = '<br>';
+    expect(editor.editorTitleHtml()).toBe('');
+    editor.isEditing = true;
+    editor.noteToEdit = { noteTitle: 'Caff&#232;' };
+    title.innerHTML = 'Caff&#232;';
+    expect(editor.editorTitleHtml()).toBe('Caff&#232;');
+    title.textContent = 'Tom & <Jerry>';
+    expect(editor.editorTitleHtml()).toBe('Tom &amp; &lt;Jerry&gt;');
+  });
+
+  it('keeps the mobile formatting bar open while the caret moves in the text, and closes it on other taps (W12)', () => {
+    const { editor, body, row } = textEditor();
+    editor.shouldUseMobileFormattingBar = () => true;
+    editor.showTextFormatting = true;
+    const tap = (target: Element) => editor.onDocumentMouseDown({ target, button: 0 } as unknown as MouseEvent);
+    tap(body);
+    expect(editor.showTextFormatting).toBeTrue();
+    tap(row);
+    expect(editor.showTextFormatting).toBeTrue();
+    tap(host);
+    expect(editor.showTextFormatting).toBeFalse();
+  });
+
+  it('pastes plain text with editing commands, so Ctrl+Z undoes the paste and the caret ends after it (W6)', () => {
+    const { editor, body, select } = textEditor();
+    body.innerHTML = '<div>start</div>';
+    body.focus();
+    select(body.querySelector('div')!.firstChild!, 5);
+
+    editor.insertPlainTextAtCursor(body, ' pasted');
+
+    expect(body.textContent).toBe('start pasted');
+    expect(window.getSelection()!.anchorNode!.textContent).toContain('pasted');
+    expect(window.getSelection()!.anchorOffset).toBe('start pasted'.length);
+    document.execCommand('undo');
+    expect(body.textContent).toBe('start');
+  });
+
+  it('keeps long pastes off the command path (W6)', () => {
+    const { editor, body, select } = textEditor();
+    body.innerHTML = '<div>x</div>';
+    body.focus();
+    select(body.querySelector('div')!.firstChild!, 1);
+    const exec = spyOn(document, 'execCommand');
+    const text = Array.from({ length: 600 }, (_, i) => `line ${i}`).join('\n');
+
+    editor.insertPlainTextAtCursor(body, text);
+
+    expect(exec).not.toHaveBeenCalled();
+    expect(body.querySelectorAll('br').length).toBe(599);
+  });
+
+  describe('link preview decoration', () => {
+    function decorating(html: string, richLinkPreviews: boolean) {
+      const { editor, body } = textEditor();
+      body.innerHTML = html;
+      Object.assign(editor, {
+        destroyed: false, editorPreviewGeneration: 0, preferences: { value: { richLinkPreviews } },
+        auth: { canonicalImageHtml: (value: string) => value, authenticatedImageHtml: (value: string) => value },
+        hydrateEditorLinkPreviews: jasmine.createSpy('hydrate'), hydrateInlineImageButtons: jasmine.createSpy('buttons')
+      });
+      const rewrite = spyOn(editor, 'updateHtmlWithCursorPreservation').and.callThrough();
+      return { editor, body, rewrite };
+    }
+
+    it('does not rewrite the body after a paste when previews are off or no link changed (W6)', () => {
+      const off = decorating('<div>plain https://a.test text</div>', false);
+      off.editor.decorateCurrentBodyLinks();
+      expect(off.rewrite).not.toHaveBeenCalled();
+
+      const on = decorating('<div>no links at all</div>', true);
+      on.editor.decorateCurrentBodyLinks();
+      expect(on.rewrite).not.toHaveBeenCalled();
+
+      const decorated = decorating('<div><span class="editor-link-preview-slot" data-url="https://a.test" data-original-html="https://a.test"></span></div>', true);
+      decorated.editor.decorateCurrentBodyLinks();
+      expect(decorated.rewrite).not.toHaveBeenCalled();
+    });
+
+    it('decorates a newly pasted URL, keeping the caret handling and the image buttons (W6)', () => {
+      const { editor, body, rewrite } = decorating('<div>see https://a.test now</div>', true);
+      editor.decorateCurrentBodyLinks();
+      expect(rewrite).toHaveBeenCalledTimes(1);
+      expect(body.querySelector('.editor-link-preview-slot')).not.toBeNull();
+      expect(editor.hydrateInlineImageButtons).toHaveBeenCalled();
+    });
+
+    it('removes leftover slots when previews are turned off (W6)', () => {
+      const { editor, body, rewrite } = decorating('<div><span class="editor-link-preview-slot" data-url="https://a.test" data-original-html="https://a.test"></span></div>', false);
+      editor.decorateCurrentBodyLinks();
+      expect(rewrite).toHaveBeenCalledTimes(1);
+      expect(body.querySelector('.editor-link-preview-slot')).toBeNull();
+      expect(body.textContent).toContain('https://a.test');
+    });
+  });
+
+  describe('Backspace at the start of a line (contract section 4)', () => {
+    const backspace = () => ({ key: 'Backspace', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, isComposing: false, keyCode: 8, preventDefault: jasmine.createSpy('preventDefault') }) as unknown as KeyboardEvent;
+    function replay(html: string, startAt: (body: HTMLElement) => [Node, number]) {
+      const { editor, body, select } = textEditor();
+      editor.scheduleTextHistoryRefresh = () => undefined;
+      editor.onNoteBodyInput = () => undefined;
+      body.innerHTML = html;
+      body.focus();
+      select(...startAt(body));
+      const event = backspace();
+      editor.onNoteBodyKeyDown(event);
+      return { event, html: body.innerHTML };
+    }
+
+    it('removes the bullet of a middle list item and splits the list (fixture backspace-bullet-middle-of-list)', () => {
+      const { event, html } = replay('<ul><li>a</li><li>b</li><li>c</li></ul>', body => [body.querySelectorAll('li')[1].firstChild!, 0]);
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(html).toBe('<ul><li>a</li></ul><div>b</div><ul><li>c</li></ul>');
+    });
+
+    it('turns a heading into a plain line', () => {
+      const { event, html } = replay('<div>x</div><h2>a</h2>', body => [body.querySelector('h2')!.firstChild!, 0]);
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(html).toBe('<div>x</div><div>a</div>');
+    });
+
+    it('removes the bullet of the only item under a plain line without bulleting the line above (fixture backspace-first-bullet-under-plain)', () => {
+      const { html } = replay('<div>x</div><ul><li>a</li></ul>', body => [body.querySelector('li')!.firstChild!, 0]);
+      expect(html).toBe('<div>x</div><div>a</div>');
+    });
+
+    it('drops one quote level at the start of a quote line (fixture backspace-quote-start)', () => {
+      const { event, html } = replay('<blockquote><div>a</div></blockquote>', body => [body.querySelector('div')!.firstChild!, 0]);
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(html).toBe('<div>a</div>');
+    });
+
+    it('a second Backspace merges the plain line into the item above, which the browser does by itself (fixture backspace-second-press-merges)', () => {
+      const { event } = replay('<ul><li>a</li></ul><div>b</div>', body => [body.querySelector('div')!.firstChild!, 0]);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      document.execCommand('delete');
+      const body = host.querySelectorAll<HTMLElement>('[contenteditable]')[1];
+      expect(body.innerHTML).toBe('<ul><li>ab</li></ul>');
+    });
+
+    it('leaves a plain character delete to the browser', () => {
+      const { event } = replay('<ul><li>ab</li></ul>', body => [body.querySelector('li')!.firstChild!, 1]);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('InputComponent text drops', () => {
+  let host: HTMLElement;
+  beforeEach(() => { host = document.createElement('div'); document.body.appendChild(host); });
+  afterEach(() => { host.remove(); window.getSelection()?.removeAllRanges(); });
+
+  function drop(target: HTMLElement, data: Record<string, string>, editor: any) {
+    const transfer = new DataTransfer();
+    for (const [type, value] of Object.entries(data)) transfer.setData(type, value);
+    const rect = target.getBoundingClientRect();
+    target.addEventListener('drop', event => editor.onTextDrop(event as DragEvent), { once: true });
+    const event = new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true, clientX: rect.left + 4, clientY: rect.top + rect.height / 2 });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  it('inserts dropped html as plain text in the body (W16)', () => {
+    const body = document.createElement('div');
+    body.contentEditable = 'true';
+    body.style.cssText = 'font:16px sans-serif;min-height:40px;width:300px';
+    body.textContent = 'text';
+    host.append(body);
+    const editor = Object.create(InputComponent.prototype) as any;
+    Object.assign(editor, { noteBody: { nativeElement: body }, noteTitle: { nativeElement: document.createElement('div') }, queueEditorLinkDecoration: () => undefined });
+
+    const event = drop(body, { 'text/html': '<b style="color:red">bold</b>', 'text/plain': 'bold' }, editor);
+
+    expect(event.defaultPrevented).toBeTrue();
+    expect(body.querySelector('b')).toBeNull();
+    expect(body.textContent).toContain('bold');
+  });
+
+  it('inserts a dropped multi-line text as one line in the title (W16)', () => {
+    const title = document.createElement('div');
+    title.contentEditable = 'true';
+    title.style.cssText = 'font:16px sans-serif;min-height:40px;width:300px';
+    host.append(title);
+    const editor = Object.create(InputComponent.prototype) as any;
+    Object.assign(editor, { noteBody: undefined, noteTitle: { nativeElement: title }, onNoteTitleInput: jasmine.createSpy('onNoteTitleInput') });
+
+    drop(title, { 'text/plain': 'one\ntwo' }, editor);
+
+    expect(title.querySelector('br')).toBeNull();
+    expect(title.textContent).toBe('one two');
+    expect(editor.onNoteTitleInput).toHaveBeenCalled();
+  });
+
+  it('leaves file drops and moved inline images to the editor (W16)', () => {
+    const body = document.createElement('div');
+    host.append(body);
+    const editor = Object.create(InputComponent.prototype) as any;
+    Object.assign(editor, { noteBody: { nativeElement: body }, draggedInlineObject: document.createElement('div') });
+    const event = drop(body, { 'text/plain': 'x' }, editor);
+    expect(event.defaultPrevented).toBeFalse();
   });
 });

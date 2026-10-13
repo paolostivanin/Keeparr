@@ -26,16 +26,19 @@ import { MAX_INDENT_LEVEL, descendantIndexes, normalizeIndentLevel, normalizeInd
 import { canHideCheckboxes, checkBoxesToBodyHtml, escapeHtml, linesToCheckBoxes, splitBodyIntoLines, splitPastedLines } from 'src/app/utils/checklist-conversion';
 import { DrawingHistory } from 'src/app/utils/drawing-history';
 import { Disposables } from 'src/app/utils/disposables';
-import { ChecklistHistory, normalizeChecklist, setChecklistIndent, toggleChecklistDone } from 'src/app/utils/checklist-model';
+import { ChecklistHistory, mergeChecklistRow, normalizeChecklist, setChecklistIndent, splitChecklistRow, toggleChecklistDone } from 'src/app/utils/checklist-model';
 import { decorateLinks, extractUrlsFromHtml, stripEditorChrome } from 'src/app/utils/editor-body';
 import { noteBgImagePath, noteColorToHex, noteSurfaceVars } from 'src/app/utils/note-color';
+import { hasMeaningfulBody, titleHtml, titleText } from 'src/app/utils/keeparr-html';
 import { environment } from 'src/environments/environment';
 import {
-  EditorSessionPersister, EditorSessionTracker, NEW_NOTE_SESSION_KEY, applyEditorDraft, emptyEditorDraft,
+  EditorSessionPersister, EditorSessionTracker, NEW_NOTE_SESSION_KEY, applyEditorDraft, dirtyEditorFields, emptyEditorDraft,
   type EditorDraft, type EditorSessionRecord
 } from 'src/app/utils/editor-session';
 
 declare var Snackbar: any;
+/** Pastes up to this many lines go through editing commands (undoable); longer ones use the faster Range insertion. */
+const LONG_PASTE_LINES = 500
 type InputLengthI = { title?: number, body?: number, cb?: number }
 type DrawingTool = 'select' | 'pen' | 'marker' | 'highlighter' | 'eraser'
 type DrawingPoint = { x: number, y: number }
@@ -180,6 +183,8 @@ export class InputComponent implements OnInit {
   isSavingCollaborators = false
   labelMenuError = ''
   hasBackgroundImage = false
+  /** The canvas changed since its image was last encoded into `images`; a note opened and closed untouched re-encodes nothing. */
+  private drawingDirty = false
   /** Stored (light) color and background image of the open note; never read back from the DOM. */
   noteColor = ''
   noteBgImage = ''
@@ -429,15 +434,18 @@ export class InputComponent implements OnInit {
   }
 
   private showCheckboxes() {
-    const body = this.noteBody?.nativeElement
-    const { lines, leftoverHtml } = body ? splitBodyIntoLines(body) : { lines: [], leftoverHtml: '' }
+    const live = this.noteBody?.nativeElement
+    // Convert what would be saved: the editor's own chrome (image delete buttons, link preview cards) is not content.
+    const saved = document.createElement('div')
+    saved.innerHTML = live ? this.cleanEditorBodyForSave(live.innerHTML) : ''
+    const { lines, leftoverHtml } = splitBodyIntoLines(saved)
     this.syncCboxDomIntoModel()
     const added = linesToCheckBoxes(lines, this.checkBoxes)
     this.checkBoxes = [...this.checkBoxes, ...added]
     this.isHybridNote = this.hasMeaningfulBody(leftoverHtml)
     this.isCbox.next(true)
     this.cd.detectChanges()
-    this.restoreBodyHtmlAfterTemplateSwap(leftoverHtml)
+    this.restoreBodyHtmlAfterTemplateSwap(this.decorateLinksForEditor(leftoverHtml))
     this.updateInputLength({ body: this.cleanEditorBodyForSave(leftoverHtml).length, cb: this.checkBoxes.length })
     this.resetCboxHistory()
     this.queueCoEditAutosave()
@@ -460,7 +468,8 @@ export class InputComponent implements OnInit {
     }
     const checkedCount = this.checkBoxes.filter(item => item.done).length
     if (checkedCount && !confirm(`Hide checkboxes? ${checkedCount} checked ${checkedCount === 1 ? 'item' : 'items'} will be removed.`)) return
-    const keptBody = this.isHybridNote ? (this.noteBody?.nativeElement.innerHTML || '') : ''
+    // The kept body goes back through the saved form (no hydrated preview cards or tool buttons) and is decorated afresh.
+    const keptBody = this.isHybridNote && this.noteBody ? this.cleanEditorBodyForSave(this.noteBody.nativeElement.innerHTML) : ''
     const html = keptBody + checkBoxesToBodyHtml(this.checkBoxes)
     this.checkBoxes = []
     this.isHybridNote = false
@@ -468,7 +477,7 @@ export class InputComponent implements OnInit {
     this.cd.detectChanges()
     const body = this.noteBody?.nativeElement
     if (body) {
-      body.innerHTML = html
+      body.innerHTML = this.decorateLinksForEditor(html)
       this.hydrateEditorLinkPreviews()
       this.hydrateInlineImageButtons()
       body.focus()
@@ -521,15 +530,29 @@ export class InputComponent implements OnInit {
     return this.isHybridNote;
   }
 
+  /** Inline formatting works in the body and in checklist rows (a drawing note has neither). */
   canFormatText(): boolean {
-    return !this.isCbox.value || this.hasHybridBody()
+    return !this.isDrawingNote
+  }
+
+  /** H1/H2/Aa and the list buttons are for the body only: disabled while the caret is in a row or the title. */
+  blockFormatEnabled(): boolean {
+    return !!this.noteBody?.nativeElement && !this.selectionInRow() && !this.selectionInTitle()
+  }
+
+  private selectionInRow(): boolean {
+    const node = window.getSelection()?.anchorNode
+    const element = node ? (node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement) : null
+    return !!element?.closest('[data-cbox-id]')
+  }
+
+  private selectionInTitle(): boolean {
+    const node = window.getSelection()?.anchorNode
+    return !!node && !!this.noteTitle?.nativeElement?.contains(node)
   }
 
   private hasMeaningfulBody(value?: string | null) {
-    const div = document.createElement('div')
-    div.innerHTML = value || ''
-    return (div.textContent || div.innerText || '').replace(/\u00a0/g, ' ').trim().length > 0
-      || !!div.querySelector('img, .editor-link-preview-slot')
+    return hasMeaningfulBody(value)
   }
 
   private updateCheckboxMenuLabel() {
@@ -549,16 +572,47 @@ export class InputComponent implements OnInit {
 
   //? note  -----------------------------------------------------
 
-  async saveNote(closeAfterSave = true): Promise<boolean | void> {
+  /** The create in progress. A repeated outside click or Back during it joins this save instead of adding a second note. */
+  private createInFlight?: Promise<boolean | void>
+  /** Autosaves of an open note that have not finished. Closing waits for all of them, so updates run one after another. */
+  private readonly autosavesInFlight = new Set<Promise<boolean | void>>()
+
+  saveNote(closeAfterSave = true): Promise<boolean | void> {
+    if (!this.isEditing) {
+      if (this.createInFlight) return this.createInFlight
+      const create: Promise<boolean | void> = this.saveNoteNow(closeAfterSave)
+      this.createInFlight = create
+      const settle = () => { if (this.createInFlight === create) this.createInFlight = undefined }
+      create.then(settle, settle)
+      return create
+    }
+    if (!closeAfterSave) {
+      const autosave: Promise<boolean | void> = this.saveNoteNow(false)
+      this.autosavesInFlight.add(autosave)
+      const settle = () => { this.autosavesInFlight.delete(autosave) }
+      autosave.then(settle, settle)
+      return autosave
+    }
+    if (!this.autosavesInFlight.size) return this.saveNoteNow(true)
+    return this.saveAfterAutosaves()
+  }
+
+  private async saveAfterAutosaves(): Promise<boolean | void> {
+    // An autosave finishing may queue another one (registered before the first settles): wait until none is left.
+    while (this.autosavesInFlight.size) await Promise.all([...this.autosavesInFlight].map(save => save.catch(() => undefined)))
+    return this.saveNoteNow(true)
+  }
+
+  private async saveNoteNow(closeAfterSave = true): Promise<boolean | void> {
     if (closeAfterSave) this.cboxInput?.nativeElement.blur()
-    if (this.isDrawingNote) this.syncDrawingImage()
+    if (this.isDrawingNote && this.drawingNeedsEncoding()) this.syncDrawingImage()
     if (this.isCbox.value && this.cboxPh?.nativeElement.innerHTML.trim()) {
       this.addCheckBoxFromPlaceholder()
     }
     const checkBoxesForSave = this.currentCheckBoxesForSave(closeAfterSave)
     let noteObj: NoteI = {
-      noteTitle: this.noteTitle.nativeElement.innerHTML,
-      noteBody: this.noteBody?.nativeElement.innerHTML ? this.cleanEditorBodyForSave(this.noteBody.nativeElement.innerHTML) : '',
+      noteTitle: this.editorTitleHtml(),
+      noteBody: this.editorBodyHtml(),
       pinned: this.notePin.nativeElement.dataset['pinned'] === "true", // converting string to bool,
       bgColor: noteColorToHex(this.noteColor),
       bgImage: this.noteBgImage,
@@ -780,12 +834,29 @@ export class InputComponent implements OnInit {
   // stored apart from the note and its outbox command: they only survive
   // interruptions and are removed once the note is durably saved or closed.
 
+  /**
+   * The title as it is stored. A drawing note has no title editor (the element is a hidden stand-in), so its title is the
+   * note's own; otherwise the live text, written back unchanged when the user did not change it (contract section 3).
+   */
+  private editorTitleHtml(): string {
+    if (this.isDrawingNote) return this.isEditing ? (this.noteToEdit?.noteTitle || '') : ''
+    const element = this.noteTitle?.nativeElement
+    if (!element) return this.isEditing ? (this.noteToEdit?.noteTitle || '') : ''
+    return titleHtml(titleText(element.innerHTML), this.isEditing ? (this.noteToEdit?.noteTitle || '') : '')
+  }
+
+  /** The body as it is stored. Without a live body element (a drawing note) it is the note's own body; a checklist-only note has none. */
+  private editorBodyHtml(): string {
+    const element = this.noteBody?.nativeElement
+    if (element) return element.innerHTML ? this.cleanEditorBodyForSave(element.innerHTML) : ''
+    return this.isDrawingNote && this.isEditing ? (this.noteToEdit?.noteBody || '') : ''
+  }
+
   /** What the user sees right now, without the side effects of saveNote(). */
   private liveEditorNote(): NoteI {
-    const bodyHtml = this.noteBody?.nativeElement.innerHTML
     return {
-      noteTitle: this.noteTitle.nativeElement.innerHTML,
-      noteBody: bodyHtml ? this.cleanEditorBodyForSave(bodyHtml) : '',
+      noteTitle: this.editorTitleHtml(),
+      noteBody: this.editorBodyHtml(),
       pinned: this.notePin.nativeElement.dataset['pinned'] === 'true',
       bgColor: noteColorToHex(this.noteColor),
       bgImage: this.noteBgImage,
@@ -816,8 +887,12 @@ export class InputComponent implements OnInit {
     return this.editorSession
   }
 
+  /** Set by any edit; a recovered draft that arrives after it must not overwrite what was typed meanwhile. */
+  private userInputSinceOpen = false
+
   /** Start tracking this editor and restore edits left behind by an interrupted session. */
   private beginEditorSession() {
+    this.userInputSinceOpen = false
     const tracker = this.ensureEditorSession()
     const sessions = this.notesService.editorSessions()
     if (!tracker || !sessions) return
@@ -829,12 +904,21 @@ export class InputComponent implements OnInit {
   }
 
   private restoreEditorSession(tracker: EditorSessionTracker, record: EditorSessionRecord) {
+    // Fields the user already touched since the editor opened keep what was typed; only the rest is restored.
+    let touched: Partial<EditorDraft> = {}
+    if (this.userInputSinceOpen) {
+      const live = this.editorDraftFromNote(this.liveEditorNote())
+      const fields = dirtyEditorFields(tracker.snapshot.base, live)
+      touched = Object.fromEntries(fields.map(field => [field, live[field]])) as Partial<EditorDraft>
+      record = { ...record, dirtyFields: record.dirtyFields.filter(field => !fields.includes(field)) }
+      if (!record.dirtyFields.length) return
+    }
     if (this.isEditing) {
       // Only the fields the user had changed are laid over the note as it is now.
-      this.loadNoteIntoEditor(applyEditorDraft(this.noteToEdit, record))
+      this.loadNoteIntoEditor(applyEditorDraft({ ...this.noteToEdit, ...touched } as NoteI, record))
       this.saveBaselineSnapshot = this.noteSaveSnapshot(this.noteToEdit)
     } else {
-      this.loadNoteIntoEditor(applyEditorDraft({ ...emptyEditorDraft() } as NoteI, record))
+      this.loadNoteIntoEditor(applyEditorDraft({ ...emptyEditorDraft(), ...touched } as NoteI, record))
       this.mobileNewNoteStarterDismissed = true
     }
     if (record.dirtyFields.includes('labels')) this.labelsDirty = true
@@ -883,7 +967,7 @@ export class InputComponent implements OnInit {
     }
     if (!this.editorSession) return Promise.resolve()
     try {
-      if (this.isDrawingNote) this.syncDrawingImage()
+      if (this.isDrawingNote && this.drawingNeedsEncoding()) this.syncDrawingImage()
     } catch {}
     return this.captureEditorSession().then(() => this.editorSessionPersister?.flush())
   }
@@ -971,6 +1055,11 @@ export class InputComponent implements OnInit {
 
   private normalizeCheckBoxes(checkBoxes: CheckboxI[] = []) {
     return normalizeChecklist(checkBoxes)
+  }
+
+  /** A row whose data is not a string (a future client's structured item) is shown with a label and never edited. */
+  isStructuredRow(cb: CheckboxI) {
+    return typeof cb.data !== 'string'
   }
 
   checkboxIndentLevel(cb?: CheckboxI) {
@@ -1178,6 +1267,7 @@ export class InputComponent implements OnInit {
     this.noteColor = ''
     this.noteBgImage = ''
     this.applyNoteSurface()
+    this.drawingDirty = false
     //
     this.checkBoxes = []
     this.cboxSuggestionEligibleIds.clear()
@@ -1229,6 +1319,8 @@ export class InputComponent implements OnInit {
     event.preventDefault()
     let text = event.clipboardData?.getData('text/plain');
     let target = event.currentTarget as HTMLDivElement
+    // The title is one line of plain text.
+    if (this.noteTitle?.nativeElement === target && text) text = text.replace(/\s*[\r\n]+\s*/g, ' ')
     this.insertPlainTextAtCursor(target, text || '')
     if (text) this.dismissMobileNewNoteStarters()
     if (this.noteBody?.nativeElement === target) {
@@ -1253,13 +1345,15 @@ export class InputComponent implements OnInit {
         range = document.createRange()
         range.setStartAfter(previewSlot)
         range.collapse(true)
-      } else {
-        range.deleteContents()
+        selection.removeAllRanges()
+        selection.addRange(range)
       }
     } else {
       range = document.createRange()
       range.selectNodeContents(target)
       range.collapse(false)
+      selection?.removeAllRanges()
+      selection?.addRange(range)
     }
 
     const lines = text.replace(/\r\n?/g, '\n').split('\n')
@@ -1267,13 +1361,17 @@ export class InputComponent implements OnInit {
     // skipped there: as with Enter on an empty bullet it would end the list and put the rest of the paste outside it.
     const startElement = range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer as Element : range.startContainer.parentElement
     const listItem = startElement?.closest('li')
-    if (listItem && target.contains(listItem) && selection?.rangeCount && target.contains(selection.getRangeAt(0).startContainer)) {
+    if (listItem && target.contains(listItem)) {
       lines.filter(line => line !== '').forEach((line, index) => {
         if (index > 0) document.execCommand('insertParagraph')
         document.execCommand('insertText', false, line)
       })
       return
     }
+    // Commands keep the caret where text goes and make the paste one undo step (Ctrl+Z); very long pastes use the
+    // Range path, which does not make the browser lay out every line while it inserts.
+    if (lines.length <= LONG_PASTE_LINES && this.insertLinesWithCommands(lines)) return
+    range.deleteContents()
     const fragment = document.createDocumentFragment()
     let lastNode: Node | null = null
     lines.forEach((line, index) => {
@@ -1293,6 +1391,21 @@ export class InputComponent implements OnInit {
     range.collapse(true)
     selection?.removeAllRanges()
     selection?.addRange(range)
+  }
+
+  /** Inserts lines with editing commands; false when the browser refused the first one (nothing was inserted yet). */
+  private insertLinesWithCommands(lines: string[]) {
+    let performed = false
+    const run = (command: string, value?: string) => {
+      const done = document.execCommand(command, false, value)
+      performed ||= done
+      return done || performed
+    }
+    for (const [index, line] of lines.entries()) {
+      if (index > 0 && !run('insertLineBreak')) return false
+      if (line && !run('insertText', line)) return false
+    }
+    return true
   }
 
   private clipboardImageFiles(event: ClipboardEvent): File[] {
@@ -1348,6 +1461,71 @@ export class InputComponent implements OnInit {
     await this.addImageFiles(event.dataTransfer.files, event)
   }
 
+  /**
+   * Dropped text or html is inserted as plain text at the drop point, like a paste (title and rows are one line). Files and
+   * moved inline images keep going to `dropImages` on the editor.
+   */
+  onTextDrop(event: DragEvent) {
+    const transfer = event.dataTransfer
+    if (!transfer || this.draggedInlineObject || transfer.files?.length) return
+    const types = Array.from(transfer.types || [])
+    if (!types.includes('text/plain') && !types.includes('text/html')) return
+    const target = event.currentTarget as HTMLElement
+    event.preventDefault()
+    event.stopPropagation()
+    let text = transfer.getData('text/plain')
+    if (!text && transfer.getData('text/html')) text = titleText(transfer.getData('text/html'))
+    if (!text) return
+
+    const documentWithCaret = document as Document & {
+      caretRangeFromPoint?: (x: number, y: number) => Range | null
+      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node, offset: number } | null
+    }
+    let drop = documentWithCaret.caretRangeFromPoint?.(event.clientX, event.clientY) ?? null
+    const position = !drop ? documentWithCaret.caretPositionFromPoint?.(event.clientX, event.clientY) : null
+    if (!drop && position) {
+      drop = document.createRange()
+      drop.setStart(position.offsetNode, position.offset)
+    }
+    const selection = window.getSelection()
+    // Text dragged within a field moves: the dragged selection goes first (the live drop range follows the change).
+    if (selection?.rangeCount && !selection.isCollapsed && target.contains(selection.anchorNode) && transfer.dropEffect !== 'copy') {
+      selection.deleteFromDocument()
+    }
+    target.focus()
+    if (drop && target.contains(drop.commonAncestorContainer)) {
+      drop.collapse(true)
+      selection?.removeAllRanges()
+      selection?.addRange(drop)
+    }
+    this.insertTextIntoEditable(target, text)
+  }
+
+  /** Plain text into the editable the user acted on: body (lines), title or row (one line), or the empty "List item" row. */
+  private insertTextIntoEditable(target: HTMLElement, text: string) {
+    if (this.noteBody?.nativeElement === target) {
+      this.insertPlainTextAtCursor(target, text)
+      this.queueEditorLinkDecoration()
+      return
+    }
+    if (this.cboxPh?.nativeElement === target) {
+      const lines = splitPastedLines(text)
+      if (!lines.length) return
+      this.cboxPh.nativeElement.replaceChildren()
+      this.addCheckBoxes(lines.map(escapeHtml))
+      this.cd.detectChanges()
+      this.focusLastCboxInput()
+      return
+    }
+    document.execCommand('insertText', false, text.replace(/\s*[\r\n]+\s*/g, ' '))
+    if (this.noteTitle?.nativeElement === target) {
+      this.onNoteTitleInput()
+    } else {
+      const id = Number(target.dataset['cboxId'])
+      if (Number.isFinite(id)) this.onCboxInput(id, target as HTMLDivElement)
+    }
+  }
+
   dragOverImages(event: DragEvent) {
     event.preventDefault()
     if (event.dataTransfer) event.dataTransfer.dropEffect = this.draggedInlineObject ? 'move' : 'copy'
@@ -1374,8 +1552,9 @@ export class InputComponent implements OnInit {
     if (!fileList?.length) return
     const files = Array.from(fileList).filter(file => file.type.startsWith('image/'))
     if (!files.length) return
-    if (this.isCbox.value) {
-      this.isCbox.next(false)
+    // A checklist keeps its items: the image goes into a body shown above them (the note becomes hybrid).
+    if (this.isCbox.value && !this.isHybridNote) {
+      this.isHybridNote = true
       this.cd.detectChanges()
     }
     if (event) this.placeCaretFromDrop(event)
@@ -1699,23 +1878,34 @@ export class InputComponent implements OnInit {
   //? checkboxes  --------------------------------------------------
 
   cboxPhKeyDown($event: KeyboardEvent) {
-    const isLetter = /^[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{};':"²^\\|,.<>\/?éèçµ]$/i.test($event.key)
-    // ex : if he clicked the f1 btn for example, nothing would happen, otherwise : 
-    if (!isLetter) return
-    $event.preventDefault()
-    let enteredValue = $event.key
-    this.addCheckBox(enteredValue) // a new checkbox will appear in the html
+    if ($event.isComposing || $event.keyCode === 229) return
+    if (this.handleCboxHistoryKey($event)) return
+    // Rows are created from what was typed (input), never from the key: Ctrl+V, Enter and Space make nothing here.
+    if ($event.key === 'Enter') $event.preventDefault()
+  }
+
+  /** Typed text in the placeholder becomes a row. Text of an input method is taken when the composition ends. */
+  cboxPhInput(event?: Event) {
+    if ((event as InputEvent | undefined)?.isComposing) return
+    const placeholder = this.cboxPh?.nativeElement
+    if (!placeholder) return
+    const text = (placeholder.textContent || '').replace(/\u00a0/g, ' ')
+    placeholder.replaceChildren()
+    if (!text.trim()) return
+    this.addCheckBox(escapeHtml(text))
     this.cd.detectChanges()
     this.focusLastCboxInput()
   }
 
-  cboxPhInput() {
-    const value = this.cboxPh?.nativeElement.innerHTML || ''
-    if (!value.trim()) return
-    this.cboxPh?.nativeElement.replaceChildren()
-    this.addCheckBox(value)
-    this.cd.detectChanges()
-    this.focusLastCboxInput()
+  /** Ctrl/Cmd+Z, Shift+Z and Ctrl+Y undo or redo the checklist structure when it was the latest change. */
+  private handleCboxHistoryKey(event: KeyboardEvent): boolean {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return false
+    const key = event.key.toLowerCase()
+    const command = key === 'z' ? (event.shiftKey ? 'redo' : 'undo') : key === 'y' ? 'redo' : undefined
+    if (!command || !this.shouldUseCboxHistory(command)) return false
+    event.preventDefault()
+    this.stepCboxHistory(command)
+    return true
   }
 
   cboxPhClick() {
@@ -1752,8 +1942,17 @@ export class InputComponent implements OnInit {
   /** Several pasted lines in a row become one row each; the text after the caret ends up behind the last line. */
   onCboxPaste(event: ClipboardEvent, id: number) {
     const lines = splitPastedLines(event.clipboardData?.getData('text/plain') || '')
-    if (lines.length < 2) return
+    // Rows take plain text only: a single line is inserted as text too, never the clipboard's markup.
     event.preventDefault()
+    if (lines.length < 2) {
+      if (lines.length) {
+        const row = event.currentTarget as HTMLDivElement
+        row.focus()
+        document.execCommand('insertText', false, lines[0])
+        this.onCboxInput(id, row)
+      }
+      return
+    }
     const row = event.currentTarget as HTMLDivElement
     const tail = this.takeCboxTextAfterCaret(row)
     row.append(document.createTextNode(lines[0]))
@@ -1807,12 +2006,21 @@ export class InputComponent implements OnInit {
     if (value.trim()) this.addCheckBox(value)
   }
 
+  /** A mouse press focuses the row itself and the browser puts the caret at the click; focus handling must leave it there. */
+  private cboxPointerFocus = false
+
+  cboxInputMouseDown() {
+    this.cboxPointerFocus = true
+    setTimeout(() => { this.cboxPointerFocus = false }, 0)
+  }
+
   cboxInputFocus(event: FocusEvent) {
     const el = event.target as HTMLDivElement
     if (this.cboxSuggestionBlurTimer) clearTimeout(this.cboxSuggestionBlurTimer)
     const focusedId = Number(el.dataset['cboxId'])
     this.activeCboxSuggestionRowId = Number.isFinite(focusedId) ? focusedId : undefined
     this.rememberTextHistoryTarget(el)
+    if (this.cboxPointerFocus) return
     setTimeout(() => {
       const id = Number(el.dataset['cboxId'])
       const pending = this.pendingCboxFocusPoint
@@ -2065,40 +2273,104 @@ export class InputComponent implements OnInit {
       this.adjustCboxIndentLevel(id, $event.shiftKey ? -1 : 1)
       return
     }
+    if (this.handleCboxHistoryKey($event)) return
     if ($event.key === 'Enter') {
       $event.preventDefault()
-      // Insert the new row immediately after the row Enter was hit in,
-      // not at the end of the list — matches Google Keep's behavior.
-      const newCb = this.addCheckBox('', id)
-      this.cd.detectChanges()
-      const newEl = document.querySelector(`[data-cbox-id="${newCb.id}"]`) as HTMLDivElement
-      newEl?.focus()
+      this.splitCboxRowAtCaret(id, target)
+      return
     }
-    if ($event.key === 'Backspace') {
-      const sel = window.getSelection()
-      const isAtStart = sel?.anchorOffset === 0 && sel?.focusOffset === 0
-      if (isAtStart) {
-        $event.preventDefault()
-        const idx = this.checkBoxes.findIndex(cb => cb.id === id)
-        if (idx > 0) {
-          const prevCb = this.checkBoxes[idx - 1]
-          const prevEl = document.querySelector(`[data-cbox-id="${prevCb.id}"]`) as HTMLDivElement
-          this.cboxTools(id).remove()
-          this.cd.detectChanges()
-          prevEl?.focus()
-          const range = document.createRange()
-          const sel = window.getSelection()
-          range.selectNodeContents(prevEl)
-          range.collapse(false)
-          sel?.removeAllRanges()
-          sel?.addRange(range)
-        } else {
-          this.cboxTools(id).remove()
-        }
-      }
+    if ($event.key === 'Backspace' && this.isCaretAtRowStart(target)) {
+      $event.preventDefault()
+      this.backspaceAtRowStart(id, target)
     }
   }
 
+  /** Enter: the row keeps the text before the caret, a new row after it gets the rest (formatting kept on both sides). */
+  private splitCboxRowAtCaret(id: number, row: HTMLDivElement) {
+    this.syncCboxDomIntoModel()
+    const tail = this.takeCboxTextAfterCaret(row)
+    const split = splitChecklistRow(this.checkBoxes, id, row.innerHTML, tail)
+    if (!split) return
+    const created = split.find(cb => !this.checkBoxes.some(existing => existing.id === cb.id))!
+    this.checkBoxes = split
+    this.cboxSuggestionEligibleIds.add(created.id)
+    this.inputLength.next({ ...this.inputLength.value, cb: this.checkBoxes.length })
+    this.pushCboxHistorySnapshot()
+    this.queueCoEditAutosave()
+    this.cd.detectChanges()
+    const next = document.querySelector(`[data-cbox-id="${created.id}"]`)
+    if (next instanceof HTMLElement) this.focusCboxInputAtStart(next)
+  }
+
+  /** True when the caret is collapsed at the very start of the row: nothing but empty markup before it. */
+  private isCaretAtRowStart(row: HTMLElement) {
+    const selection = window.getSelection()
+    if (!selection?.rangeCount || !selection.isCollapsed || !row.contains(selection.anchorNode)) return false
+    const before = document.createRange()
+    before.setStart(row, 0)
+    before.setEnd(selection.anchorNode!, selection.anchorOffset)
+    return before.toString() === '' && !before.cloneContents().querySelector('img, br')
+  }
+
+  /** Backspace at a row's start: an empty row is deleted (caret to the end of the previous row), text moves into the previous visible row. */
+  private backspaceAtRowStart(id: number, row: HTMLDivElement) {
+    this.syncCboxDomIntoModel()
+    const current = this.checkBoxes.find(cb => cb.id === id)
+    if (!current) return
+    const sameSection = (cb: CheckboxI) => !this.preferences.value.moveCompletedChecklistItemsToBottom || cb.done === current.done
+    const visibleIds = Array.from(document.querySelectorAll<HTMLElement>('[data-cbox-id]'))
+      .map(element => Number(element.dataset['cboxId']))
+      .filter(rowId => { const cb = this.checkBoxes.find(item => item.id === rowId); return !!cb && sameSection(cb) })
+    const previousId = visibleIds[visibleIds.indexOf(id) - 1]
+    const previousElement = previousId === undefined ? null : document.querySelector<HTMLElement>(`[data-cbox-id="${previousId}"]`)
+    const junction = previousElement?.textContent?.length ?? 0
+    const merged = mergeChecklistRow(this.checkBoxes, id, visibleIds)
+    if (!merged) return
+    this.checkBoxes = merged
+    this.cboxSuggestionEligibleIds.delete(id)
+    this.cboxSuggestionDraftValues.delete(id)
+    this.dismissedCboxSuggestionIds.delete(id)
+    if (this.activeCboxSuggestionRowId === id) this.activeCboxSuggestionRowId = undefined
+    this.inputLength.next({ ...this.inputLength.value, cb: this.checkBoxes.length })
+    this.pushCboxHistorySnapshot()
+    this.queueCoEditAutosave()
+    this.cd.detectChanges()
+    if (previousId === undefined) return
+    const target = document.querySelector<HTMLElement>(`[data-cbox-id="${previousId}"]`)
+    if (!target) return
+    target.focus()
+    this.placeCaretAtTextOffset(target, junction)
+  }
+
+  private placeCaretAtTextOffset(element: HTMLElement, offset: number) {
+    const range = document.createRange()
+    range.selectNodeContents(element)
+    range.collapse(false)
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+    let remaining = offset
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const length = node.textContent?.length ?? 0
+      if (remaining <= length) {
+        range.setStart(node, remaining)
+        range.collapse(true)
+        break
+      }
+      remaining -= length
+    }
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+  }
+
+  private focusCboxInputAtStart(el: HTMLElement) {
+    el.focus()
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    range.collapse(true)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+  }
 
   cboxPrepareDrag(id: number) {
     this.dragReadyCboxId = id
@@ -2137,6 +2409,24 @@ export class InputComponent implements OnInit {
     })
   }
 
+  /** The title is one line of plain text: Enter moves on to the body (or the first row), and no formatting shortcut applies. */
+  onNoteTitleKeyDown(event: KeyboardEvent) {
+    if (event.isComposing || event.keyCode === 229) return
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      this.focusAfterTitle()
+      return
+    }
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && ['b', 'i', 'u'].includes(event.key.toLowerCase())) event.preventDefault()
+  }
+
+  private focusAfterTitle() {
+    const body = this.noteBody?.nativeElement
+    const row = document.querySelector<HTMLElement>('[data-cbox-id]')
+    const next = body ?? row ?? this.cboxPh?.nativeElement
+    if (next) this.focusCboxInputAtStart(next)
+  }
+
   onNoteTitleInput() {
     this.dismissMobileNewNoteStarters()
     this.updateInputLength({ title: this.noteTitle.nativeElement.innerHTML.length })
@@ -2144,6 +2434,7 @@ export class InputComponent implements OnInit {
   }
 
   private queueCoEditAutosave() {
+    this.userInputSinceOpen = true
     this.queueEditorSessionCapture()
     if (!this.isEditing || !this.noteToEdit.id || !this.isSharedEditingNote()) return
     this.autoSaveSubject.next()
@@ -2171,12 +2462,24 @@ export class InputComponent implements OnInit {
     return stripEditorChrome(this.auth.canonicalImageHtml(html || ''))
   }
 
+  /**
+   * Keeps link preview slots in step with the links in the body. The body is rewritten only when that is needed (previews
+   * on and the set of URLs changed, or previews off and slots left over): a rewrite loses undo history, so pasting plain
+   * text or changing an unrelated preference must not do it. The caret stays where it was and the editor's image delete
+   * buttons are attached again.
+   */
   private decorateCurrentBodyLinks() {
     const body = this.noteBody?.nativeElement
     if (!body || this.destroyed) return
+    const slots = Array.from(body.querySelectorAll<HTMLElement>('.editor-link-preview-slot'))
+    const slotUrls = new Set(slots.map(slot => slot.dataset['url'] || ''))
+    const cleaned = this.cleanEditorBodyForSave(body.innerHTML)
+    const wanted = this.preferences.value.richLinkPreviews ? new Set(extractUrlsFromHtml(cleaned, Infinity)) : new Set<string>()
+    if (wanted.size === slotUrls.size && [...wanted].every(url => slotUrls.has(url))) return
     this.editorPreviewGeneration++
-    body.innerHTML = this.decorateLinksForEditor(this.cleanEditorBodyForSave(body.innerHTML))
+    this.updateHtmlWithCursorPreservation(body, this.decorateLinksForEditor(cleaned))
     this.hydrateEditorLinkPreviews()
+    this.hydrateInlineImageButtons()
   }
 
   private queueEditorLinkDecoration() {
@@ -2336,10 +2639,12 @@ export class InputComponent implements OnInit {
   @HostListener('document:mousedown', ['$event'])
   onDocumentMouseDown(event: MouseEvent) {
     const target = event.target instanceof Element ? event.target : null
-    if (this.showTextFormatting && !target?.closest('.text-format-toolbar, .text-format-trigger, .mobile-icon.format')) {
+    const inText = !!target && (this.noteBody?.nativeElement.contains(target) || this.noteTitle?.nativeElement.contains(target) || !!target.closest('[data-cbox-id]'))
+    // On the phone the bar is the editing aid: a tap in the text (moving the caret) must not close it.
+    const keepsBarOpen = inText && this.shouldUseMobileFormattingBar()
+    if (this.showTextFormatting && !keepsBarOpen && !target?.closest('.text-format-toolbar, .text-format-trigger, .mobile-icon.format')) {
       this.showTextFormatting = false
     }
-    const inText = !!target && (this.noteBody?.nativeElement.contains(target) || this.noteTitle?.nativeElement.contains(target))
     if (event.button === 0 && inText) this.pointerSelecting = true
   }
 
@@ -2418,9 +2723,8 @@ export class InputComponent implements OnInit {
       ? container as Element
       : container.parentElement
     if (!element) return false
-    const title = this.noteTitle?.nativeElement
     const body = this.noteBody?.nativeElement
-    return !!(title?.contains(element) || body?.contains(element))
+    return !!(body?.contains(element) || element.closest('[data-cbox-id]'))
   }
 
   private lastVisibleRangeRect(range: Range) {
@@ -2490,8 +2794,10 @@ export class InputComponent implements OnInit {
   applyTextFormat(command: 'h1' | 'h2' | 'body' | 'bullet' | 'indent' | 'outdent' | 'bold' | 'italic' | 'underline' | 'clear', event: Event) {
     event.preventDefault()
     event.stopPropagation()
-    // Lists only make sense in the body: with the caret in the title these would put a <ul> there.
-    if ((command === 'bullet' || command === 'indent' || command === 'outdent') && !this.selectionInBody()) return
+    // Block commands (headings, lists) are for the body; inline ones also work in checklist rows. The title takes none.
+    const inBody = this.selectionInBody()
+    const isBlockCommand = ['h1', 'h2', 'body', 'bullet', 'indent', 'outdent'].includes(command)
+    if (isBlockCommand ? !inBody : !(inBody || this.selectionInRow())) return
     if (command === 'h1') document.execCommand('formatBlock', false, 'H1')
     if (command === 'h2') document.execCommand('formatBlock', false, 'H2')
     if (command === 'body') document.execCommand('formatBlock', false, 'DIV')
@@ -2501,7 +2807,7 @@ export class InputComponent implements OnInit {
     if (command === 'bold') document.execCommand('bold')
     if (command === 'italic') document.execCommand('italic')
     if (command === 'underline') document.execCommand('underline')
-    if (command === 'clear') { this.removeBodyBullets(); document.execCommand('removeFormat') }
+    if (command === 'clear') { if (inBody) this.removeBodyBullets(); document.execCommand('removeFormat') }
     this.scheduleSelectionFormattingUpdate()
     this.updateInputLength({
       title: this.noteTitle?.nativeElement.innerHTML.length || 0,
@@ -2547,7 +2853,77 @@ export class InputComponent implements OnInit {
     }
   }
 
+  /**
+   * Backspace at the start of a line changes the line's kind instead of merging it: a list item loses its bullet (a second
+   * press merges with the line above), a heading becomes a plain line, a quote line drops one quote level.
+   */
+  private backspaceAtBodyLineStart(event: KeyboardEvent): boolean {
+    const body = this.noteBody?.nativeElement
+    const selection = window.getSelection()
+    if (!body || !selection?.rangeCount || !selection.isCollapsed || !body.contains(selection.anchorNode)) return false
+    const node = selection.anchorNode!
+    const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement
+    const block = element?.closest('li, h1, h2, h3, h4, h5, h6, blockquote')
+    if (!block || !body.contains(block)) return false
+    // A blockquote holds lines (divs); its line starts at the innermost block around the caret.
+    const line = block.tagName === 'BLOCKQUOTE' ? (element?.closest('div, p') ?? block) : block
+    if (!body.contains(line) || (line !== block && !block.contains(line))) return false
+    const before = document.createRange()
+    before.setStart(line, 0)
+    before.setEnd(node, selection.anchorOffset)
+    if (before.toString() !== '' || before.cloneContents().querySelector('img, br, hr, table')) return false
+    event.preventDefault()
+    if (block.tagName === 'LI') this.removeBulletOfItem(block as HTMLLIElement)
+    else if (block.tagName === 'BLOCKQUOTE') document.execCommand('outdent')
+    else document.execCommand('formatBlock', false, 'DIV')
+    this.scheduleTextHistoryRefresh()
+    return true
+  }
+
+  /**
+   * Takes one list item out of its list as a plain line (`<div>`), splitting the list around it, so the shape is the
+   * contract's rather than whatever the browser makes of a toggled list (`b<br>`). A nested item keeps the browser's own
+   * outdent. This edit is made on the DOM directly, so it is not a step of the browser's undo history.
+   */
+  private removeBulletOfItem(item: HTMLLIElement) {
+    const list = item.parentElement
+    const body = this.noteBody?.nativeElement
+    if (!list || !body || !/^(UL|OL)$/.test(list.tagName) || (list.parentElement && /^(UL|OL|LI)$/.test(list.parentElement.tagName))) {
+      this.removeBodyBullets()
+      return
+    }
+    const items = Array.from(list.children)
+    const index = items.indexOf(item)
+    const line = document.createElement('div')
+    const sublists: Element[] = []
+    for (const child of Array.from(item.childNodes)) {
+      if (child instanceof HTMLElement && /^(UL|OL)$/.test(child.tagName)) sublists.push(child)
+      else line.append(child)
+    }
+    if (!line.textContent && !line.querySelector('img')) line.replaceChildren(document.createElement('br'))
+    const rest = items.slice(index + 1)
+    const tail = rest.length ? list.cloneNode(false) as HTMLElement : null
+    if (tail) {
+      if (list.tagName === 'OL') tail.setAttribute('start', String((Number(list.getAttribute('start')) || 1) + index + 1))
+      tail.append(...rest)
+    }
+    list.after(line, ...sublists, ...(tail ? [tail] : []))
+    item.remove()
+    if (!list.children.length) list.remove()
+    const caret = document.createRange()
+    caret.setStart(line, 0)
+    caret.collapse(true)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(caret)
+    this.onNoteBodyInput(body)
+  }
+
   onNoteBodyKeyDown(event: KeyboardEvent) {
+    if (event.key === 'Backspace' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      this.backspaceAtBodyLineStart(event)
+      return
+    }
     if (event.key !== 'Tab' || event.ctrlKey || event.metaKey || event.altKey) return
     const selection = window.getSelection()
     const depth = this.bodyListDepth(selection?.anchorNode ?? null)
@@ -2676,7 +3052,7 @@ export class InputComponent implements OnInit {
       this.startDrawingSelection(point)
       return
     }
-    this.isDrawing = true
+    this.isDrawing = true; this.drawingDirty = true
     this.drawingLastPoint = point
   }
 
@@ -2805,7 +3181,7 @@ export class InputComponent implements OnInit {
           y: handle.includes('s') ? rect.y : rect.y + rect.h
         }
       };
-      this.isDrawing = true;
+      this.isDrawing = true; this.drawingDirty = true;
       if (event.target && (event.target as HTMLElement).setPointerCapture) {
         (event.target as HTMLElement).setPointerCapture(event.pointerId);
       }
@@ -2835,14 +3211,14 @@ export class InputComponent implements OnInit {
           offset: { x: point.x - rect.x, y: point.y - rect.y },
           lastRect: rect
         }
-        this.isDrawing = true
+        this.isDrawing = true; this.drawingDirty = true
         return
       }
       this.clearDrawingSelection()
       this.drawingSelectionStart = point
       this.drawingSelection = { x: point.x, y: point.y, w: 0, h: 0 }
       this.updateDrawingSelectionStyle()
-      this.isDrawing = true
+      this.isDrawing = true; this.drawingDirty = true
     } catch (e) {
       console.error(e);
     }
@@ -3052,10 +3428,16 @@ export class InputComponent implements OnInit {
     this.showDrawingMoreMenu = false
   }
 
+  /** Re-encode only a canvas that changed, or one whose image was never encoded (a new drawing note). */
+  private drawingNeedsEncoding() {
+    return this.drawingDirty || !this.images.some(image => image.id === 'drawing')
+  }
+
   private syncDrawingImage(encoded?: string) {
     const canvas = this.drawingCanvas?.nativeElement
     if (!canvas) return
     const dataUrl = encoded ?? this.drawingDataUrl()
+    this.drawingDirty = false
     const drawing = { id: 'drawing', dataUrl, name: `Drawing|bg:${this.drawingBackground}`, placement: 'top' as const }
     const index = this.images.findIndex(image => image.id === 'drawing')
     if (index >= 0) this.images[index] = drawing
@@ -3429,7 +3811,6 @@ export class InputComponent implements OnInit {
   }
 
   private loadNoteIntoEditor(note: NoteI) {
-    this.noteTitle.nativeElement.innerHTML = note.noteTitle
     this.images = (note.images || []).map(image => ({ ...image, dataUrl: this.auth.authenticatedImageUrl(image.dataUrl) }))
     this.attachments = note.attachments || []
     this.isDrawingNote = this.images.some(image => image.id === 'drawing')
@@ -3437,6 +3818,7 @@ export class InputComponent implements OnInit {
     this.noteColor = note.bgColor || ''
     this.noteBgImage = note.bgImage || ''
     this.applyNoteSurface()
+    this.drawingDirty = false
     this.cboxSuggestionEligibleIds.clear()
     this.cboxSuggestionDraftValues.clear()
     this.dismissedCboxSuggestionIds.clear()
@@ -3444,12 +3826,6 @@ export class InputComponent implements OnInit {
     this.checkBoxes = this.normalizeCheckBoxes(note.checkBoxes || [])
     this.loadCompletedChecklistCollapseState(note)
     this.resetCboxHistory()
-    // Hybrid: latch BEFORE flipping isCbox so the noteBody ViewChild is
-    // present after change detection (otherwise the body assignment below
-    // would silently no-op when loading a hybrid note from a checklist-only
-    // previous editor state).
-    this.isHybridNote = !!note.isCbox && this.hasMeaningfulBody(note.noteBody)
-    this.isCbox.next(note.isCbox)
     this.isArchived = note.archived
     this.isTrashed = note.trashed
     this.binderName = note.binder || ''
@@ -3461,12 +3837,42 @@ export class InputComponent implements OnInit {
       if (label) label.added = noteLabel.added
     })
     this.labelsDirty = false
-    // Force the templates to materialize before we touch the body element.
-    this.cd.detectChanges()
-    if (this.noteBody) this.noteBody.nativeElement.innerHTML = this.decorateLinksForEditor(note.noteBody || '')
-    this.hydrateEditorLinkPreviews()
-    this.hydrateInlineImageButtons()
+    this.applyNoteToEditor(note, { preserveCaret: false })
     if (this.isDrawingNote) this.setupDrawingCanvas()
+  }
+
+  /**
+   * Shows a note's text content. Order matters: the mode flags (hybrid, checklist) decide which templates exist, so they
+   * are set and rendered first; writing the title or body before that lands in elements the template is about to replace
+   * and the next save would read an empty body. Shared by opening a note and by incoming remote versions.
+   */
+  private applyNoteToEditor(note: NoteI, options: { preserveCaret: boolean }) {
+    // Latch hybrid BEFORE flipping isCbox so the noteBody element exists after change detection.
+    this.isHybridNote = !!note.isCbox && this.hasMeaningfulBody(note.noteBody)
+    this.isCbox.next(note.isCbox)
+    this.cd.detectChanges()
+
+    // A drawing note has no title editor: its title stays the note's own (see editorTitleHtml).
+    const title = this.noteTitle?.nativeElement
+    if (title && !this.isDrawingNote) {
+      if (!options.preserveCaret) title.innerHTML = note.noteTitle
+      else if (title.innerHTML !== note.noteTitle) this.updateHtmlWithCursorPreservation(title, note.noteTitle)
+    }
+
+    const body = this.noteBody?.nativeElement
+    const nextBody = note.noteBody !== undefined || !options.preserveCaret ? this.decorateLinksForEditor(note.noteBody || '') : undefined
+    if (body && nextBody !== undefined && (!options.preserveCaret || body.innerHTML !== nextBody)) {
+      if (options.preserveCaret) this.updateHtmlWithCursorPreservation(body, nextBody)
+      else body.innerHTML = nextBody
+      // The replaced markup lacks the delete buttons and link previews the editor attaches after loading a note.
+      this.hydrateEditorLinkPreviews()
+      this.hydrateInlineImageButtons()
+    } else if (!options.preserveCaret) {
+      this.hydrateEditorLinkPreviews()
+      this.hydrateInlineImageButtons()
+    }
+    // The placeholders ("Title", "Take a note") follow the text just written.
+    if (!options.preserveCaret) this.cd.detectChanges()
   }
 
   //? tooltip  -----------------------------------------------------------
@@ -3893,10 +4299,15 @@ export class InputComponent implements OnInit {
       }
     }
     this.bindKeyboardOffset();
+    let previewsOn = this.preferences.value.richLinkPreviews;
     this.preferencesSubscription = this.preferences.preferences$.subscribe(() => {
       this.updateLastEditedTime();
       this.destroyTimePicker();
-      this.decorateCurrentBodyLinks();
+      // Only the link preview preference changes what the body contains.
+      if (this.preferences.value.richLinkPreviews !== previewsOn) {
+        previewsOn = this.preferences.value.richLinkPreviews;
+        this.decorateCurrentBodyLinks();
+      }
       this.cd.detectChanges();
     });
   }
@@ -4070,16 +4481,6 @@ export class InputComponent implements OnInit {
       return;
     }
     this.externalUpdatePending = false;
-    if (this.noteTitle?.nativeElement && this.noteTitle.nativeElement.innerHTML !== note.noteTitle) {
-      this.updateHtmlWithCursorPreservation(this.noteTitle.nativeElement, note.noteTitle);
-    }
-    const nextBody = note.noteBody !== undefined ? this.decorateLinksForEditor(note.noteBody || '') : undefined;
-    if (this.noteBody?.nativeElement && nextBody !== undefined && this.noteBody.nativeElement.innerHTML !== nextBody) {
-      this.updateHtmlWithCursorPreservation(this.noteBody.nativeElement, nextBody);
-      // The replaced markup lacks the delete buttons and link previews the editor attaches after loading a note.
-      this.hydrateEditorLinkPreviews();
-      this.hydrateInlineImageButtons();
-    }
     if (this.noteMain?.nativeElement) {
       this.noteColor = note.bgColor || '';
       this.noteBgImage = note.bgImage || '';
@@ -4105,10 +4506,14 @@ export class InputComponent implements OnInit {
       this.drawingHistory.reset(newDrawing.dataUrl);
       this.restoreDrawingHistory();
     }
-    this.isHybridNote = !!note.isCbox && this.hasMeaningfulBody(note.noteBody);
-    this.isCbox.next(note.isCbox);
+    // Modes first, then the text (a remote 'show checkboxes' or hybrid change must not be written into elements that are
+    // about to be replaced: the next close would save an empty body).
+    this.applyNoteToEditor(note, { preserveCaret: true });
     // The editor now shows this version: it is the new base for the next save.
-    this.noteToEdit = { ...this.noteToEdit, revision: note.revision ?? this.noteToEdit.revision, labels: note.labels || [] };
+    this.noteToEdit = {
+      ...this.noteToEdit, revision: note.revision ?? this.noteToEdit.revision, labels: note.labels || [],
+      noteTitle: note.noteTitle ?? this.noteToEdit.noteTitle, noteBody: note.noteBody ?? this.noteToEdit.noteBody
+    };
     this.saveBaselineSnapshot = this.noteSaveSnapshot(note);
     this.cd.detectChanges();
   }
