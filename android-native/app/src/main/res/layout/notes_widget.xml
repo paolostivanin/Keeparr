@@ -1,4 +1,4 @@
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_frame"
     android:layout_width="match_parent" android:layout_height="match_parent"
     android:background="@drawable/widget_background" android:padding="4dp"
     android:clipChildren="true" android:clipToPadding="true" android:clipToOutline="true">
