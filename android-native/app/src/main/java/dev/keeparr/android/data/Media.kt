@@ -70,6 +70,24 @@ class Media(private val app: KeeparrApplication) : MediaUploadPort {
         } catch (error: Exception) { file.delete(); throw error }
     }
 
+    /** Uploads a staged image on its own (no note needed) for an inline image; the staged file is removed on success. */
+    suspend fun uploadInline(staged: JSONObject): JSONObject = withContext(Dispatchers.IO) {
+        val connection = app.settings.snapshot()
+        val file = File(app.filesDir, "pending-media/${staged.getString("file")}")
+        require(file.exists()) { "The pending image file is unavailable." }
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("image", staged.getString("name"), file.asRequestBody(staged.getString("mime").toMediaType()))
+            .addFormDataPart("operationId", "inline-${staged.getString("file")}").build()
+        val response = app.repository.api.client(connection).newCall(app.repository.api.request("/api/uploads/images", connection).post(body).build())
+            .awaitResponse().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (!response.isSuccessful) throw ApiException(response.code, "Image upload failed (${response.code})")
+                JSONObject(text)
+            }
+        file.delete()
+        response
+    }
+
     override suspend fun upload(entry: Outbox, repository: KeeparrRepository): JSONObject = withContext(Dispatchers.IO) {
         val connection = repository.settings.snapshot()
         if (connection.profile != entry.profile) throw ApiException(401, "This upload belongs to a different Keeparr profile. Reconnect to that account to resume it.")

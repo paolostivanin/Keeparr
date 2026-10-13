@@ -36,22 +36,23 @@ import dev.keeparr.android.data.html.HtmlMode
  * Undo and Redo while the title (or nothing) has the focus, since the title is plain text.
  */
 @Composable
-fun FormatToolbar(focus: RichEditorFocus, canUndo: Boolean, canRedo: Boolean, onUndo: () -> Unit, onRedo: () -> Unit, contentColor: Color, modifier: Modifier = Modifier) {
+fun FormatToolbar(focus: RichEditorFocus, canUndo: Boolean, canRedo: Boolean, onUndo: () -> Unit, onRedo: () -> Unit, onCommand: () -> Unit,
+    contentColor: Color, modifier: Modifier = Modifier) {
     val field = focus.current
     val formatting = field?.formatting.orEmpty()
     val body = field?.mode == HtmlMode.Body
     val any = field != null
     Row(modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-        TextCommand("H1", "Heading 1", "h1" in formatting, body, contentColor) { field?.run(EditorCommand.H1) }
-        TextCommand("H2", "Heading 2", "h2" in formatting, body, contentColor) { field?.run(EditorCommand.H2) }
-        TextCommand("Aa", "Normal text", false, body, contentColor) { field?.run(EditorCommand.Normal) }
-        IconCommand(Icons.Outlined.FormatListBulleted, "Bulleted list", "bullet" in formatting, body, contentColor) { field?.run(EditorCommand.Bullet) }
-        IconCommand(Icons.Outlined.FormatIndentIncrease, "Indent", false, body, contentColor) { field?.run(EditorCommand.Indent) }
-        IconCommand(Icons.Outlined.FormatIndentDecrease, "Outdent", false, body, contentColor) { field?.run(EditorCommand.Outdent) }
-        IconCommand(Icons.Outlined.FormatBold, "Bold", "b" in formatting, any, contentColor) { field?.run(EditorCommand.Bold) }
-        IconCommand(Icons.Outlined.FormatItalic, "Italic", "i" in formatting, any, contentColor) { field?.run(EditorCommand.Italic) }
-        IconCommand(Icons.Outlined.FormatUnderlined, "Underline", "u" in formatting, any, contentColor) { field?.run(EditorCommand.Underline) }
-        IconCommand(Icons.Outlined.FormatClear, "Clear formatting", false, any, contentColor) { field?.run(EditorCommand.Clear) }
+        TextCommand("H1", "Heading 1", "h1" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.H1) }
+        TextCommand("H2", "Heading 2", "h2" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.H2) }
+        TextCommand("Aa", "Normal text", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Normal) }
+        IconCommand(Icons.Outlined.FormatListBulleted, "Bulleted list", "bullet" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.Bullet) }
+        IconCommand(Icons.Outlined.FormatIndentIncrease, "Indent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Indent) }
+        IconCommand(Icons.Outlined.FormatIndentDecrease, "Outdent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Outdent) }
+        IconCommand(Icons.Outlined.FormatBold, "Bold", "b" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Bold) }
+        IconCommand(Icons.Outlined.FormatItalic, "Italic", "i" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Italic) }
+        IconCommand(Icons.Outlined.FormatUnderlined, "Underline", "u" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Underline) }
+        IconCommand(Icons.Outlined.FormatClear, "Clear formatting", false, any, contentColor) { onCommand(); field?.run(EditorCommand.Clear) }
         IconCommand(Icons.AutoMirrored.Outlined.Undo, "Undo", false, canUndo, contentColor, onUndo)
         IconCommand(Icons.AutoMirrored.Outlined.Redo, "Redo", false, canRedo, contentColor, onRedo)
     }

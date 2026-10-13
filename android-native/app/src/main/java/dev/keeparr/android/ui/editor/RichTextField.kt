@@ -17,6 +17,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import dev.keeparr.android.data.html.EmbedSpan
 import dev.keeparr.android.data.html.HtmlMode
 import dev.keeparr.android.data.html.NoteHtml
+import dev.keeparr.android.ui.applyNoteColors
 import kotlinx.coroutines.launch
 
 /** What the formatting toolbar can ask of the focused field. */
@@ -124,7 +125,7 @@ val LocalRichEditorFocus = compositionLocalOf { RichEditorFocus() }
 fun rememberRichEditorState(mode: HtmlMode, key: String): RichEditorState = remember(mode, key) { RichEditorState(mode, key) }
 
 /** Colors of the editable view, from the note's foreground. */
-class EditorColors(val text: Int, val hint: Int, val link: Int, val highlight: Int, val cursor: Int)
+class EditorColors(val text: Int, val link: Int)
 
 /**
  * A body or checklist-row editor. [html] is what the note stores; [externalEdits] changes when something other than typing
@@ -175,11 +176,7 @@ fun RichTextField(
             view.textSize = textSizeSp
             view.hint = hint
             view.minLines = minLines
-            view.setTextColor(colors.text)
-            view.setHintTextColor(colors.hint)
-            view.setLinkTextColor(colors.link)
-            view.highlightColor = colors.highlight
-            view.textCursorDrawable?.setTint(colors.cursor)
+            view.applyNoteColors(colors.text, colors.link)
             view.onEmbedTap = onEmbedTap
             view.onImageContent = onImageContent
             view.controller.onSplit = { left, rest, caret ->

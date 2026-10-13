@@ -54,10 +54,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
-import dev.keeparr.android.data.Bullets
-import dev.keeparr.android.data.MAX_BULLET_LEVELS
 import dev.keeparr.android.data.*
 import dev.keeparr.android.reminders.ReminderScheduler
+import dev.keeparr.android.data.html.EmbedKind
+import dev.keeparr.android.data.html.EmbedSpan
+import dev.keeparr.android.data.html.HtmlMode
+import dev.keeparr.android.data.html.NoteHtml
+import dev.keeparr.android.ui.editor.*
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import org.json.JSONArray
@@ -66,17 +71,6 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
-
-// Lets the screen-level tap target reach the body EditText, which lives inside an AndroidView.
-internal class BodyEditorHandle {
-    var view: EditText? = null
-    fun focusEnd() {
-        val editor = view ?: return
-        editor.requestFocus()
-        editor.setSelection(editor.text.length)
-        editor.post { editor.context.getSystemService(InputMethodManager::class.java)?.showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT) }
-    }
-}
 
 @Composable
 internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, original: Note, reminders: List<JSONObject>, onClose: () -> Unit, onError: (String) -> Unit) {
@@ -110,52 +104,139 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     val syncStatus by app.repository.status.collectAsStateWithLifecycle()
     val selectedReminder = reminders.find { it.text("status") == "pending" && it.text("dueAtUtc").isNotBlank() &&
         (it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId) }
-    fun change(vararg touched: String, block: (JSONObject) -> Unit) { draftViewModel.change(*touched, block = block) }
+    fun change(vararg touched: String, external: Boolean = false, structural: Boolean = false, block: (JSONObject) -> Unit) =
+        draftViewModel.change(*touched, external = external, structural = structural, block = block)
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
     fun close() { action { draftViewModel.finish(); onClose() } }
-    val bodyHandle = remember { BodyEditorHandle() }
-    val keyboard = LocalSoftwareKeyboardController.current
-    val itemFocus = remember { mutableMapOf<Long, FocusRequester>() }
-    var pendingFocusItemId by remember { mutableStateOf<Long?>(null) }
-    fun checklistItemId(item: JSONObject, index: Int) = item.optLong("id", index.toLong())
+    val externalEdits by draftViewModel.externalEdits.collectAsStateWithLifecycle()
+    val canUndo by draftViewModel.canUndo.collectAsStateWithLifecycle()
+    val canRedo by draftViewModel.canRedo.collectAsStateWithLifecycle()
+    val restore by draftViewModel.restore.collectAsStateWithLifecycle()
+    val focus = remember { RichEditorFocus() }
+    val bodyState = rememberRichEditorState(HtmlMode.Body, "body")
+    val rowStates = remember { mutableMapOf<Long, RichEditorState>() }
+    val embeds = remember { EmbedBinder(app, scope) }
+    var pendingFocus by remember { mutableStateOf<Pair<Long, Int?>?>(null) }
+    var formatBar by rememberSaveable { mutableStateOf(false) }
+    var embedDetail by remember { mutableStateOf<Pair<EmbedSpan, Int>?>(null) }
+    // A checklist shows its body above the rows once the body has content (a hybrid note), and keeps showing it while it is edited.
+    var bodyShown by rememberSaveable(original.syncId) { mutableStateOf(NoteHtml.hasMeaningfulBody(original.body)) }
+    val hybrid = note.checklist && (bodyShown || NoteHtml.hasMeaningfulBody(note.body))
+    val hideDone = raw.optBoolean("completedChecklistCollapsed")
+    fun currentRows() = ChecklistModel.rows(draftViewModel.draft.value.optJSONArray("checkBoxes"))
+    fun applyRows(rows: List<JSONObject>, external: Boolean = false, structural: Boolean = false) =
+        change("checkBoxes", external = external, structural = structural) { it.put("checkBoxes", ChecklistModel.toJson(rows)) }
     // Without a row to follow, the new one goes at the end.
-    fun addChecklistItem(after: Int = -1) {
-        val id = System.currentTimeMillis()
-        change("checkBoxes") { it.put("checkBoxes", ChecklistAdapter.insertAfter(it.optJSONArray("checkBoxes") ?: JSONArray(), after, id)) }
-        pendingFocusItemId = id
+    fun addChecklistItem(afterId: Long? = null) {
+        val rows = currentRows()
+        val id = ChecklistModel.nextId(rows)
+        applyRows(ChecklistModel.insertAfter(rows, afterId, id = id), structural = true)
+        pendingFocus = id to 0
     }
-    // Text with line breaks can only come from a paste: Enter adds a row instead. Each line gets a row of its own.
-    fun editChecklistItem(index: Int, item: JSONObject, text: String) {
-        if (!text.contains('\n') && !text.contains('\r')) {
-            change("checkBoxes") { it.getJSONArray("checkBoxes").getJSONObject(index).put("data", NoteFormat.editedChecklistItem(item.opt("data"), text)) }
-            return
+    val checklistActions = remember(draftViewModel) {
+        object : ChecklistActions {
+            override fun setText(id: Long, html: String) {
+                val rows = currentRows()
+                val index = rows.indexOfFirst { ChecklistModel.idOf(it) == id }
+                if (index >= 0) applyRows(rows.toMutableList().also { it[index] = it[index].shallowCopy().put("data", html) })
+            }
+            override fun toggle(id: Long, done: Boolean) { ChecklistModel.toggleDone(currentRows(), id)?.let { applyRows(it, structural = true) } }
+            override fun split(id: Long, left: String, rest: List<String>, caret: Int) {
+                val rows = currentRows()
+                val first = ChecklistModel.nextId(rows)
+                ChecklistModel.splitInto(rows, id, left, rest)?.let {
+                    applyRows(it, external = true, structural = true)
+                    if (rest.isNotEmpty()) pendingFocus = (first + rest.size - 1) to caret
+                }
+            }
+            override fun backspaceAtStart(id: Long): Boolean {
+                val rows = currentRows()
+                val (previous, _) = neighbours(rows, draftViewModel.draft.value.optBoolean("completedChecklistCollapsed"), id)
+                val visible = rows.filter { !draftViewModel.draft.value.optBoolean("completedChecklistCollapsed") || !it.optBoolean("done") }.map { ChecklistModel.idOf(it) }
+                val row = rows.firstOrNull { ChecklistModel.idOf(it) == id } ?: return false
+                val merged = ChecklistModel.mergeIntoPrevious(rows, id, visible) ?: return !ChecklistModel.isStructured(row)
+                val junction = previous?.takeIf { !ChecklistModel.isStructured(it) }?.let { NoteHtml.parse(it.getString("data"), HtmlMode.Row).length }
+                applyRows(merged, external = true, structural = true)
+                if (previous != null) pendingFocus = ChecklistModel.idOf(previous) to junction
+                return true
+            }
+            override fun moveUp(id: Long) {
+                val rows = currentRows()
+                val (previous, _) = neighbours(rows, draftViewModel.draft.value.optBoolean("completedChecklistCollapsed"), id)
+                if (previous != null) ChecklistModel.moveBefore(rows, id, ChecklistModel.idOf(previous))?.let { applyRows(it, external = true, structural = true) }
+            }
+            override fun moveDown(id: Long) {
+                val rows = currentRows()
+                val hidden = draftViewModel.draft.value.optBoolean("completedChecklistCollapsed")
+                val visible = rows.filter { !hidden || !it.optBoolean("done") }
+                val position = visible.indexOfFirst { ChecklistModel.idOf(it) == id }
+                if (position < 0 || position >= visible.lastIndex) return
+                val before = visible.getOrNull(position + 2)?.let { ChecklistModel.idOf(it) }
+                ChecklistModel.moveBefore(rows, id, before)?.let { applyRows(it, external = true, structural = true) }
+            }
+            override fun setIndent(id: Long, level: Int) { ChecklistModel.setIndent(currentRows(), id, level)?.let { applyRows(it, structural = true) } }
+            override fun remove(id: Long) { ChecklistModel.remove(currentRows(), id)?.let { applyRows(it, external = true, structural = true) } }
         }
-        val lines = ChecklistAdapter.lines(text)
-        val firstId = System.currentTimeMillis()
-        change("checkBoxes") { it.put("checkBoxes", ChecklistAdapter.splitRow(it.getJSONArray("checkBoxes"), index, lines, firstId)) }
-        if (lines.size > 1) pendingFocusItemId = firstId + lines.size - 2
     }
     // Tapping blank editor space behaves like tapping the end of the content.
     fun focusEditorEnd() {
         if (note.checklist) {
-            val collapsed = raw.optBoolean("completedChecklistCollapsed")
-            val last = note.items.withIndex().lastOrNull { (_, item) ->
-                (!collapsed || !item.optBoolean("done")) && NoteFormat.checklistItemEditable(item.opt("data"))
-            }
-            if (last == null) addChecklistItem() else pendingFocusItemId = checklistItemId(last.value, last.index)
-        } else if (NoteFormat.editable(note.body)) bodyHandle.focusEnd()
+            val last = note.items.lastOrNull { (!hideDone || !it.optBoolean("done")) && !ChecklistModel.isStructured(it) }
+            if (last == null) addChecklistItem() else pendingFocus = ChecklistModel.idOf(last) to null
+        } else bodyState.focus()
     }
     fun showCheckboxes() {
-        val firstId = System.currentTimeMillis()
-        var added = emptyList<JSONObject>()
-        change { added = NoteFormat.showCheckboxes(it, firstId) }
-        if (added.isEmpty()) addChecklistItem() else pendingFocusItemId = added.last().optLong("id")
+        val rows = currentRows()
+        val (items, body) = ChecklistModel.show(rows, note.body)
+        change("checkBoxes", external = true, structural = true) { it.put("isCbox", true).put("noteBody", body).put("checkBoxes", ChecklistModel.toJson(items)) }
+        bodyShown = NoteHtml.hasMeaningfulBody(body)
+        if (items.size == rows.size) addChecklistItem() else pendingFocus = ChecklistModel.idOf(items.last()) to null
     }
-    fun hideCheckboxes() { change { NoteFormat.hideCheckboxes(it) } }
-    // The new row is composed a frame after the draft changes, so retry on every draft update until its requester exists.
-    LaunchedEffect(pendingFocusItemId, draftGeneration) {
-        val requester = pendingFocusItemId?.let { itemFocus[it] } ?: return@LaunchedEffect
-        if (runCatching { requester.requestFocus() }.isSuccess) { keyboard?.show(); pendingFocusItemId = null }
+    fun hideCheckboxes() {
+        ChecklistModel.hide(currentRows(), note.body)?.let { (items, body) ->
+            change("checkBoxes", external = true, structural = true) { it.put("isCbox", false).put("noteBody", body).put("checkBoxes", ChecklistModel.toJson(items)) }
+        }
+    }
+    // The new row is composed a frame after the draft changes, so retry on every draft update until its field exists.
+    LaunchedEffect(pendingFocus, draftGeneration) {
+        val (id, caret) = pendingFocus ?: return@LaunchedEffect
+        val state = rowStates[id]
+        if (state?.view != null) { state.focus(caret); pendingFocus = null }
+    }
+    // Undo and redo put the caret back where the step was recorded, once the fields have been reset.
+    LaunchedEffect(restore) {
+        val hint = restore ?: return@LaunchedEffect
+        val state = when (val key = hint.focusKey) {
+            null -> null
+            "body" -> bodyState
+            else -> key.removePrefix("row:").toLongOrNull()?.let { rowStates[it] }
+        }
+        val selection = hint.selection
+        if (state?.view != null && selection != null) state.focus(selection[0], selection[1])
+        draftViewModel.consumeRestore(hint)
+    }
+    LaunchedEffect(draftViewModel, focus) { draftViewModel.trackFocus { focus.current?.key to focus.current?.selection() } }
+    fun insertInline(html: String) {
+        val view = bodyState.view
+        if (view != null) {
+            val caret = if (view.hasFocus()) view.selectionEnd.coerceAtLeast(0) else view.text.length
+            view.edit { text -> view.controller.insertEmbed(text, caret, html) }
+        } else {
+            bodyShown = true
+            change("noteBody", external = true, structural = true) { it.put("noteBody", it.optString("noteBody") + html + "<div><br></div>") }
+        }
+    }
+    // Online the picture is uploaded now and lands in the body at the caret; offline it joins the note's images and syncs later.
+    fun addImage(uri: android.net.Uri) = action {
+        val staged = Media(app).stage(uri)
+        if (!InlineImages.isInlineImage(staged)) {
+            draftViewModel.flushAndQueueSync(); app.repository.attach(Note(draftViewModel.draft.value), staged)
+        } else {
+            val outcome = InlineImages.place(staged, { Media(app).uploadInline(it) }) {
+                draftViewModel.flushAndQueueSync(); app.repository.attach(Note(draftViewModel.draft.value), staged)
+            }
+            if (outcome is InlineImages.Outcome.Inline) insertInline(outcome.html)
+        }
     }
     LaunchedEffect(draftViewModel) { draftViewModel.errors.collect(onError) }
     // The debounce window must not be lost when the editor leaves the foreground.
@@ -192,7 +273,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     }
     val editors by app.repository.editors.collectAsState()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) action { draftViewModel.flushAndQueueSync(); app.repository.attach(Note(raw), Media(app).stage(uri)) }
+        if (uri != null) addImage(uri)
     }
     if (inaccessible) {
         AlertDialog(onDismissRequest = onClose, title = { Text("Note access removed") },
@@ -216,6 +297,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     val displayedColor = if (bgImage.isNotBlank()) null else NotePalette.display(note.raw.text("bgColor"), LocalDarkTheme.current)
     val color = displayedColor?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
     val foreground = displayedColor?.let { Color(NotePalette.textColor(it)) } ?: MaterialTheme.colorScheme.onSurface
+    CompositionLocalProvider(LocalRichEditorFocus provides focus) {
     NoteSurfaceTheme(color, foreground) {
     SystemBarsOverride(lightBackground = NotePalette.textColor(color.toArgb()) == NotePalette.TEXT_LIGHT_THEME)
     Scaffold(topBar = {
@@ -239,25 +321,28 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                             DropdownMenuItem(text = { Text("Collaborators") }, leadingIcon = { Icon(Icons.Outlined.PersonAdd, null) },
                                 onClick = { moreMenuExpanded = false; shareDialog = true })
                         }
-                        if (note.checklist && NoteFormat.canHideCheckboxes(note.items)) {
+                        if (note.checklist && ChecklistModel.canHide(note.items)) {
                             DropdownMenuItem(text = { Text("Hide checkboxes") }, leadingIcon = { Icon(Icons.Outlined.CheckBox, null) }, onClick = {
                                 moreMenuExpanded = false
-                                if (NoteFormat.checkedItemCount(note.items) > 0) confirmHideCheckboxes = true else hideCheckboxes()
+                                if (ChecklistModel.checkedCount(note.items) > 0) confirmHideCheckboxes = true else hideCheckboxes()
                             })
-                        } else if (!note.checklist && NoteFormat.editable(note.body)) {
+                        } else if (!note.checklist) {
                             DropdownMenuItem(text = { Text("Show checkboxes") }, leadingIcon = { Icon(Icons.Outlined.CheckBox, null) },
                                 onClick = { moreMenuExpanded = false; showCheckboxes() })
                         }
                         DropdownMenuItem(text = { Text("Share a copy") }, leadingIcon = { Icon(Icons.Outlined.Share, null) }, onClick = {
                             moreMenuExpanded = false
-                            val text = note.title + "\n" + if (note.checklist) note.items.joinToString("\n") {
-                                (if (it.optBoolean("done")) "[x] " else "[ ] ") + NoteFormat.displayText(it.text("data"))
-                            } else NoteFormat.previewText(note.body)
+                            val checklistText = note.items.joinToString("\n") {
+                                (if (it.optBoolean("done")) "[x] " else "[ ] ") + NoteHtml.plainText(it.text("data"))
+                            }
+                            val text = NoteHtml.titleText(note.title) + "\n" + if (note.checklist) {
+                                (if (hybrid) NoteHtml.previewText(note.body) + "\n" else "") + checklistText
+                            } else NoteHtml.previewText(note.body)
                             activity.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                                 .putExtra(Intent.EXTRA_TEXT, text), "Share note"))
                         })
                         DropdownMenuItem(text = { Text("Undo changes") }, leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Undo, null) },
-                            onClick = { moreMenuExpanded = false; draftViewModel.replace(original.raw.copyJson()) })
+                            onClick = { moreMenuExpanded = false; draftViewModel.undoAll() })
                         if (owner) {
                             if (note.trashed) DropdownMenuItem(text = { Text("Restore") }, leadingIcon = { Icon(Icons.Outlined.RestoreFromTrash, null) },
                                 onClick = { moreMenuExpanded = false; action {
@@ -273,8 +358,18 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
             })
     }, bottomBar = {
         Surface(color = color, contentColor = foreground, tonalElevation = 2.dp) {
-            Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp),
+          // The bar rides above the keyboard, so the formatting commands stay within reach while typing.
+          Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
+            if (formatBar) CompositionLocalProvider(LocalRichEditorFocus provides focus) {
+                FormatToolbar(focus, canUndo, canRedo, onUndo = { draftViewModel.undo() }, onRedo = { draftViewModel.redo() },
+                    onCommand = { draftViewModel.markStructural() }, contentColor = foreground, modifier = Modifier.padding(horizontal = 8.dp))
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                IconButton(onClick = { formatBar = !formatBar }, modifier = Modifier.semantics { selected = formatBar }) {
+                    Icon(Icons.Outlined.TextFormat, if (formatBar) "Hide formatting toolbar" else "Show formatting toolbar",
+                        tint = if (formatBar) MaterialTheme.colorScheme.primary else LocalContentColor.current)
+                }
                 IconButton(onClick = { picker.launch(arrayOf("*/*")) }) { Icon(Icons.Outlined.AttachFile, "Add image or attachment") }
                 if (owner) IconButton(onClick = { palette = true }) { Icon(Icons.Outlined.Palette, "Background color") }
                 IconButton(onClick = { reminderDialog = true }) { Icon(Icons.Outlined.NotificationAdd, "Reminder") }
@@ -287,18 +382,19 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                 }, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(horizontal = 8.dp))
             }
+          }
         }
     }) { padding ->
         Surface(Modifier.fillMaxSize().padding(padding), color = color, contentColor = foreground) {
         Column(Modifier.fillMaxSize().noteBackgroundImage(background, LocalDarkTheme.current, anchor = BackgroundAnchor.BottomCenter).clickable(remember { MutableInteractionSource() }, indication = null) { focusEditorEnd() }
-            .verticalScroll(rememberScrollState()).imePadding().padding(horizontal = 20.dp, vertical = 16.dp),
+            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             incoming?.let { serverNote ->
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("A newer server version is available", style = MaterialTheme.typography.titleSmall)
                         Text("Your draft is kept on this device. Saving it may require conflict resolution.", style = MaterialTheme.typography.bodySmall)
-                        if (serverNote.title.isNotBlank()) Text("Server title: ${serverNote.title}", style = MaterialTheme.typography.bodySmall)
+                        if (serverNote.title.isNotBlank()) Text("Server title: ${NoteHtml.titleText(serverNote.title)}", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -307,84 +403,57 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
             editors[note.id].orEmpty().takeIf { it.isNotEmpty() }?.let { active ->
                 Text("Editing with ${active.joinToString()}", style = MaterialTheme.typography.labelSmall, color = foreground.copy(alpha = .7f))
             }
-            BasicTextField(value = note.title, onValueChange = { title -> change("noteTitle") { it.put("noteTitle", title) } },
-                modifier = Modifier.fillMaxWidth(), singleLine = true,
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
+            // The title is plain text: it shows the decoded text and stores it escaped, or untouched when the text did not change.
+            val titleBaseline = remember(original.syncId, externalEdits) { note.title }
+            val titleText = NoteHtml.titleText(note.title)
+            BasicTextField(value = titleText, onValueChange = { text -> change("noteTitle") { it.put("noteTitle", NoteHtml.titleHtml(text, titleBaseline)) } },
+                modifier = Modifier.fillMaxWidth().onFocusChanged { if (it.isFocused) focus.clear() }, singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Next),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onNext = { focusEditorEnd() }),
                 textStyle = MaterialTheme.typography.headlineSmall.copy(color = foreground), cursorBrush = SolidColor(foreground),
                 decorationBox = { inner -> Box {
-                    if (note.title.isBlank()) Text("Title", style = MaterialTheme.typography.headlineSmall, color = foreground.copy(alpha = .55f))
+                    if (titleText.isBlank()) Text("Title", style = MaterialTheme.typography.headlineSmall, color = foreground.copy(alpha = .55f))
                     inner()
                 } })
-            if (note.title.isNotBlank()) HorizontalDivider(color = foreground.copy(alpha = .12f))
-            if (note.checklist) {
-                val completedCount = note.items.count { it.optBoolean("done") }
-                val collapsed = raw.optBoolean("completedChecklistCollapsed")
-                if (completedCount > 0) TextButton(onClick = { draftViewModel.updateChecklistCollapsed(!collapsed) }) {
-                    Text(if (collapsed) "Show completed ($completedCount)" else "Hide completed ($completedCount)")
-                }
-                note.items.mapIndexed { index, item -> index to item }.filter { !collapsed || !it.second.optBoolean("done") }.forEach { (index, item) ->
-                    key(checklistItemId(item, index)) {
-                        var itemMenuExpanded by remember { mutableStateOf(false) }
-                        val requester = itemFocus.getOrPut(checklistItemId(item, index)) { FocusRequester() }
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                            Checkbox(item.optBoolean("done"), onCheckedChange = { done -> change("checkBoxes") {
-                                it.put("checkBoxes", ChecklistAdapter.setDone(it.getJSONArray("checkBoxes"), index, done))
-                            } })
-                            if (NoteFormat.checklistItemEditable(item.opt("data"))) BasicTextField(
-                                value = NoteFormat.displayText(item.text("data")),
-                                onValueChange = { text -> editChecklistItem(index, item, text) }, modifier = Modifier.weight(1f).padding(start = (item.optInt("indentLevel") * 12).dp).focusRequester(requester)
-                                    // A hardware Enter would otherwise put a line break into the item.
-                                    .onPreviewKeyEvent { event ->
-                                        val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
-                                        if (enter && event.type == KeyEventType.KeyDown) addChecklistItem(index)
-                                        enter
-                                    },
-                                // Next shows Enter as an action on the multi-line field, so the keyboard adds a row instead of a line break.
-                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
-                                    imeAction = androidx.compose.ui.text.input.ImeAction.Next),
-                                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onNext = { addChecklistItem(index) }),
-                                textStyle = MaterialTheme.typography.bodyLarge.copy(color = foreground), cursorBrush = SolidColor(foreground),
-                                decorationBox = { inner -> Box {
-                                    if (item.text("data").isBlank()) Text("List item", color = foreground.copy(alpha = .55f))
-                                    inner()
-                                } })
-                            else Column(Modifier.weight(1f)) {
-                                Text(if (item.opt("data") is String) NoteFormat.displayText(item.text("data")) else "Structured checklist item")
-                                Text("This checklist item is preserved and read-only in the native editor.", style = MaterialTheme.typography.labelSmall)
+            if (titleText.isNotBlank()) HorizontalDivider(color = foreground.copy(alpha = .12f))
+            val editorColors = EditorColors(foreground.toArgb(), LocalNoteLinkColor.current)
+            val images = (metadataNote.raw.optJSONArray("images")?.objects().orEmpty() + note.raw.optJSONArray("images")?.objects().orEmpty())
+                .distinctBy { it.text("dataUrl").ifBlank { it.text("id") } }
+            fun updateImages(next: List<JSONObject>) = change("images") { it.put("images", ChecklistModel.toJson(next)) }
+            @Composable fun ImagesAt(placement: String) {
+                images.filter { it.text("placement", "top") == placement }.forEach { image ->
+                    Column {
+                        MediaImage(app, image.text("dataUrl"))
+                        Row {
+                            TextButton(onClick = { updateImages(images.map { if (it === image) it.shallowCopy().put("placement", if (placement == "top") "bottom" else "top") else it }) }) {
+                                Text(if (placement == "top") "Move below the text" else "Move above the text")
                             }
-                            Box {
-                                IconButton(onClick = { itemMenuExpanded = true }) { Icon(Icons.Outlined.MoreVert, "Checklist item actions") }
-                                DropdownMenu(expanded = itemMenuExpanded, onDismissRequest = { itemMenuExpanded = false }) {
-                                    if (index > 0) DropdownMenuItem(text = { Text("Move up") }, onClick = { itemMenuExpanded = false; change("checkBoxes") {
-                                        it.put("checkBoxes", ChecklistAdapter.move(it.getJSONArray("checkBoxes"), index, index - 1))
-                                    } })
-                                    DropdownMenuItem(text = { Text("Indent") }, onClick = { itemMenuExpanded = false; change("checkBoxes") {
-                                        it.put("checkBoxes", ChecklistAdapter.indent(it.getJSONArray("checkBoxes"), index, 1))
-                                    } })
-                                    if (item.optInt("indentLevel") > 0) DropdownMenuItem(text = { Text("Outdent") }, onClick = { itemMenuExpanded = false; change("checkBoxes") {
-                                        it.put("checkBoxes", ChecklistAdapter.indent(it.getJSONArray("checkBoxes"), index, -1))
-                                    } })
-                                    DropdownMenuItem(text = { Text("Remove item") }, leadingIcon = { Icon(Icons.Outlined.Close, null) },
-                                        onClick = { itemMenuExpanded = false; change("checkBoxes") { json ->
-                                            val all = json.getJSONArray("checkBoxes").objects().toMutableList()
-                                            all.removeAt(index)
-                                            json.put("checkBoxes", JSONArray(all))
-                                        } })
-                                }
-                            }
+                            TextButton(onClick = { updateImages(images.filter { it !== image }) }) { Icon(Icons.Outlined.Close, null); Text("Remove image") }
                         }
                     }
                 }
-                TextButton(onClick = { addChecklistItem() }) { Icon(Icons.Outlined.Add, null); Text("List item") }
-            } else if (NoteFormat.editable(note.body)) {
-                StyledEditor(note.body, reset = note.body, textColor = foreground, handle = bodyHandle, onChange = { html -> change("noteBody") { it.put("noteBody", html) } })
-            } else {
-                Text(NoteFormat.displayText(note.body))
-                Text("This note contains formatting the native editor does not support yet. Its body is preserved; other fields remain editable.", style = MaterialTheme.typography.bodySmall)
             }
-            val images = (metadataNote.raw.optJSONArray("images")?.objects().orEmpty() + note.raw.optJSONArray("images")?.objects().orEmpty())
-                .distinctBy { it.text("dataUrl").ifBlank { it.text("id") } }
-            images.forEach { MediaImage(app, it.text("dataUrl")) }
+            ImagesAt("top")
+            if (!note.checklist || hybrid) {
+                RichTextField(state = bodyState, html = note.body, externalEdits = externalEdits, colors = editorColors, hint = "Note",
+                    modifier = Modifier.fillMaxWidth().heightIn(min = if (note.checklist) 24.dp else 160.dp), textSizeSp = 18f, minLines = if (note.checklist) 1 else 6, embeds = embeds,
+                    onHtmlChange = { html -> change("noteBody") { it.put("noteBody", html) } },
+                    onEmbedTap = { span, offset, onRemove ->
+                        if (span.data.kind == EmbedKind.Image) { if (onRemove) bodyState.view?.let { view -> view.edit { text -> view.controller.removeEmbedAt(text, offset) } } }
+                        else embedDetail = span to offset
+                    },
+                    onImageContent = { uri, _ -> addImage(uri) })
+            }
+            if (note.checklist) {
+                val completedCount = note.items.count { it.optBoolean("done") }
+                if (completedCount > 0) TextButton(onClick = { draftViewModel.updateChecklistCollapsed(!hideDone) }) {
+                    Text(if (hideDone) "Show completed ($completedCount)" else "Hide completed ($completedCount)")
+                }
+                ChecklistRows(note.items, hideDone, externalEdits, editorColors, foreground, color, embeds, rowStates, checklistActions)
+                TextButton(onClick = { addChecklistItem() }) { Icon(Icons.Outlined.Add, null); Text("List item") }
+            }
+            ImagesAt("bottom")
             val attachments = (metadataNote.raw.optJSONArray("attachments")?.objects().orEmpty() + note.raw.optJSONArray("attachments")?.objects().orEmpty())
                 .distinctBy { it.text("syncId").ifBlank { it.optLong("id").toString() } }
             attachments.forEach { attachment ->
@@ -402,6 +471,16 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
          }
          }
     }
+    }
+    }
+    embedDetail?.let { (span, offset) ->
+        AlertDialog(onDismissRequest = { embedDetail = null }, title = { Text(span.data.label) },
+            text = { Text(span.data.preview.ifBlank { "This content is preserved as it is and cannot be edited on this device." }) },
+            confirmButton = { TextButton(onClick = {
+                embedDetail = null
+                bodyState.view?.let { view -> view.edit { text -> view.controller.removeEmbedAt(text, offset) } }
+            }) { Text("Remove") } },
+            dismissButton = { TextButton(onClick = { embedDetail = null }) { Text("Close") } })
     }
     if (palette) NoteColorPicker(note.raw.text("bgColor"), background, onDismiss = { palette = false }, onSelect = { selected ->
         change { it.put("bgColor", selected).put("bgImage", "") }
@@ -424,7 +503,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     }, onRemove = { selectedReminder?.let { action { app.repository.deleteReminder(it.getString("syncId")); reminderDialog = false } } })
     if (shareDialog) ShareDialog(app, note, onClose = { shareDialog = false }, onSave = { ids -> action { draftViewModel.flushAndQueueSync(); app.repository.share(Note(raw), ids); shareDialog = false } }, onError)
     if (confirmHideCheckboxes) {
-        val checked = NoteFormat.checkedItemCount(note.items)
+        val checked = ChecklistModel.checkedCount(note.items)
         AlertDialog(onDismissRequest = { confirmHideCheckboxes = false }, title = { Text("Hide checkboxes?") },
             text = { Text("$checked checked ${if (checked == 1) "item" else "items"} will be removed. The other items become lines of text.") },
             confirmButton = { TextButton(onClick = { confirmHideCheckboxes = false; hideCheckboxes() }) { Text("Hide checkboxes") } },
@@ -481,98 +560,6 @@ private fun NoteColorPicker(selectedColor: String, selectedImage: NoteBackground
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun StyledEditor(initial: String, reset: String, textColor: Color, handle: BodyEditorHandle, onChange: (String) -> Unit) {
-    var editor by remember { mutableStateOf<EditText?>(null) }
-    val linkColor = LocalNoteLinkColor.current
-    DisposableEffect(handle) { onDispose { handle.view = null } }
-    var lastEmitted by remember { mutableStateOf(initial) }
-    var suppressTextWatcher by remember { mutableStateOf(false) }
-    Column {
-        Row {
-            listOf("B" to android.graphics.Typeface.BOLD, "I" to android.graphics.Typeface.ITALIC).forEach { (label, style) -> TextButton(onClick = {
-                editor?.let { view -> if (view.selectionStart < view.selectionEnd) view.text.setSpan(StyleSpan(style), view.selectionStart, view.selectionEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
-                editor?.let { lastEmitted = NoteFormat.serialize(it.text); onChange(lastEmitted) }
-            }) { Text(label) } }
-            TextButton(onClick = {
-                editor?.let { view -> if (view.selectionStart < view.selectionEnd) view.text.setSpan(UnderlineSpan(), view.selectionStart, view.selectionEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
-                editor?.let { lastEmitted = NoteFormat.serialize(it.text); onChange(lastEmitted) }
-            }) { Text("U") }
-            fun edit(transform: (List<Int?>, Int, Int) -> List<Int?>) {
-                val view = editor ?: return
-                val text = view.text
-                val lines = Bullets.lines(text)
-                val from = lines.indexOfLast { it[0] <= view.selectionStart.coerceAtLeast(0) }.coerceAtLeast(0)
-                val to = lines.indexOfLast { it[0] <= view.selectionEnd.coerceAtLeast(0) }.coerceAtLeast(from)
-                suppressTextWatcher = true
-                try { Bullets.apply(text, transform(Bullets.levels(text), from, to)) } finally { suppressTextWatcher = false }
-                lastEmitted = NoteFormat.serialize(text); onChange(lastEmitted)
-            }
-            TextButton(onClick = { edit { levels, from, to ->
-                val remove = (from..to).all { levels[it] != null }
-                levels.mapIndexed { i, level -> if (i in from..to) (if (remove) null else level ?: 0) else level }
-            } }) { Text("\u2022") }
-            TextButton(onClick = { edit { levels, from, to ->
-                levels.mapIndexed { i, level -> if (i in from..to && level != null) minOf(level + 1, MAX_BULLET_LEVELS - 1) else level }
-            } }) { Text("\u2192") }
-            TextButton(onClick = { edit { levels, from, to ->
-                levels.mapIndexed { i, level -> if (i in from..to && level != null) (if (level == 0) null else level - 1) else level }
-            } }) { Text("\u2190") }
-        }
-        AndroidView(factory = { context -> EditText(context).apply {
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            setText(NoteFormat.spanned(initial)); hint = "Note"; setTextSize(18f); background = null
-            setPadding(0, 8, 0, 8); minLines = 6; gravity = android.view.Gravity.TOP
-            addTextChangedListener(object : TextWatcher {
-                var typedNewline = -1
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    typedNewline = if (count == 1 && before == 0 && s?.get(start) == '\n') start else -1
-                }
-                override fun afterTextChanged(s: Editable?) {
-                    if (suppressTextWatcher) return
-                    if (s != null) {
-                        suppressTextWatcher = true
-                        try {
-                            val levels = Bullets.levels(s).toMutableList()
-                            var newline = typedNewline
-                            typedNewline = -1
-                            if (newline >= 0) {
-                                // Lines are 0-based; the typed newline ends line `index`, so the new line is `index + 1`.
-                                val index = Bullets.lines(s).indexOfFirst { it[1] == newline }
-                                val level = levels.getOrNull(index)
-                                if (index >= 0 && level != null) {
-                                    if (s.substring(Bullets.lines(s)[index][0], newline).isEmpty() && Bullets.lines(s).getOrNull(index + 1)?.let { it[0] == it[1] } == true) {
-                                        // Enter on an empty bullet leaves the list.
-                                        s.delete(newline, newline + 1)
-                                        val fixed = levels.toMutableList().also { it.removeAt(index + 1); it[index] = null }
-                                        Bullets.apply(s, fixed)
-                                        newline = -2
-                                    } else if (index + 1 < levels.size) levels[index + 1] = level
-                                }
-                            }
-                            if (newline != -2) Bullets.apply(s, levels)
-                        } finally { suppressTextWatcher = false }
-                    }
-                    lastEmitted = NoteFormat.serialize(s ?: return)
-                    onChange(lastEmitted)
-                }
-            }); editor = this; handle.view = this
-        } }, modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp), update = { view ->
-            view.applyNoteColors(textColor.toArgb(), linkColor)
-            if (reset != lastEmitted) {
-                val selectionStart = view.selectionStart.coerceAtLeast(0)
-                val selectionEnd = view.selectionEnd.coerceAtLeast(0)
-                suppressTextWatcher = true
-                try { view.setText(NoteFormat.spanned(reset)) }
-                finally { suppressTextWatcher = false }
-                lastEmitted = reset
-                view.setSelection(selectionStart.coerceAtMost(view.text.length), selectionEnd.coerceAtMost(view.text.length))
-            }
-        })
     }
 }
 

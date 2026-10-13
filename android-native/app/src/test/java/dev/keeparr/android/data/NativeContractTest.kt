@@ -8,6 +8,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import android.text.Html
 import android.widget.EditText
+import dev.keeparr.android.data.html.HtmlMode
+import dev.keeparr.android.data.html.NoteHtml
+import dev.keeparr.android.data.html.RichTextController
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
@@ -121,8 +124,10 @@ class NativeContractTest {
         assertEquals(content.getJSONObject("nestedChecklistItem").toString(), edit.getJSONArray("checkBoxes").getJSONObject(1).toString())
         assertEquals(content.getJSONObject("attachmentMetadata").toString(), edit.getJSONArray("attachments").getJSONObject(0).toString())
         assertEquals(content.getJSONObject("lockedNoteMetadata").toString(), edit.getJSONObject("lockedNoteMetadata").toString())
-        assertFalse(NoteFormat.editable(edit.getString("noteBody")))
-        assertFalse(NoteFormat.editable("<img src=\"drawing.png\">"))
+        // No body is read-only: a table and an image stay as they are, written back byte for byte.
+        val withEmbeds = "<div>a</div><table><tr><td>Keep intact</td></tr></table><img src=\"drawing.png\">"
+        assertEquals(withEmbeds, NoteHtml.canonical(withEmbeds))
+        assertEquals(listOf("<table><tr><td>Keep intact</td></tr></table>", "<img src=\"drawing.png\">"), NoteHtml.embeds(withEmbeds))
     }
     @Test fun occurrenceIdentityMatchesServerIsoMilliseconds() {
         assertEquals("r@2030-01-01T09:00:00.000Z#v3", Recurrence.occurrenceId("r", "2030-01-01T09:00:00Z", 3))
@@ -226,42 +231,38 @@ class NativeContractTest {
         assertEquals("\u2022 one\n  \u25E6 two", widgetNoteBodyText(Note(JSONObject().put("noteBody", "<UL><LI>one<UL><LI>two</LI></UL></LI></UL>")), single = false))
     }
     @Test fun showCheckboxesSplitsAndroidAndWebBodiesIntoUncheckedItems() {
-        val android = JSONObject().put("noteBody", "<p dir=\"ltr\">Milk &amp; eggs</p>\n<p dir=\"ltr\">Bread</p>\n")
-        val androidItems = NoteFormat.showCheckboxes(android, 100)
+        val (androidItems, androidBody) = ChecklistModel.show(emptyList(), "<p dir=\"ltr\">Milk &amp; eggs</p>\n<p dir=\"ltr\">Bread</p>\n")
         assertEquals(listOf("Milk &amp; eggs", "Bread"), androidItems.map { it.getString("data") })
-        assertEquals(listOf(100L, 101L), androidItems.map { it.getLong("id") })
-        assertTrue(android.getBoolean("isCbox")); assertEquals("", android.getString("noteBody"))
+        assertEquals(listOf(0L, 1L), androidItems.map { it.getLong("id") })
+        assertEquals("", androidBody)
         assertTrue(androidItems.none { it.getBoolean("done") })
 
-        val web = JSONObject().put("noteBody", "First<br><br>Second<div>Third<br>Fourth</div>&nbsp;<div><br></div>")
-        assertEquals(listOf("First", "Second", "Third", "Fourth"), NoteFormat.showCheckboxes(web, 1).map { Html.fromHtml(it.getString("data"), 0).toString() })
-        assertEquals(emptyList<JSONObject>(), NoteFormat.showCheckboxes(JSONObject().put("noteBody", "<p><br></p>"), 1))
+        val web = "First<br><br>Second<div>Third<br>Fourth</div>&nbsp;<div><br></div>"
+        assertEquals(listOf("First", "Second", "Third", "Fourth"), ChecklistModel.show(emptyList(), web).first.map { NoteHtml.titleText(it.getString("data")) })
+        assertEquals(emptyList<JSONObject>(), ChecklistModel.show(emptyList(), "<p><br></p>").first)
     }
     @Test fun showCheckboxesKeepsExistingItemsAndNeverReusesTheirIds() {
-        val raw = JSONObject().put("noteBody", "New line").put("checkBoxes", JSONArray()
-            .put(JSONObject().put("id", 5).put("done", true).put("data", "Old")))
-        NoteFormat.showCheckboxes(raw, 2)
-        val items = raw.getJSONArray("checkBoxes").objects()
+        val (items, _) = ChecklistModel.show(listOf(JSONObject().put("id", 5).put("done", true).put("data", "Old")), "New line")
         assertEquals(listOf(5L, 6L), items.map { it.getLong("id") })
         assertTrue(items[0].getBoolean("done"))
     }
     @Test fun hideCheckboxesDropsCheckedItemsAndAppendsTheRestToTheBody() {
-        val raw = JSONObject().put("isCbox", true).put("noteBody", "<div>Intro</div>").put("checkBoxes", JSONArray()
-            .put(JSONObject().put("id", 1).put("done", true).put("data", "Done thing"))
-            .put(JSONObject().put("id", 2).put("done", false).put("data", "Milk &amp; eggs").put("indentLevel", 2))
-            .put(JSONObject().put("id", 3).put("done", false).put("data", "<p> </p>"))
-            .put(JSONObject().put("id", 4).put("done", false).put("data", "Bread")))
-        assertEquals(1, NoteFormat.checkedItemCount(raw.getJSONArray("checkBoxes").objects()))
-        NoteFormat.hideCheckboxes(raw)
-        assertEquals("<div>Intro</div><div>Milk &amp; eggs</div><div>Bread</div>", raw.getString("noteBody"))
-        assertFalse(raw.getBoolean("isCbox")); assertEquals(0, raw.getJSONArray("checkBoxes").length())
-        assertTrue("converted bodies stay editable in the native editor", NoteFormat.editable(raw.getString("noteBody")))
+        val rows = listOf(
+            JSONObject().put("id", 1).put("done", true).put("data", "Done thing"),
+            JSONObject().put("id", 2).put("done", false).put("data", "Milk &amp; eggs").put("indentLevel", 2),
+            JSONObject().put("id", 3).put("done", false).put("data", "<p> </p>"),
+            JSONObject().put("id", 4).put("done", false).put("data", "Bread"))
+        assertEquals(1, ChecklistModel.checkedCount(rows))
+        val (items, body) = ChecklistModel.hide(rows, "<div>Intro</div>")!!
+        assertEquals("<div>Intro</div><div>Milk &amp; eggs</div><div>Bread</div>", body)
+        assertEquals(0, items.size)
+        assertEquals("converted bodies stay as written", body, NoteHtml.canonical(body))
     }
     @Test fun hideCheckboxesIsOfferedOnlyWhenNoUncheckedItemWouldLoseContent() {
         val structured = JSONObject().put("id", 1).put("done", false).put("data", JSONObject().put("kind", "rich"))
-        assertFalse(NoteFormat.canHideCheckboxes(listOf(structured)))
-        assertTrue(NoteFormat.canHideCheckboxes(listOf(structured.copyJson().put("done", true))))
-        assertTrue(NoteFormat.canHideCheckboxes(listOf(JSONObject().put("done", false).put("data", "Plain"))))
+        assertFalse(ChecklistModel.canHide(listOf(structured)))
+        assertTrue(ChecklistModel.canHide(listOf(structured.copyJson().put("done", true))))
+        assertTrue(ChecklistModel.canHide(listOf(JSONObject().put("done", false).put("data", "Plain"))))
     }
     @Test fun noteWidgetChoosesReadableForegroundForDarkAndLightColors() {
         val darkRed = android.graphics.Color.parseColor("#5B0000")
@@ -302,89 +303,85 @@ class NativeContractTest {
             assertEquals(fixture.getString("id"), java.time.Instant.parse(fixture.getString("nextDueAtUtc")), java.time.Instant.parse(actual))
         }
     }
-    @Test fun supportedHtmlFixturesAreEditableAndUnsupportedFixturesStayReadOnly() {
+    @Test fun everyContentFixtureIsEditableAndKeptVerbatim() {
         val content = fixtures.getJSONObject("content")
-        val supported = content.getJSONArray("supportedHtml")
-        for (index in 0 until supported.length()) assertTrue(supported.getString(index), NoteFormat.editable(supported.getString(index)))
+        for (key in listOf("supportedHtml", "unsupportedHtml")) {
+            val list = content.getJSONArray(key)
+            for (index in 0 until list.length()) {
+                val html = list.getString(index)
+                // Nothing is read-only: opening it unchanged keeps the original string, and an edit keeps its tags.
+                val doc = NoteHtml.parse(html)
+                assertEquals(html, NoteHtml.commit(html, NoteHtml.canonical(html), doc, HtmlMode.Body))
+                RichTextController().replace(doc, doc.length, doc.length, "!")
+                assertTrue("$html -> ${NoteHtml.serialize(doc)}", NoteHtml.serialize(doc).contains("!"))
+            }
+        }
         val unsupported = content.getJSONArray("unsupportedHtml")
-        for (index in 0 until unsupported.length()) assertFalse(unsupported.getString(index), NoteFormat.editable(unsupported.getString(index)))
-        assertTrue(NoteFormat.editable(content.getString("richChecklistItem")))
+        assertTrue(NoteHtml.canonical(unsupported.getString(2)).contains("style=\"color:#ff0000\""))
+        assertEquals(unsupported.getString(3), NoteHtml.canonical(unsupported.getString(3)))
     }
-    @Test fun editingRichChecklistTextMustPreserveItsFormatting() {
-        val richItem = fixtures.getJSONObject("content").getString("richChecklistItem")
-        assertTrue(NoteFormat.checklistItemEditable(richItem))
-        val edited = NoteFormat.editedChecklistItem(richItem, "Updated <item>") as String
+    @Test fun editingRichChecklistTextKeepsItsFormattingAndEveryRun() {
+        val rich = fixtures.getJSONObject("content").getString("richChecklistItem")
+        val doc = NoteHtml.parse(rich, HtmlMode.Row)
+        RichTextController(HtmlMode.Row).replace(doc, doc.length, doc.length, "!")
+        val edited = NoteHtml.serialize(doc, HtmlMode.Row)
         assertTrue(edited.contains("href=\"https://example.test/item\""))
-        assertTrue(edited.contains("<b>Updated &lt;item&gt;</b>"))
-        assertFalse(NoteFormat.checklistItemEditable("<b>first</b> and <i>second</i>"))
-        assertEquals("<b>first</b> and <i>second</i>", NoteFormat.editedChecklistItem("<b>first</b> and <i>second</i>", "flat"))
-        assertFalse(NoteFormat.checklistItemEditable(fixtures.getJSONObject("content").getJSONObject("structuredChecklistItem")))
+        assertTrue(edited.contains("<b>Rich item!</b>"))
+        val twoRuns = NoteHtml.parse("<b>first</b> and <i>second</i>", HtmlMode.Row)
+        RichTextController(HtmlMode.Row).replace(twoRuns, 5, 5, "!")
+        assertEquals("<b>first!</b> and <i>second</i>", NoteHtml.serialize(twoRuns, HtmlMode.Row))
+        assertTrue(ChecklistModel.isStructured(JSONObject().put("data", fixtures.getJSONObject("content").getJSONObject("structuredChecklistItem"))))
     }
-    @Test fun checklistItemWithoutTextStaysEditableSoANewOrClearedRowCanBeTypedInto() {
-        // "Show checkboxes" on a note with no body adds an empty row; it must not be locked as read-only.
-        val emptyBody = JSONObject().put("noteBody", "")
-        assertEquals(emptyList<JSONObject>(), NoteFormat.showCheckboxes(emptyBody, 1))
-        for (empty in listOf("", " ", "<b></b>", "<a href=\"https://example.test\"></a>")) assertTrue("'$empty'", NoteFormat.checklistItemEditable(empty))
-        assertEquals("a &amp; b", NoteFormat.editedChecklistItem("", "a & b"))
-        assertEquals("typed", NoteFormat.editedChecklistItem("<b></b>", "typed"))
-        // Clearing a row keeps it editable, so the text can be typed again.
-        val cleared = NoteFormat.editedChecklistItem("<b>Rich</b>", "") as String
-        assertTrue(NoteFormat.checklistItemEditable(cleared))
-        assertEquals("again", Html.fromHtml(NoteFormat.editedChecklistItem(cleared, "again") as String, 0).toString().trim())
-        assertFalse(NoteFormat.checklistItemEditable("<b>first</b> and <i>second</i>"))
-        assertFalse(NoteFormat.checklistItemEditable(null))
+    @Test fun anEmptyOrClearedRowCanBeTypedInto() {
+        val empty = NoteHtml.parse("", HtmlMode.Row)
+        RichTextController(HtmlMode.Row).replace(empty, 0, 0, "a & b")
+        assertEquals("a &amp; b", NoteHtml.serialize(empty, HtmlMode.Row))
+        val cleared = NoteHtml.parse("<b>Rich</b>", HtmlMode.Row)
+        RichTextController(HtmlMode.Row).replace(cleared, 0, 4, "")
+        assertEquals("", NoteHtml.serialize(cleared, HtmlMode.Row))
+        RichTextController(HtmlMode.Row).replace(cleared, 0, 0, "again")
+        assertEquals("again", NoteHtml.serialize(cleared, HtmlMode.Row))
     }
     @Test fun checklistToggleMoveAndIndentPreserveNestedAndUnknownItemData() {
-        val original = JSONArray().put(JSONObject().put("id", 1).put("data", "First").put("done", false))
-            .put(fixtures.getJSONObject("content").getJSONObject("nestedChecklistItem"))
-        val toggled = ChecklistAdapter.setDone(original, 1, true)
         val nested = fixtures.getJSONObject("content").getJSONObject("nestedChecklistItem")
-        assertEquals(nested.getJSONArray("children").toString(), toggled.getJSONObject(1).getJSONArray("children").toString())
-        assertEquals(nested.getBoolean("futureFlag"), toggled.getJSONObject(1).getBoolean("futureFlag"))
-        val indented = ChecklistAdapter.indent(toggled, 1, 1)
-        assertEquals(3, indented.getJSONObject(1).getInt("indentLevel"))
-        assertEquals(nested.getJSONArray("children").toString(), indented.getJSONObject(1).getJSONArray("children").toString())
-        val reordered = ChecklistAdapter.move(indented, 1, 0)
-        assertEquals(nested.getLong("id"), reordered.getJSONObject(0).getLong("id"))
-        assertEquals("First", reordered.getJSONObject(1).getString("data"))
+        val original = listOf(JSONObject().put("id", 1).put("data", "First").put("done", false), nested.copyJson())
+        val toggled = ChecklistModel.toggleDone(original, 17)!!
+        assertEquals(nested.getJSONArray("children").toString(), toggled[1].getJSONArray("children").toString())
+        assertEquals(nested.getBoolean("futureFlag"), toggled[1].getBoolean("futureFlag"))
+        val indented = ChecklistModel.setIndent(toggled, 17, 1)!!
+        assertEquals(1, indented[1].getInt("indentLevel"))
+        assertEquals(nested.getJSONArray("children").toString(), indented[1].getJSONArray("children").toString())
+        val reordered = ChecklistModel.moveBefore(indented, 17, 1)!!
+        assertEquals(17L, reordered[0].getLong("id"))
+        assertEquals(0, reordered[0].getInt("indentLevel"))
+        assertEquals("First", reordered[1].getString("data"))
     }
-    @Test fun enterInAChecklistRowInsertsAnEmptyRowAfterItAtTheSameIndent() {
-        val original = JSONArray().put(JSONObject().put("id", 1).put("data", "First").put("done", true).put("indentLevel", 2))
-            .put(JSONObject().put("id", 2).put("data", "Second").put("done", false).put("indentLevel", 0))
-        val inserted = ChecklistAdapter.insertAfter(original, 0, 3)
-        assertEquals(listOf(1L, 3L, 2L), (0 until inserted.length()).map { inserted.getJSONObject(it).getLong("id") })
-        assertEquals(2, inserted.getJSONObject(1).getInt("indentLevel"))
-        assertEquals("", inserted.getJSONObject(1).getString("data"))
-        assertFalse(inserted.getJSONObject(1).getBoolean("done"))
-        // The source rows are left untouched and an unknown row appends at the end.
-        assertEquals(2, original.length())
-        val appended = ChecklistAdapter.insertAfter(original, -1, 4)
-        assertEquals(4L, appended.getJSONObject(2).getLong("id"))
-        assertEquals(0, appended.getJSONObject(2).getInt("indentLevel"))
+    @Test fun splittingARowInsertsAnEmptyRowAfterItAtTheSameIndent() {
+        val original = listOf(JSONObject().put("id", 1).put("data", "First").put("done", true).put("indentLevel", 2),
+            JSONObject().put("id", 2).put("data", "Second").put("done", false).put("indentLevel", 0))
+        val inserted = ChecklistModel.insertAfter(original, 1, id = 3)
+        assertEquals(listOf(1L, 3L, 2L), inserted.map { it.getLong("id") })
+        assertEquals(2, inserted[1].getInt("indentLevel"))
+        assertEquals("", inserted[1].getString("data"))
+        assertFalse(inserted[1].getBoolean("done"))
+        assertEquals(2, original.size)
+        assertEquals(4L, ChecklistModel.insertAfter(original, null, id = 4)[2].getLong("id"))
     }
-    @Test fun pastedLinesBecomeOneRowEachAfterTheEditedRowAtItsIndent() {
-        val original = JSONArray().put(JSONObject().put("id", 1).put("data", "First").put("done", true).put("indentLevel", 2))
-            .put(JSONObject().put("id", 2).put("data", "Second").put("done", false).put("indentLevel", 0))
-        val lines = ChecklistAdapter.lines("Carriola (38.90, reparto)\r\n\r\n  Tom & <Jerry>  \nTappeti bagno\n")
-        assertEquals(listOf("Carriola (38.90, reparto)", "Tom & <Jerry>", "Tappeti bagno"), lines)
-        val split = ChecklistAdapter.splitRow(original, 0, lines, 10)
-        assertEquals(listOf(1L, 10L, 11L, 2L), (0 until split.length()).map { split.getJSONObject(it).getLong("id") })
-        assertEquals(listOf("Carriola (38.90, reparto)", "Tom &amp; &lt;Jerry&gt;", "Tappeti bagno", "Second"),
-            (0 until split.length()).map { split.getJSONObject(it).getString("data") })
-        assertEquals(listOf(2, 2, 2, 0), (0 until split.length()).map { split.getJSONObject(it).getInt("indentLevel") })
+    @Test fun pastedLinesBecomeOneRowEachAfterTheEditedRow() {
+        val original = listOf(JSONObject().put("id", 1).put("data", "First").put("done", true).put("indentLevel", 2),
+            JSONObject().put("id", 2).put("data", "Second").put("done", false).put("indentLevel", 0))
+        val doc = NoteHtml.parse("First", HtmlMode.Row)
+        var pieces: List<String> = emptyList()
+        val controller = RichTextController(HtmlMode.Row)
+        controller.onSplit = { left, rest, _ -> pieces = listOf(left) + rest }
+        controller.paste(doc, 5, 5, "\r\nTom & <Jerry>\nBread")
+        assertEquals(listOf("First", "Tom &amp; &lt;Jerry&gt;", "Bread"), pieces)
+        val split = ChecklistModel.splitInto(original, 1, pieces.first(), pieces.drop(1))!!
+        assertEquals(listOf(1L, 3L, 4L, 2L), split.map { it.getLong("id") })
+        assertEquals(listOf(2, 2, 2, 0), split.map { it.getInt("indentLevel") })
         // The edited row keeps its checked state, the new ones start unchecked, and the source is untouched.
-        assertEquals(listOf(true, false, false, false), (0 until split.length()).map { split.getJSONObject(it).getBoolean("done") })
-        assertEquals("First", original.getJSONObject(0).getString("data"))
-        assertEquals("", ChecklistAdapter.splitRow(original, 0, emptyList(), 10).getJSONObject(0).getString("data"))
-    }
-    @Test fun styledTextWidgetRoundTripRetainsSupportedLinkMarkup() {
-        val richHtml = fixtures.getJSONObject("content").getString("richChecklistItem")
-        val editor = EditText(RuntimeEnvironment.getApplication())
-        editor.setText(Html.fromHtml(richHtml, Html.FROM_HTML_MODE_COMPACT))
-        val serialized = Html.toHtml(editor.text, Html.TO_HTML_PARAGRAPH_LINES_CONSECUTIVE)
-        assertTrue(serialized.contains("href=\"https://example.test/item\""))
-        assertTrue(serialized.contains("<b>") && serialized.contains("</b>") && serialized.contains("Rich item"))
-        assertTrue(NoteFormat.editable(serialized))
+        assertEquals(listOf(true, false, false, false), split.map { it.getBoolean("done") })
+        assertEquals("First", original[0].getString("data"))
     }
     @Test fun installedCertificateAliasIsScopedToTheServerOrigin() {
         val settings = ConnectionSettings(RuntimeEnvironment.getApplication())
@@ -585,26 +582,41 @@ class NativeContractTest {
     }
 
     @Test fun bodyTextShowsTheSameLinesTheWebShows() {
-        // Block elements add no blank line of their own (the legacy Html flag did), but explicit blank lines stay.
-        assertEquals("a\nb", NoteFormat.displayText("<div>a</div><div>b</div>"))
-        assertEquals("a\nb", NoteFormat.displayText("<p dir=\"ltr\">a</p><p dir=\"ltr\">b</p>"))
-        assertEquals("a\n\nb", NoteFormat.displayText("<div>a</div><div><br></div><div>b</div>"))
+        // Block elements add no blank line of their own, but explicit blank lines stay.
+        assertEquals("a\nb", NoteHtml.displayText("<div>a</div><div>b</div>"))
+        assertEquals("a\nb", NoteHtml.displayText("<p dir=\"ltr\">a</p><p dir=\"ltr\">b</p>"))
+        assertEquals("a\n\nb", NoteHtml.displayText("<div>a</div><div><br></div><div>b</div>"))
         // The web renders bodies with white-space: pre-wrap, so raw newlines are visible there.
-        assertEquals("eth esterno\n\n• Centralina", NoteFormat.displayText("eth esterno\n\n• Centralina"))
-        assertEquals("a\n\nb", NoteFormat.displayText("<div>a</div>\n<div>b</div>"))
-        assertEquals("a\n\nb", NoteFormat.displayText("<p>a<br>\nb</p>"))
-        assertEquals("a & b", NoteFormat.displayText("<div>a &amp; b</div>\n"))
+        assertEquals("eth esterno\n\n• Centralina", NoteHtml.displayText("eth esterno\n\n• Centralina"))
+        assertEquals("a\n\nb", NoteHtml.displayText("<div>a</div>\n<div>b</div>"))
+        assertEquals("a\n\nb", NoteHtml.displayText("<p>a<br>\nb</p>"))
+        assertEquals("a & b", NoteHtml.displayText("<div>a &amp; b</div>\n"))
     }
 
     @Test fun editorSerializationKeepsBlankLinesAndAddsNoStrayNewlines() {
         for (text in listOf("a\nb", "a\n\nb", "a\n\n\nb\nc", "single")) {
-            val html = NoteFormat.serialize(android.text.SpannableStringBuilder(text))
-            assertFalse("raw newlines render as extra blank lines on the web: $html", html.contains('\n'))
-            assertEquals(text, NoteFormat.spanned(html).toString())
-            assertEquals("the overview matches the editor", text, NoteFormat.displayText(html))
+            val doc = NoteHtml.parse("")
+            RichTextController().paste(doc, 0, 0, text)
+            val html = NoteHtml.serialize(doc)
+            assertEquals(text, NoteHtml.parse(html).toString())
+            assertEquals("the overview matches the editor", text, NoteHtml.displayText(html))
+            assertEquals("writing again changes nothing", html, NoteHtml.canonical(html))
         }
-        // Reloading and saving again must not grow the note.
-        val once = NoteFormat.serialize(NoteFormat.spanned("<p>a</p><p>b</p>"))
-        assertEquals(once, NoteFormat.serialize(NoteFormat.spanned(once)))
+        val once = NoteHtml.canonical("<p>a</p><p>b</p>")
+        assertEquals(once, NoteHtml.canonical(once))
+    }
+
+    @Test fun sharedTextWithNewlinesBecomesBrSeparatedLinesThatShowCheckboxesSplits() {
+        val html = NoteHtml.plainTextToHtml("Milk & eggs\nBread\r\nTea")
+        assertEquals("Milk &amp; eggs<br>Bread<br>Tea", html)
+        assertEquals(listOf("Milk &amp; eggs", "Bread", "Tea"), ChecklistModel.show(emptyList(), html).first.map { it.getString("data") })
+    }
+
+    @Test fun titlesShowDecodedTextEverywhere() {
+        val note = Note(JSONObject().put("noteTitle", "Tom &amp; Jerry &#232;").put("noteBody", "x"))
+        assertEquals("Tom & Jerry è", NoteHtml.titleText(note.title))
+        val projection = buildHomeProjection(listOf(Note(note.raw.copyJson().put("id", 1).put("syncId", "t"))), "home", "", emptyList())
+        assertEquals("Tom & Jerry è", projection.cards.single().title)
+        assertEquals(1, buildHomeProjection(listOf(Note(note.raw.copyJson().put("id", 1).put("syncId", "t").put("noteBody", "Caff&#232;"))), "home", "caffè", emptyList()).cards.size)
     }
 }
