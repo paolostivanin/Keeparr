@@ -7,10 +7,13 @@ import { AuthService } from './auth.service';
 import { ConnectionHeadersInterceptor } from './connection-headers.interceptor';
 
 describe('AuthExpiredInterceptor', () => {
-  let previousSession: string | null;
+  // Other specs can leave a pending theme behind, which would add a preferences PATCH to the constructor's requests.
+  const storageKeys = ['gk_session', 'gk_pending_theme'];
+  let previous: (string | null)[];
 
   beforeEach(() => {
-    previousSession = localStorage.getItem('gk_session');
+    previous = storageKeys.map(key => localStorage.getItem(key));
+    localStorage.removeItem('gk_pending_theme');
     localStorage.setItem('gk_session', JSON.stringify({ id: 1, username: 'test', token: 'session-token' }));
     TestBed.configureTestingModule({
       providers: [
@@ -23,9 +26,12 @@ describe('AuthExpiredInterceptor', () => {
   });
 
   afterEach(() => {
+    storageKeys.forEach((key, index) => {
+      const value = previous[index];
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    });
     TestBed.inject(HttpTestingController).verify();
-    if (previousSession === null) localStorage.removeItem('gk_session');
-    else localStorage.setItem('gk_session', previousSession);
   });
 
   it('lets AuthService send requests while it is being constructed (no NG0200 cycle)', async () => {
