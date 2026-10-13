@@ -2,6 +2,7 @@ package dev.keeparr.android.ui
 
 import androidx.compose.runtime.Immutable
 import dev.keeparr.android.data.Note
+import dev.keeparr.android.data.NoteBackground
 import dev.keeparr.android.data.NoteFormat
 import dev.keeparr.android.data.NotePalette
 import dev.keeparr.android.data.ReminderFormat
@@ -16,7 +17,10 @@ internal data class NoteCardUiModel(
     val syncId: String,
     val title: String,
     val bodyText: String,
+    /** The stored color, null when the note has a background image (the image replaces the color, as on the web). */
     val colorArgb: Int?,
+    /** The known illustrated background, or null for none and for unknown values, which are kept but not drawn. */
+    val background: NoteBackground?,
     val locked: Boolean,
     val checklist: Boolean,
     val checklistItems: List<ChecklistCardItem>,
