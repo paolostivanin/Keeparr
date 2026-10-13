@@ -107,7 +107,7 @@ object NoteHtml {
         for (i in from until to) {
             if (text[i] != EMBED_CHAR) continue
             appendEscapedText(out, text, start, i)
-            text.getSpans(i, i + 1, EmbedSpan::class.java).firstOrNull()?.let { out.append(it.html) }
+            Doc.embedAt(text, i)?.let { out.append(it.html) }
             start = i + 1
         }
         appendEscapedText(out, text, start, to)
@@ -118,14 +118,23 @@ object NoteHtml {
         val infos = lines.map { Doc.infoAt(text, it) }
         if (text.isEmpty() && (infos[0] == null || infos[0]!!.let { first -> first.path.all { it.isAnonymous } && !first.trailingBr && !first.placeholderBr })) return ""
         val fallback = Frame(null)
-        val resolved = infos.mapIndexed { i, info -> info ?: BlockInfo(listOf(fallback), if (i == 0) BreakKind.BLOCK else BreakKind.BR) }
+        val resolved = infos.mapIndexed { i, info -> info ?: BlockInfo(listOf(fallback), if (i == 0) BreakKind.BLOCK else BreakKind.BR) }.toMutableList()
+        // A whitespace-only run at the very end of the document is not content when read back, so it gets a div of its own.
+        val last = lines.last()
+        val lastInfo = resolved.last()
+        if (last.end > last.start && lastInfo.path.size == 1 && lastInfo.path[0].isAnonymous && (last.start until last.end).all { text[it] == ' ' || text[it] == '\t' || text[it] == '\r' || text[it] == '\u000c' }) {
+            resolved[resolved.size - 1] = lastInfo.with(path = listOf(Frame("div")), breakBefore = BreakKind.BLOCK)
+        }
         val out = StringBuilder(text.length + 64)
         val open = ArrayList<Frame>()
+        var preStart = -1
         fun joins(index: Int): Boolean {
             if (index == 0) return false
             val info = resolved[index]
             val previous = resolved[index - 1]
             val leaf = info.path.lastOrNull() ?: return false
+            // Two anonymous runs side by side are one run once written: the tag-less frames leave nothing between them.
+            if (leaf.isAnonymous && previous.path.lastOrNull()?.isAnonymous == true && samePath(previous.path.dropLast(1), info.path.dropLast(1))) return true
             return samePath(previous.path, info.path) && !leaf.isEmbed && (info.breakBefore != BreakKind.BLOCK || leaf.isAnonymous)
         }
         for (index in lines.indices) {
@@ -133,7 +142,11 @@ object NoteHtml {
             val info = resolved[index]
             val join = joins(index)
             if (join) {
-                out.append(if (info.breakBefore == BreakKind.NEWLINE) "\n" else "<br>")
+                if (info.breakBefore == BreakKind.NEWLINE) {
+                    // The parser drops one newline right after <pre>, so a leading blank line needs two.
+                    if (out.length == preStart) out.append('\n')
+                    out.append('\n')
+                } else out.append("<br>")
             } else {
                 var common = commonPrefix(open, info.path)
                 if (index > 0 && samePath(resolved[index - 1].path, info.path)) common = minOf(common, info.path.size - 1)
@@ -146,14 +159,15 @@ object NoteHtml {
                     open += frame
                     if (frame.tag != null) { out.append('<').append(frame.tag); appendAttributes(out, frame.attrs); out.append('>') }
                     frame.embedHtml?.let { out.append(it) }
+                    if (frame.tag == "pre") preStart = out.length
                 }
             }
             if (info.path.lastOrNull()?.isEmbed == true) continue
             writeInline(out, text, line.start, line.end)
             val empty = line.start == line.end
             val lastInLeaf = index == lines.lastIndex || !joins(index + 1)
-            val trailing = (info.trailingBr && !(info.placeholderBr && !empty)) || (lastInLeaf && empty)
-            if (trailing) out.append(if (info.trailingBr || !join || info.breakBefore == BreakKind.BR) "<br>" else "\n")
+            val trailing = (info.trailingBr && lastInLeaf && !(info.placeholderBr && !empty)) || (lastInLeaf && empty)
+            if (trailing) out.append(if (!join || info.trailingBr || info.breakBefore != BreakKind.NEWLINE) "<br>" else "\n")
         }
         while (open.isNotEmpty()) {
             val frame = open.removeAt(open.size - 1)

@@ -39,8 +39,11 @@ internal object Doc {
         return best
     }
 
+    /** The embed whose character sits at [offset], or null (a zero-length span left behind by a deletion does not count). */
     fun embedAt(text: Spanned, offset: Int): EmbedSpan? =
-        if (offset in 0 until text.length && text[offset] == EMBED_CHAR) text.getSpans(offset, offset + 1, EmbedSpan::class.java).firstOrNull() else null
+        if (offset in 0 until text.length && text[offset] == EMBED_CHAR) {
+            text.getSpans(offset, offset + 1, EmbedSpan::class.java).firstOrNull { text.getSpanStart(it) <= offset && text.getSpanEnd(it) > offset }
+        } else null
 
     /** Replaces every block span: `infos[i]` becomes the structure of line `i`. Derived fields and heading spans are rebuilt. */
     fun applyInfos(text: Spannable, infos: List<BlockInfo?>) {
