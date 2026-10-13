@@ -1572,12 +1572,13 @@ export class InputComponent implements OnInit {
     const files = Array.from(fileList).filter(file => file.type.startsWith('image/'))
     if (!files.length) return
     // A checklist keeps its items: the image goes into a body shown above them (the note becomes hybrid).
-    const editorBodyAtStart = this.noteBody?.nativeElement
+    let editorBodyAtStart = this.noteBody?.nativeElement
     const editorSessionAtStart = this.editorSession
     const lifecycleAtStart = this.editorLifecycleGeneration
     if (this.isCbox.value && !this.isHybridNote) {
       this.isHybridNote = true
       this.cd.detectChanges()
+      editorBodyAtStart = this.noteBody?.nativeElement
     }
     if (event) this.placeCaretFromDrop(event)
     let uploads: PromiseSettledResult<NoteImageI>[]

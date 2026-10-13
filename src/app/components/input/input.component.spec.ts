@@ -623,11 +623,12 @@ describe('InputComponent opening, closing and incoming versions', () => {
   it('puts an image dropped on a checklist into a body above it and keeps every item (W3)', async () => {
     const insertInlineImage = jasmine.createSpy('insertInlineImage');
     const next = jasmine.createSpy('next');
+    const body = { innerHTML: '<div><br></div>' };
     const { editor } = stubs({
       isEditing: false, isHybridNote: false, isCbox: { value: true, next },
       fileToImage: async () => ({ id: 'i', dataUrl: '/x.png', name: 'x', placement: 'bottom' }), insertInlineImage,
-      noteBody: { nativeElement: { innerHTML: '<div>img</div>' } }, updateInputLength: () => undefined, queueCoEditAutosave: () => undefined,
-      cd: { detectChanges: () => undefined }
+      noteBody: undefined, updateInputLength: () => undefined, queueCoEditAutosave: () => undefined,
+      cd: { detectChanges: () => { editor.noteBody = { nativeElement: body }; } }
     });
 
     await editor.addImageFiles([new File(['x'], 'x.png', { type: 'image/png' })]);
