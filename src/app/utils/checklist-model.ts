@@ -1,5 +1,6 @@
-import { CheckboxI } from '../interfaces/notes';
-import { MAX_INDENT_LEVEL, descendantIndexes, maxIndentLevelAt, normalizeIndentLevel } from './checkbox-indent';
+import type { CheckboxI } from '../interfaces/notes';
+import { MAX_INDENT_LEVEL, descendantIndexes, maxIndentLevelAt, normalizeIndentLevel, normalizeIndentLevels } from './checkbox-indent';
+import { canHideCheckboxes, checkBoxesToBodyHtml, linesToCheckBoxes, splitBodyIntoLines, type ChecklistItem, type LineNode } from './checklist-conversion';
 
 /**
  * Framework-free checklist document operations. The editor component owns the
@@ -62,6 +63,79 @@ export function toggleChecklistDone(items: CheckboxI[], id: number): CheckboxI[]
   return result;
 }
 
+const isText = (item: CheckboxI) => typeof item.data === 'string';
+
+/** Visible text of a row's html: tags dropped, U+00A0 counted as a space. */
+export function checklistRowText(data: unknown): string {
+  return typeof data === 'string' ? data.replace(/<[^>]*>/g, '').replace(/&nbsp;|\u00a0/g, ' ').trim() : '';
+}
+
+/** One more than the highest numeric id; ids are never reused. */
+function nextChecklistId(items: CheckboxI[]): number {
+  const numeric = items.map(item => Number(item.id)).filter(id => Number.isSafeInteger(id) && id >= 0);
+  return (numeric.length ? Math.max(...numeric) : -1) + 1;
+}
+
+/**
+ * Enter inside a row: the row keeps `left`, a new unchecked row with `right` follows it at the same depth
+ * (before the row's children). Structured rows cannot be split.
+ */
+export function splitChecklistRow(items: CheckboxI[], id: number, left: string, right: string): CheckboxI[] | null {
+  const index = items.findIndex(cb => cb.id === id);
+  if (index < 0 || !isText(items[index])) return null;
+  const row: CheckboxI = { id: nextChecklistId(items), done: false, data: right, indentLevel: normalizeIndentLevel(items[index].indentLevel) };
+  const result = [...items];
+  result[index] = { ...items[index], data: left };
+  result.splice(index + 1, 0, row);
+  return result;
+}
+
+/**
+ * Backspace at a row's true start. A row without visible text is deleted. Otherwise its html is appended to the
+ * previous visible row (`visibleIds` in display order, default list order), which keeps its id, state and depth.
+ * Null when nothing applies: unknown row, structured row on either side, or no previous row.
+ */
+export function mergeChecklistRow(items: CheckboxI[], id: number, visibleIds?: number[]): CheckboxI[] | null {
+  const index = items.findIndex(cb => cb.id === id);
+  if (index < 0 || !isText(items[index])) return null;
+  if (!checklistRowText(items[index].data)) return items.filter(cb => cb.id !== id);
+  const previousId = visibleIds ? visibleIds[visibleIds.indexOf(id) - 1] : items[index - 1]?.id;
+  const previousIndex = previousId === undefined ? -1 : items.findIndex(cb => cb.id === previousId);
+  if (previousIndex < 0 || previousIndex === index || !isText(items[previousIndex])) return null;
+  const result = [...items];
+  result[previousIndex] = { ...items[previousIndex], data: String(items[previousIndex].data) + String(items[index].data) };
+  return result.filter(cb => cb.id !== id);
+}
+
+/** Removes only that row (its children stay). */
+export function removeChecklistRow(items: CheckboxI[], id: number): CheckboxI[] | null {
+  return items.some(cb => cb.id === id) ? items.filter(cb => cb.id !== id) : null;
+}
+
+/** Moves one row before `beforeId` (null: to the end), then re-clamps depths. Null when the order does not change. */
+export function moveChecklistBefore(items: CheckboxI[], id: number, beforeId: number | null): CheckboxI[] | null {
+  const from = items.findIndex(cb => cb.id === id);
+  if (from < 0 || beforeId === id) return null;
+  const rest = items.filter(cb => cb.id !== id);
+  const to = beforeId === null ? rest.length : rest.findIndex(cb => cb.id === beforeId);
+  if (to < 0) return null;
+  const result = [...rest.slice(0, to), items[from], ...rest.slice(to)];
+  if (result.every((cb, i) => cb === items[i])) return null;
+  return normalizeIndentLevels(result);
+}
+
+/** "Show checkboxes": one unchecked row per body line; only embeds (images, wrappers) stay in the body. */
+export function showChecklistFromBody(items: CheckboxI[], body: LineNode): { items: CheckboxI[]; body: string } {
+  const { lines, leftoverHtml } = splitBodyIntoLines(body);
+  return { items: [...items, ...linesToCheckBoxes(lines, items as ChecklistItem[]) as CheckboxI[]], body: leftoverHtml };
+}
+
+/** "Hide checkboxes": unchecked rows become lines after the kept body; null when a structured row would be lost. */
+export function hideChecklistToBody(items: CheckboxI[], body: string): { items: CheckboxI[]; body: string } | null {
+  if (!canHideCheckboxes(items as ChecklistItem[])) return null;
+  return { items: [], body: body + checkBoxesToBodyHtml(items as ChecklistItem[]) };
+}
+
 export { MAX_INDENT_LEVEL };
 
 export type ChecklistHistoryCommand = 'undo' | 'redo';
@@ -79,7 +153,11 @@ export class ChecklistHistory {
   private lastTextInputAt = 0;
   private redoMode = false;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  private readonly now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.now = now;
+  }
 
   get length() { return this.snapshots.length; }
 

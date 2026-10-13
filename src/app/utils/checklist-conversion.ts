@@ -9,6 +9,8 @@ export interface LineNode {
   childNodes: ArrayLike<LineNode>
   className?: unknown
   outerHTML?: string
+  /** Element attribute lookup; absent on text nodes and in tree stand-ins that carry no attributes. */
+  hasAttribute?: (name: string) => boolean
 }
 
 export interface ChecklistItem {
@@ -26,10 +28,18 @@ export function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-/** Content that is not text (images, link previews) cannot become a checklist item and stays in the body. */
+/**
+ * Content that is not text (images, the inline image wrapper, link previews) cannot become a checklist item and
+ * stays in the body. The wrapper is one node: its text (the delete button's icon name) is never a line.
+ */
 function isKeeparrAsBody(node: LineNode): boolean {
-  const className = typeof node.className === 'string' ? node.className : ''
-  return node.nodeName === 'IMG' || className.split(/\s+/).includes('editor-link-preview-slot')
+  const classes = typeof node.className === 'string' ? node.className.split(/\s+/) : []
+  return node.nodeName === 'IMG' || classes.includes('editor-link-preview-slot') || classes.includes('inline-note-image-wrap')
+}
+
+/** Editor chrome (the inline image delete button) is neither text nor body content. */
+function isEditorTool(node: LineNode): boolean {
+  return !!node.hasAttribute?.('data-inline-image-tool')
 }
 
 /** One entry per visible line: <br> and block elements end a line, blank lines are skipped. */
@@ -46,7 +56,9 @@ export function splitBodyIntoLines(root: LineNode): { lines: string[]; leftoverH
     if (node.nodeType === TEXT_NODE) {
       current += (node.textContent || '').replace(/\s+/g, ' ')
     } else if (node.nodeType === ELEMENT_NODE) {
-      if (isKeeparrAsBody(node)) {
+      if (isEditorTool(node)) {
+        // dropped
+      } else if (isKeeparrAsBody(node)) {
         if (node.outerHTML) leftover.push(node.outerHTML)
       } else if (node.nodeName === 'BR') {
         flush()

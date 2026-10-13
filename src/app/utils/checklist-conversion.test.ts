@@ -27,6 +27,20 @@ test('splitBodyIntoLines keeps images and link previews in the body instead of d
   assert.equal(leftoverHtml, '<img src="a.png"><div class="editor-link-preview-slot"></div>');
 });
 
+test('the inline image wrapper is one leftover node: its delete button never becomes an item', () => {
+  const tool = el('button', [text('close')], { hasAttribute: name => name === 'data-inline-image-tool' });
+  const image = el('img', [], { outerHTML: '<img class="inline-note-image" src="a.png">' });
+  const wrapper = el('div', [image, tool], {
+    className: 'inline-note-image-wrap',
+    outerHTML: '<div class="inline-note-image-wrap" contenteditable="false"><img class="inline-note-image" src="a.png"></div>',
+  });
+  const { lines, leftoverHtml } = splitBodyIntoLines(root(text('a'), wrapper, el('div', [el('br')]), el('div', [text('b')])));
+  assert.deepEqual(lines, ['a', 'b']);
+  assert.equal(leftoverHtml, wrapper.outerHTML);
+  // A bare tool (stand-alone, e.g. left behind by a drag) is dropped rather than read as text.
+  assert.deepEqual(splitBodyIntoLines(root(tool, text('x'))).lines, ['x']);
+});
+
 test('linesToCheckBoxes escapes text and continues after the highest existing id', () => {
   const items = linesToCheckBoxes(['a < b', 'Tom & Jerry'], [{ id: 4, done: true, data: 'old' }, { id: -1, done: false, data: '' }]);
   assert.deepEqual(items, [
