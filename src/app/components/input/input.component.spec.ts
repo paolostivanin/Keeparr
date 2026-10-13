@@ -791,6 +791,30 @@ describe('InputComponent checklist rows', () => {
     expect(probe.toString()).toBe('Milk');
   });
 
+  it('undo and redo of a row merge retain the merged text (history integration)', () => {
+    const { editor, rowEl, caret, press } = rowsEditor([{ id: 1, data: 'Milk' }, { id: 2, data: 'shake' }]);
+    caret(rowEl(2).firstChild!, 0);
+    press(2, { key: 'Backspace' });
+    expect(editor.checkBoxes.map((cb: any) => cb.data)).toEqual(['Milkshake']);
+
+    press(1, { key: 'z', ctrlKey: true });
+    expect(editor.checkBoxes.map((cb: any) => [cb.id, cb.data])).toEqual([[1, 'Milk'], [2, 'shake']]);
+    press(1, { key: 'Z', ctrlKey: true, shiftKey: true });
+    expect(editor.checkBoxes.map((cb: any) => cb.data)).toEqual(['Milkshake']);
+  });
+
+  it('structural undo after typing preserves the newly typed row text', () => {
+    const { editor, rowEl, caret, press } = rowsEditor([{ id: 1, data: 'milk' }]);
+    const row = rowEl(1);
+    row.innerHTML = 'milkshake';
+    editor.onCboxInput(1, row);
+    caret(row.firstChild!, row.textContent!.length);
+    press(1, { key: 'Enter' });
+
+    press(1, { key: 'z', ctrlKey: true });
+    expect(editor.checkBoxes.map((cb: any) => cb.data)).toEqual(['milkshake']);
+  });
+
   it('Backspace does nothing special inside later text of a row, and not before the start (W4)', () => {
     const { editor, rowEl, caret, press } = rowsEditor([{ id: 1, data: 'a' }, { id: 2, data: '<b>x</b>milk' }]);
     caret(rowEl(2).lastChild!, 0); // after <b>x</b>: offset 0 of a later text node

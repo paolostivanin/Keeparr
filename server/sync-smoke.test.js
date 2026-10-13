@@ -24,6 +24,15 @@ async function request(pathname, options = {}) {
   return response.json();
 }
 
+async function rawRequest(pathname, token, options = {}) {
+  return fetch(`${base}${pathname}`, {
+    ...options,
+    headers: { ...(options.headers || {}), ...(token ? authHeaders(token) : {}) }
+  });
+}
+
+const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
 async function waitForServer(child) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
@@ -45,7 +54,7 @@ function authHeaders(token) {
 async function main() {
   const child = childProcess.spawn('node', ['server/server.js'], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), SQLITE_PATH: dbPath },
+    env: { ...process.env, KEEPARR_TEST_MODE: '1', PORT: String(port), SQLITE_PATH: dbPath },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   child.stdout.on('data', chunk => process.stdout.write(chunk));
@@ -579,6 +588,117 @@ async function main() {
     assert(!deleted.snapshot.notes.some(item => item.syncId === 'lww-note'), 'deleted note should be absent from snapshot');
     const changes = await request(`/sync/changes?cursor=${Math.max(0, deleted.snapshot.cursor - 1)}`, { headers });
     assert(changes.changes.some(change => change.resourceSyncId === 'lww-note' && change.operation === 'delete'), 'change stream should include delete tombstone');
+
+    const concurrencyNote = await request('/notes', {
+      method: 'POST', headers,
+      body: JSON.stringify({ syncId: 'rest-patch-interleave', noteTitle: 'Race', noteBody: 'before', checkBoxes: [], images: [], labels: [] })
+    });
+    await request('/test/failpoint', {
+      method: 'POST', headers, body: JSON.stringify({ name: 'after-rest-note-read', mode: 'pause', pauseMs: 700 })
+    });
+    const partialPatch = rawRequest(`/notes/${concurrencyNote.id}`, token, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ binder: 'Projects' })
+    });
+    await delay(120);
+    const concurrentMutation = request('/sync/mutations', {
+      method: 'POST', headers,
+      body: JSON.stringify({ includeSnapshot: false, mutations: [{
+        type: 'note.patch', syncId: concurrencyNote.syncId, operationId: 'interleaved-body-write',
+        payload: { id: concurrencyNote.id, patch: { noteBody: 'after concurrent write' } }
+      }] })
+    });
+    const [partialResponse, concurrentReply] = await Promise.all([partialPatch, concurrentMutation]);
+    assert.strictEqual(partialResponse.status, 204);
+    assert.strictEqual(concurrentReply.results[0].ok, true);
+    const interleavedResult = await request(`/notes/${concurrencyNote.id}`, { headers });
+    assert.strictEqual(interleavedResult.binder, 'Projects');
+    assert.strictEqual(interleavedResult.noteBody, 'after concurrent write', 'a field-only REST patch must not erase a serialized sync write');
+
+    const bootstrapNote = await request('/notes', {
+      method: 'POST', headers,
+      body: JSON.stringify({ syncId: 'bootstrap-interleave', noteTitle: 'Snapshot', noteBody: 'snapshot-old', checkBoxes: [], images: [], labels: [] })
+    });
+    await request('/test/failpoint', {
+      method: 'POST', headers, body: JSON.stringify({ name: 'after-bootstrap-notes-read', mode: 'pause', pauseMs: 700 })
+    });
+    const bootstrapPromise = request('/sync/bootstrap', { headers });
+    await delay(120);
+    const laterPatchPromise = request(`/notes/${bootstrapNote.id}`, {
+      method: 'PATCH', headers,
+      body: JSON.stringify({ noteBody: 'snapshot-new' })
+    });
+    const snapshot = await bootstrapPromise;
+    await laterPatchPromise;
+    assert.strictEqual(snapshot.notes.find(item => item.syncId === bootstrapNote.syncId)?.noteBody, 'snapshot-old');
+    const afterSnapshot = await request(`/sync/changes?since=${snapshot.cursor}&limit=500`, { headers });
+    assert(afterSnapshot.changes.some(change => change.resourceSyncId === bootstrapNote.syncId
+      && change.operation === 'upsert' && change.payload.noteBody === 'snapshot-new'),
+    'a write after a bootstrap cursor is returned in the subsequent change page');
+
+    const revocationNote = await request('/notes', {
+      method: 'POST', headers,
+      body: JSON.stringify({ syncId: 'owner-revokes-collaborator', noteTitle: 'Shared', noteBody: 'secret', checkBoxes: [], images: [], labels: [] })
+    });
+    await request(`/notes/${revocationNote.id}/collaborators`, {
+      method: 'PUT', headers, body: JSON.stringify({ userIds: [collabLogin.user.id] })
+    });
+    await request(`/notes/${revocationNote.id}/collaborators`, {
+      method: 'PUT', headers, body: JSON.stringify({ userIds: [] })
+    });
+    const revokedRejoin = await rawRequest(`/notes/${revocationNote.id}/collaborators/rejoin`, collabToken, { method: 'POST' });
+    assert.strictEqual(revokedRejoin.status, 403, 'owner revocation must not grant self-rejoin');
+    await request(`/notes/${revocationNote.id}/collaborators`, {
+      method: 'PUT', headers, body: JSON.stringify({ userIds: [collabLogin.user.id] })
+    });
+    const selfLeave = await rawRequest(`/notes/${revocationNote.id}`, collabToken, { method: 'DELETE' });
+    assert.strictEqual(selfLeave.status, 204, 'a collaborator can leave a shared note');
+    const selfRejoin = await rawRequest(`/notes/${revocationNote.id}/collaborators/rejoin`, collabToken, { method: 'POST' });
+    assert.strictEqual(selfRejoin.status, 204, 'self-leave keeps the snackbar undo path');
+
+    const lockedNote = await request('/notes', {
+      method: 'POST', headers,
+      body: JSON.stringify({ syncId: 'external-locked-note', noteTitle: 'Private', noteBody: 'locked body', checkBoxes: [], images: [], labels: [] })
+    });
+    const lockedAttachmentForm = new FormData();
+    lockedAttachmentForm.append('file', new Blob(['private attachment'], { type: 'text/plain' }), 'private.txt');
+    lockedAttachmentForm.append('syncId', 'locked-test-attachment');
+    lockedAttachmentForm.append('operationId', 'locked-test-upload');
+    const lockedUploadResponse = await rawRequest(`/notes/${lockedNote.id}/attachments`, token, { method: 'POST', body: lockedAttachmentForm });
+    assert.strictEqual(lockedUploadResponse.status, 201);
+    const lockedAttachment = await lockedUploadResponse.json();
+    await request(`/notes/${lockedNote.id}`, {
+      method: 'PATCH', headers,
+      body: JSON.stringify({ locked: true, lockSalt: 'salt', lockHash: 'sha256:locked-hash' })
+    });
+    const mcpAccess = await request('/users/me/mcp-access/enable', { method: 'POST', headers, body: JSON.stringify({}) });
+    const externalHeaders = authHeaders(mcpAccess.accessToken);
+    const externalNotes = await request('/notes', { headers: externalHeaders });
+    const redacted = externalNotes.find(item => item.syncId === lockedNote.syncId);
+    assert.strictEqual(redacted.noteBody, '');
+    assert.deepStrictEqual(redacted.attachments, []);
+    const lockedMediaResponse = await rawRequest(`/attachments/${lockedAttachment.id}`, mcpAccess.accessToken);
+    assert.strictEqual(lockedMediaResponse.status, 423, 'external media reads follow locked-note policy');
+    const ownerMediaResponse = await rawRequest(`/attachments/${lockedAttachment.id}`, token);
+    assert.strictEqual(ownerMediaResponse.status, 200, 'the authenticated owner retains normal locked-note access');
+    const deniedUpload = new FormData();
+    deniedUpload.append('file', new Blob(['blocked attachment'], { type: 'text/plain' }), 'blocked.txt');
+    deniedUpload.append('syncId', 'blocked-locked-attachment');
+    deniedUpload.append('operationId', 'blocked-locked-upload');
+    const deniedUploadResponse = await rawRequest(`/notes/${lockedNote.id}/attachments`, mcpAccess.accessToken, { method: 'POST', body: deniedUpload });
+    assert.strictEqual(deniedUploadResponse.status, 423, 'external attachment writes follow locked-note policy');
+
+    const hostileNote = await request('/notes', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        syncId: 'html-safety-integration', noteTitle: 'Safety',
+        noteBody: '<img alt=">" src=x onerror="alert(1)"><a href="java&#x73;cript:alert(2)">x</a>',
+        checkBoxes: [{ id: 1, data: '<span onclick="alert(3)">row</span>', done: false }], images: [], labels: []
+      })
+    });
+    const storedHostileNote = await request(`/notes/${hostileNote.id}`, { headers });
+    assert(!storedHostileNote.noteBody.includes('onerror') && !storedHostileNote.noteBody.includes('javascript:'),
+      'the API write boundary sanitizes parser-confusing event handlers and entity-obfuscated URLs');
+    assert(!storedHostileNote.checkBoxes[0].data.includes('onclick'), 'checklist HTML shares the same server safety boundary');
 
     console.log('Sync smoke tests passed.');
   } finally {

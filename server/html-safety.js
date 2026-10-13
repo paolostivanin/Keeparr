@@ -19,7 +19,9 @@ function hasActiveContent(html) {
         const key = attribute.toLowerCase();
         const value = String(raw || '').replace(/[\u0000-\u0020\u007f]+/g, '').toLowerCase();
         if (/^on[a-z]+$/.test(key) || key === 'srcdoc') active = true;
-        if (URL_ATTRIBUTES.has(key) && /^(?:javascript|vbscript|data:text\/html):?/.test(value)) active = true;
+        const safeRasterData = name.toLowerCase() === 'img' && key === 'src'
+          && /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(String(raw || ''));
+        if (URL_ATTRIBUTES.has(key) && /^(?:javascript|vbscript|data):?/.test(value) && !safeRasterData) active = true;
         if (key === 'style' && /(?:url\s*\(|expression\s*\(|@import)/i.test(String(raw))) active = true;
       }
     }
@@ -40,6 +42,13 @@ const SANITIZE_OPTIONS = {
   },
   allowedSchemes: ['http', 'https', 'mailto', 'tel'],
   allowedSchemesByTag: { img: ['http', 'https', 'data'] },
+  transformTags: {
+    img: (_tagName, attributes) => {
+      const src = String(attributes.src || '');
+      if (/^data:/i.test(src) && !/^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(src)) delete attributes.src;
+      return { tagName: 'img', attribs: attributes };
+    }
+  },
   allowProtocolRelative: false
 };
 

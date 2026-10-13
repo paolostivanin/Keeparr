@@ -126,6 +126,7 @@ test('note HTML with active content is neutralized and clean HTML is left byte f
     '<p>x</p><script>steal()</script>': ['<script', 'steal'],
     '<a href="javascript:steal()">click</a>': ['javascript'],
     '<a href="java&#x73;cript:steal()">click</a>': ['javascript'],
+    '<a href="data:text/html,<script>steal()</script>">click</a>': ['data:'],
     '<a href="  JaVaScRiPt:steal()">click</a>': ['script:'],
     '<iframe src="https://evil.test"></iframe>text': ['iframe'],
     '<svg onload=alert(1)><circle/></svg>': ['onload', '<svg'],

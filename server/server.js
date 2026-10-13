@@ -4250,6 +4250,7 @@ function mcpNoteResponse(note, includeLockedContent) {
     result.checkBoxes = [];
     result.images = [];
     result.attachments = [];
+    result.extraFields = {};
     result.hasAttachments = false;
     result.lockedContentAvailable = false;
   } else if (result.locked) {
@@ -4527,6 +4528,9 @@ app.post('/api/notes/:noteId/attachments', requireAuth, uploadAttachment.single(
     result = await withDatabaseTransaction(async () => {
       const note = await getAccessibleNote(noteId, req.user.id);
       if (!note) return { status: 404, error: 'Note not found.' };
+      if (req.mcpToken && note.locked && !await mcpNoteIsUnlocked(req, noteId)) {
+        return { status: 423, error: 'Unlock this note before adding attachments through MCP.' };
+      }
       const receipt = await get(`SELECT * FROM native_upload_receipts
         WHERE userId = ? AND operationId = ? AND resourceType = 'attachment'`, [req.user.id, operationId]);
       if (receipt) {
@@ -4623,6 +4627,9 @@ app.delete('/api/notes/:noteId/attachments/:attachmentId', requireAuth, asyncRou
 
   const note = await getAccessibleNote(noteId, req.user.id);
   if (!note) return res.status(404).json({ error: 'Note not found.' });
+  if (req.mcpToken && note.locked && !await mcpNoteIsUnlocked(req, noteId)) {
+    return res.status(423).json({ error: 'Unlock this note before deleting attachments through MCP.' });
+  }
 
   const attachment = await get(
     `SELECT na.* FROM note_attachments na
