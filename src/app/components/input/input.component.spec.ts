@@ -1160,6 +1160,37 @@ describe('InputComponent title and formatting scope', () => {
       expect(body.querySelector('.editor-link-preview-slot')).toBeNull();
       expect(body.textContent).toContain('https://a.test');
     });
+
+    it('can show an existing anchor as text and undo that change', () => {
+      const { editor, body } = decorating('<div>placeholder</div>', true);
+      const slot = document.createElement('span');
+      slot.className = 'editor-link-preview-slot';
+      slot.dataset['url'] = 'https://example.test';
+      slot.dataset['originalHtml'] = '<a href="https://example.test">link</a>';
+      const button = (editor as any).editorPreviewRemoveButton() as HTMLButtonElement;
+      slot.append(button);
+      body.replaceChildren(slot);
+      editor.onNoteBodyInput = () => undefined;
+      button.click();
+
+      expect(body.querySelector('a')?.getAttribute('href')).toBe('https://example.test');
+      document.execCommand('undo');
+      expect(body.querySelector('.editor-link-preview-slot')).not.toBeNull();
+    });
+  });
+
+  it('removes an inline image through the browser edit stack so Undo restores it', () => {
+    const { editor, body } = textEditor();
+    body.innerHTML = '<div>before</div><div class="inline-note-image-wrap" contenteditable="false"><img src="/api/uploads/images/a.png"><button data-inline-image-tool="delete">x</button></div><div><br></div><div>after</div>';
+    editor.onNoteBodyInput = () => undefined;
+    body.focus();
+    const button = body.querySelector('[data-inline-image-tool]')!;
+
+    editor.onNoteBodyClick({ target: button, preventDefault: () => undefined, stopPropagation: () => undefined } as unknown as Event);
+
+    expect(body.querySelector('.inline-note-image-wrap')).toBeNull();
+    document.execCommand('undo');
+    expect(body.querySelector('.inline-note-image-wrap')).not.toBeNull();
   });
 
   describe('Backspace at the start of a line (contract section 4)', () => {

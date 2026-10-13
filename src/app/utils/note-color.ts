@@ -149,9 +149,13 @@ export function noteTextColor(displayedBg: string, dark = false): string {
   return onDark > onLight ? NOTE_TEXT_DARK_THEME : NOTE_TEXT_LIGHT_THEME;
 }
 
-/** Link color that matches `noteTextColor` for the same background. */
+/** Uses the theme accent when readable, otherwise the high-contrast text color (links are underlined). */
 export function noteLinkColor(displayedBg: string, dark = false): string {
-  return noteTextColor(displayedBg, dark) === NOTE_TEXT_LIGHT_THEME ? NOTE_LINK_LIGHT_THEME : NOTE_LINK_DARK_THEME;
+  const foreground = noteTextColor(displayedBg, dark);
+  const preferred = foreground === NOTE_TEXT_LIGHT_THEME ? NOTE_LINK_LIGHT_THEME : NOTE_LINK_DARK_THEME;
+  const bg = parseColor(displayedBg);
+  if (!bg) return preferred;
+  return contrast(luminance(parseColor(preferred)!), luminance(bg)) >= 4.5 ? preferred : foreground;
 }
 
 /** Dark-theme counterpart of an illustration fill/stroke: HSL(h, min(s, 0.45), 0.10 + (1 - l) * 0.6). */

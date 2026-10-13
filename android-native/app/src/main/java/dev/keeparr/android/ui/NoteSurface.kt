@@ -54,8 +54,8 @@ internal fun noteColorScheme(base: ColorScheme, background: Color, foreground: C
 
 /** Overrides the color scheme for a note's editor: top bar, bottom bar, toolbar, checkboxes, menus and buttons follow [background]. */
 @Composable
-internal fun NoteSurfaceTheme(background: Color, foreground: Color, content: @Composable () -> Unit) {
-    CompositionLocalProvider(LocalNoteLinkColor provides NotePalette.linkColor(background.toArgb())) {
+internal fun NoteSurfaceTheme(background: Color, foreground: Color, linkColor: Int? = null, content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalNoteLinkColor provides (linkColor ?: NotePalette.linkColor(background.toArgb()))) {
         MaterialTheme(colorScheme = noteColorScheme(MaterialTheme.colorScheme, background, foreground),
             typography = MaterialTheme.typography, shapes = MaterialTheme.shapes, content = content)
     }

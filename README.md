@@ -36,7 +36,7 @@ Keeparr is a self-hosted notes app built for quick capture: text notes, checklis
 
 **Web / PWA.** Open your server in a browser. Install it as a PWA from a secure `https://` URL for reliable mobile installs and push notifications.
 
-**Android.** The native client in [`android-native/`](android-native) is written in Kotlin with Jetpack Compose (Android 14+, minSdk 34). It syncs through the incremental mutation protocol, works offline with an outbox, has time reminders, share-sheet capture, home screen widgets (notes list and quick create), and supports client certificates for mutual TLS. An APK is attached to each [GitHub release](https://github.com/paolostivanin/Keeparr/releases) with a SHA-256 checksum, a GPG signature and the signing-certificate fingerprint, or you can build it from source (see [Development](#development)). On-device acceptance testing is still in progress, see [`PLAN.md`](PLAN.md).
+**Android.** The native client in [`android-native/`](android-native) is written in Kotlin with Jetpack Compose (Android 14+, minSdk 34). It syncs through the incremental mutation protocol, works offline with an outbox, has time reminders, share-sheet capture, home screen widgets (notes list and quick create), and supports client certificates for mutual TLS. An APK is attached to each [GitHub release](https://github.com/paolostivanin/Keeparr/releases) with a SHA-256 checksum, a GPG signature and the signing-certificate fingerprint, or you can build it from source (see [Development](#development)). On-device acceptance testing is tracked in the [Android remediation plan](docs/native-android-remediation-plan.md).
 
 ## Quick start (Docker)
 
@@ -127,7 +127,7 @@ Without signing configuration the release build is signed with the debug key and
 - [`docs/architecture.md`](docs/architecture.md): ownership map and durable-write invariants.
 - [`docs/sync-protocol.md`](docs/sync-protocol.md): the mutation/changes sync contract.
 - [`docs/native-android-plan.md`](docs/native-android-plan.md): Android client plan and status.
-- [`PLAN.md`](PLAN.md): maintainability milestones and execution log.
+- [`docs/native-android-remediation-plan.md`](docs/native-android-remediation-plan.md): Android remediation and release gates.
 
 ### Icons
 

@@ -123,7 +123,7 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
                         if (intent.getBooleanExtra("createNote", false) || createChecklist || intent.action in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) {
                             val note = Note.create(app.settings.userId, createChecklist)
                             val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
-                            note.raw.put("noteTitle", intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty())
+                            note.raw.put("noteTitle", NoteHtml.titleHtml(intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty()))
                                 .put("noteBody", NoteHtml.plainTextToHtml(text))
                             repo.save(note); openEditor(note)
                             val uris = if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
@@ -482,7 +482,8 @@ private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, modifier: M
     // The stored color is data; the dark variant is derived here at render time.
     val displayed = note.colorArgb?.let { NotePalette.display(it, LocalDarkTheme.current) }
     val color = displayed?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
-    val foreground = displayed?.let { Color(NotePalette.textColor(it)) } ?: MaterialTheme.colorScheme.onSurface
+    val foreground = if (note.hasBackgroundImage) MaterialTheme.colorScheme.onSurface
+        else displayed?.let { Color(NotePalette.textColor(it)) } ?: MaterialTheme.colorScheme.onSurface
     val highlighted = selected || dropTarget
     val shape = MaterialTheme.shapes.small
     // A colored note gets a hairline in its own text color, so the border stays soft on every swatch in light and dark.

@@ -897,7 +897,7 @@ app-navbar .user-pic-container:hover::after {
 .icons-container .icons>div::after,
 .icons-container .icons>button.undo::after,
 .pin-icon::after {
-  background-color: #5f6368;
+  background-color: var(--note-fg-eff, #5f6368);
   content: "";
   height: 18px;
   left: 50%;
@@ -921,6 +921,8 @@ body:not(.light-theme) .icons-container .icons>div:not(.disabled)::after,
 body:not(.light-theme) .icons-container .icons>button.undo:not(:disabled)::after {
   background-color: #bdc1c6;
 }
+
+body:not(.light-theme) .pin-icon::after { background-color: var(--note-fg-eff, #bdc1c6); }
 
 body:not(.light-theme) .icons-container .icons>div:not(.disabled),
 body:not(.light-theme) .icons-container .icons>button.undo:not(:disabled) {
@@ -1710,9 +1712,9 @@ body.light-theme .icons-container .icons .material-restore {
 
 .reminder-chip {
   align-items: center;
-  background: rgba(251, 188, 4, 0.12);
+  background: color-mix(in srgb, currentColor 14%, transparent);
   border-radius: 12px;
-  color: #fbbc04;
+  color: var(--note-fg-eff, #e8eaed);
   cursor: pointer;
   display: inline-flex;
   font-family: var(--font-body);
@@ -1724,7 +1726,7 @@ body.light-theme .icons-container .icons .material-restore {
 
   img { opacity: 0.85; }
 
-  &:hover { background: rgba(251, 188, 4, 0.2); }
+  &:hover { background: color-mix(in srgb, currentColor 22%, transparent); }
 
   &.reminder-chip--past {
     background: rgba(154, 160, 166, 0.12);
@@ -1742,6 +1744,12 @@ body.light-theme .reminder-chip.reminder-chip--past {
 
   &:hover { background: rgba(95, 99, 104, 0.16); }
 }
+
+body.light-theme .reminder-chip:not(.reminder-chip--past) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: var(--note-fg-eff, #202124);
+}
+body.light-theme .reminder-chip:not(.reminder-chip--past):hover { background: color-mix(in srgb, currentColor 18%, transparent); }
 
 // ── Reminder picker ─────────────────────────────────────────────────────────
 
@@ -3541,6 +3549,30 @@ body.light-theme .reminder-date-dialog {
   .rp-clear { color: #f6aea9; }
   .rp-debug { color: #fbbc04; }
 }
+
+body.light-theme .reminder-picker {
+  background: #fff;
+  border-color: #dadce0;
+  box-shadow: 0 4px 16px rgb(60 64 67 / 24%);
+  color: #202124;
+}
+body.light-theme .reminder-picker .rp-header,
+body.light-theme .reminder-picker .rp-option { color: #202124; }
+body.light-theme .reminder-picker .rp-header { border-bottom-color: #dadce0; }
+body.light-theme .reminder-picker .rp-option:hover { background: rgba(60, 64, 67, 0.08); }
+body.light-theme .reminder-picker .rp-time,
+body.light-theme .reminder-picker .hint { color: #5f6368; }
+body.light-theme .reminder-picker .rp-custom.open { border-top-color: #dadce0; }
+body.light-theme .reminder-picker .rp-custom input[type="date"],
+body.light-theme .reminder-picker .rp-custom .timepicker-ui-input {
+  background: #fff;
+  border-color: #dadce0;
+  color: #202124;
+  color-scheme: light;
+}
+body.light-theme .reminder-picker .rp-clear,
+body.light-theme .reminder-picker .rp-debug { border-top-color: #dadce0; }
+body.light-theme .reminder-picker .rp-clear { color: #b3261e; }
 
 // Bullet lists in note bodies (editor, cards and previews), up to four levels.
 .note-body, .body-segments .body, .note-container .body {

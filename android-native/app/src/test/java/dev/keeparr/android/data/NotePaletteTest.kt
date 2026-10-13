@@ -132,18 +132,12 @@ class NotePaletteTest {
         assertEquals(Color(0xFFFFCF45), noteAccent(creamDark, Color(0xFFE8EAED)))
     }
 
-    /**
-     * Documented exception: the link colors are fixed (#1a73e8 / #8ab4f8) and only follow the text color, so on some pastels
-     * they stay below 4.5:1 (Lavender light about 2.4:1, Cream dark about 3.5:1). Pin the known cases so a change is noticed.
-     */
-    @Test fun linkContrastExceptionIsLimitedToTheDocumentedPastels() {
+    @Test fun linksMeetFourPointFiveToOneOnEverySwatchInBothThemes() {
         fun ratio(swatch: String, dark: Boolean): Double {
             val background = NotePalette.display(swatch, dark)!!
             return NotePalette.contrast(NotePalette.linkColor(background), background)
         }
-        assertTrue(ratio("#d7aefb", false) < 3.0)
-        assertTrue(ratio("#fff8b8", true) in 3.0..4.5)
-        for (swatch in swatches()) for (dark in themes) assertTrue("${swatch.name} dark=$dark link is still legible", ratio(swatch.hex, dark) >= 2.0)
+        for (swatch in swatches()) for (dark in themes) assertTrue("${swatch.name} dark=$dark link contrast", ratio(swatch.hex, dark) >= 4.5)
     }
 
 }

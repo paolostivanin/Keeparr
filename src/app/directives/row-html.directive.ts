@@ -1,5 +1,5 @@
 import { Directive, ElementRef, Input, OnChanges } from '@angular/core';
-import { sanitizeRowHtml } from '../utils/keeparr-html';
+import { sanitizeNotePreviewHtml, sanitizeRowHtml } from '../utils/keeparr-html';
 
 /**
  * Writes a checklist row's html into its contenteditable element, replacing Angular's `[innerHTML]`.
@@ -20,7 +20,27 @@ export class RowHtmlDirective implements OnChanges {
 
   ngOnChanges() {
     const element = this.host.nativeElement;
-    const next = sanitizeRowHtml(typeof this.html === 'string' ? this.html : '');
+    const source = typeof this.html === 'string' ? this.html : '';
+    const next = sanitizeRowHtml(source);
+    if (element.innerHTML !== next) element.innerHTML = next;
+    // The editor may normalize harmless legacy markup for display. Keep that
+    // source string when the row itself was not edited, honoring the shared
+    // untouched-content contract.
+    element.dataset['sourceHtml'] = source;
+    element.dataset['renderedHtml'] = next;
+  }
+}
+
+/** Sanitized rich HTML for read-only card previews; unlike Angular innerHTML this retains safe styles. */
+@Directive({ selector: '[appNotePreviewHtml]', standalone: false })
+export class NotePreviewHtmlDirective implements OnChanges {
+  @Input('appNotePreviewHtml') html: unknown = '';
+
+  constructor(private readonly host: ElementRef<HTMLElement>) {}
+
+  ngOnChanges() {
+    const element = this.host.nativeElement;
+    const next = sanitizeNotePreviewHtml(typeof this.html === 'string' ? this.html : '');
     if (element.innerHTML !== next) element.innerHTML = next;
   }
 }

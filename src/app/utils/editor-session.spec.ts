@@ -61,6 +61,18 @@ describe('EditorSessionTracker', () => {
     expect(record.savedGeneration).toBe(generation);
   });
 
+  it('keeps the original in-flight snapshot when another autosave is queued', () => {
+    const session = tracker();
+    session.capture(pick(note({ noteBody: 'A' })));
+    const generation = session.beginSave();
+    session.capture(pick(note({ noteBody: 'AB' })));
+    session.beginSave();
+    const record = session.saveSucceeded(generation);
+    expect(record.base!.noteBody).toBe('A');
+    expect(record.draft.noteBody).toBe('AB');
+    expect(record.dirtyFields).toEqual(['noteBody']);
+  });
+
   it('is saved-local when nothing changed during the save', () => {
     const session = tracker(null);
     session.capture(pick(note({ noteTitle: 'New' })));
@@ -142,6 +154,45 @@ describe('EditorSessionPersister', () => {
     expect(persister.failed).toBeFalse();
     expect(storage.records.get(record.key)!.draft.noteTitle).toBe('Important');
     expect(states).toEqual([true, false]);
+  });
+
+  it('does not drop a newer write queued while an earlier write is pending', async () => {
+    const writes: number[] = [];
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const firstStarted = new Promise<void>(resolve => { started = resolve; });
+    const storage: EditorSessionStorage = {
+      put: async record => { writes.push(record.generation); if (record.generation === 1) { started(); await gate; } },
+      delete: async () => { writes.push(-1); }
+    };
+    const persister = new EditorSessionPersister(storage);
+    const first = persister.put({ ...tracker().snapshot, generation: 1 });
+    await firstStarted;
+    const second = persister.put({ ...tracker().snapshot, generation: 2 });
+    release();
+    await Promise.all([first, second]);
+    expect(writes).toEqual([1, 2]);
+    expect(persister.failed).toBeFalse();
+  });
+
+  it('does not let an older completion erase a queued delete', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const firstStarted = new Promise<void>(resolve => { started = resolve; });
+    const writes: string[] = [];
+    const storage: EditorSessionStorage = {
+      put: async () => { writes.push('put'); started(); await gate; },
+      delete: async () => { writes.push('delete'); }
+    };
+    const persister = new EditorSessionPersister(storage);
+    const first = persister.put(tracker().snapshot as EditorSessionRecord);
+    await firstStarted;
+    const deletion = persister.delete('p|sync-4');
+    release();
+    await Promise.all([first, deletion]);
+    expect(writes).toEqual(['put', 'delete']);
   });
 
   it('restores an interrupted session from the stored record', async () => {

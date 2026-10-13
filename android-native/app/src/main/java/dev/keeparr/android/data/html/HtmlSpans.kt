@@ -242,6 +242,18 @@ class EmbedSpan(val html: String, val data: EmbedData) : ReplacementSpan(), Keep
 
     private fun drawWidth(): Int = if (maxWidth > 0) maxWidth else (240 * density).toInt()
 
+    /** Bitmap bounds after the height cap is applied; drawing and touch handling share this geometry. */
+    fun imageBounds(area: RectF): RectF {
+        val bitmap = bitmap ?: return area
+        if (bitmap.width <= 0 || bitmap.height <= 0) return area
+        val width = area.width()
+        val height = area.height()
+        val scale = minOf(width / bitmap.width, height / bitmap.height)
+        val fittedWidth = bitmap.width * scale
+        val fittedHeight = bitmap.height * scale
+        return RectF(area.left, area.top, area.left + fittedWidth, area.top + fittedHeight)
+    }
+
     override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int {
         val height = heightPx(drawWidth())
         if (fm != null) { fm.ascent = -height; fm.top = -height; fm.descent = 0; fm.bottom = 0 }
@@ -255,9 +267,7 @@ class EmbedSpan(val html: String, val data: EmbedData) : ReplacementSpan(), Keep
         val saved = Paint(paint)
         val bitmap = bitmap
         if (data.kind == EmbedKind.Image && bitmap != null && bitmap.width > 0) {
-            val scale = minOf(width.toFloat() / bitmap.width, height.toFloat() / bitmap.height)
-            val w = bitmap.width * scale; val h = bitmap.height * scale
-            val target = RectF(x, area.top, x + w, area.top + h)
+            val target = imageBounds(area)
             canvas.drawBitmap(bitmap, null, target, null)
             drawRemoveHandle(canvas, target, paint)
         } else {

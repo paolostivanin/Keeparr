@@ -78,16 +78,14 @@ test('text and link colors follow the contrast rule', () => {
   assert.equal(noteTextColor('#7c4a03'), '#e8eaed');
   assert.equal(noteTextColor('', false), '#202124');
   assert.equal(noteTextColor('', true), '#e8eaed');
-  assert.equal(noteLinkColor('#fff8b8'), '#1a73e8');
-  assert.equal(noteLinkColor('#7c4a03'), '#8ab4f8');
+  assert.equal(noteLinkColor('#fff8b8'), '#202124');
+  assert.equal(noteLinkColor('#7c4a03'), '#e8eaed');
   for (const light of storedSwatches) {
     const dark = darkNoteColor(light);
     assert.ok(contrast(light, noteTextColor(light)) >= 4.5, `${light} text in the light theme`);
     assert.ok(contrast(dark, noteTextColor(dark, true)) >= 4.5, `${dark} text in the dark theme`);
-    // The fixed link colors (#1a73e8 / #8ab4f8) cannot reach 4.5:1 on every pastel (worst: Lavender 2.4:1 light,
-    // Cream 3.5:1 dark), so only a floor is asserted. Links are also underlined. See docs/note-content-contract.md.
-    assert.ok(contrast(light, noteLinkColor(light)) >= 2.4, `${light} link in the light theme`);
-    assert.ok(contrast(dark, noteLinkColor(dark, true)) >= 3.4, `${dark} link in the dark theme`);
+    assert.ok(contrast(light, noteLinkColor(light)) >= 4.5, `${light} link in the light theme`);
+    assert.ok(contrast(dark, noteLinkColor(dark, true)) >= 4.5, `${dark} link in the dark theme`);
   }
 });
 
@@ -101,7 +99,7 @@ test('noteSurfaceVars exposes light and dark variables', () => {
   const cream = noteSurfaceVars('#fff8b8', '');
   assert.deepEqual(
     [cream['--note-bg'], cream['--note-bg-dark'], cream['--note-fg'], cream['--note-fg-dark'], cream['--note-link'], cream['--note-link-dark']],
-    ['#fff8b8', '#7c4a03', '#202124', '#e8eaed', '#1a73e8', '#8ab4f8']);
+    ['#fff8b8', '#7c4a03', '#202124', '#e8eaed', '#202124', '#e8eaed']);
   assert.equal(cream['--note-bg-image'], 'none');
   const none = noteSurfaceVars('', '');
   assert.equal(none['--note-bg'], '');

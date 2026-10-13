@@ -29,14 +29,16 @@ export function removePreviewMarkup(root: HTMLElement) {
     marker.querySelectorAll('.editor-link-preview-card').forEach(el => el.remove());
   });
   root.querySelectorAll<HTMLElement>('app-link-preview, .editor-link-previews, .lp-card, .editor-link-preview-card').forEach(el => el.remove());
+  root.querySelectorAll<HTMLElement>('.editor-hidden-link').forEach(wrapper => wrapper.replaceWith(...Array.from(wrapper.childNodes)));
 }
 
-function previewSlot(url: string, originalHtml: string) {
+function previewSlot(url: string, originalHtml: string, originalIsText = false) {
   const marker = document.createElement('span');
   marker.className = 'editor-link-preview-slot';
   marker.contentEditable = 'false';
   marker.dataset['url'] = url;
   marker.dataset['originalHtml'] = originalHtml;
+  if (originalIsText) marker.dataset['originalIsText'] = 'true';
   return marker;
 }
 
@@ -75,7 +77,7 @@ export function decorateLinks(html: string): string {
       const visibleUrl = rawUrl.replace(TRAILING_PUNCTUATION, '');
       const trailing = rawUrl.slice(visibleUrl.length);
       if (start > lastIndex) fragment.append(document.createTextNode(text.slice(lastIndex, start)));
-      fragment.append(previewSlot(visibleUrl, visibleUrl));
+      fragment.append(previewSlot(visibleUrl, visibleUrl, true));
       if (trailing) fragment.append(document.createTextNode(trailing));
       lastIndex = start + rawUrl.length;
     }
@@ -93,6 +95,10 @@ export function stripEditorChrome(html: string): string {
   removePreviewMarkup(div);
   div.querySelectorAll('[data-inline-image-tool]').forEach(el => el.remove());
   div.querySelectorAll<HTMLElement>('.editor-link-preview-slot').forEach(marker => {
+    if (marker.dataset['originalIsText'] === 'true') {
+      marker.replaceWith(document.createTextNode(marker.dataset['originalHtml'] || marker.dataset['url'] || ''));
+      return;
+    }
     const template = document.createElement('template');
     template.innerHTML = marker.dataset['originalHtml'] || marker.dataset['url'] || '';
     marker.replaceWith(template.content);

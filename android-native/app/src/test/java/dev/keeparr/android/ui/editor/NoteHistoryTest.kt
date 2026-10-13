@@ -8,7 +8,8 @@ import org.junit.Test
 
 class NoteHistoryTest {
     private var clock = 0L
-    private fun entry(body: String, structure: String = "") = NoteHistory.Entry("", body, false, "[$structure]", structure)
+    private fun entry(body: String, structure: String = "", images: String = "[]", bgColor: String = "", pinned: Boolean = false) =
+        NoteHistory.Entry("", body, false, "[$structure]", structure, images = images, bgColor = bgColor, pinned = pinned)
 
     @Test fun typingWithinABurstIsOneStepAndABreakStartsAnother() {
         val history = NoteHistory { clock }
@@ -29,6 +30,23 @@ class NoteHistoryTest {
         history.record(entry("a", "1:false:0"))
         history.record(entry("a", "1:true:0"), structural = true)
         assertEquals(4, history.size)
+    }
+
+    @Test fun imageAndNoteAppearanceChangesAreUndoableSteps() {
+        val history = NoteHistory { clock }
+        history.reset(entry("body"))
+        history.record(entry("body", images = "[{\"id\":\"image-1\"}]"), structural = true)
+        history.record(entry("body", images = "[{\"id\":\"image-1\"}]", bgColor = "#cbf0f8", pinned = true), structural = true)
+        val beforeAppearance = history.undo()!!
+        assertEquals("", beforeAppearance.bgColor)
+        assertEquals("[{\"id\":\"image-1\"}]", beforeAppearance.images)
+        val beforeImage = history.undo()!!
+        assertEquals("[]", beforeImage.images)
+        assertFalse(beforeImage.pinned)
+        history.redo()
+        val afterAppearance = history.redo()!!
+        assertEquals("#cbf0f8", afterAppearance.bgColor)
+        assertTrue(afterAppearance.pinned)
     }
 
     @Test fun identicalStatesAreIgnoredAndRedoIsDroppedByANewEdit() {

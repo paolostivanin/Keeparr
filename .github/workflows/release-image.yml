@@ -22,11 +22,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Angular component and utility tests
+        run: npm test -- --watch=false --browsers=ChromeHeadless
       - run: npm run test:native
       - run: npm run test:sync
       - run: npm run test:reminders
       - run: npm run test:utils
       - run: npm run test:server
+      - run: npm run test:scale
+      - run: npm run test:mcp
 
   image:
     name: Build and push image

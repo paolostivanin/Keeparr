@@ -122,8 +122,10 @@ class NoteEditorViewModel(
     @Synchronized fun consumeRestore(hint: RestoreHint) { if (_restore.value === hint) _restore.value = null }
 
     private fun restoreEntry(entry: NoteHistory.Entry) {
-        val next = _draft.value.copyForEdit(arrayOf("checkBoxes")).put("noteTitle", entry.title).put("noteBody", entry.body)
-            .put("isCbox", entry.checklist).put("checkBoxes", JSONArray(entry.items))
+        val next = _draft.value.copyForEdit(arrayOf("checkBoxes", "images", "labels"))
+            .put("noteTitle", entry.title).put("noteBody", entry.body).put("isCbox", entry.checklist)
+            .put("checkBoxes", JSONArray(entry.items)).put("images", JSONArray(entry.images)).put("bgColor", entry.bgColor)
+            .put("bgImage", entry.bgImage).put("pinned", entry.pinned).put("labels", JSONArray(entry.labels)).put("binder", entry.binder)
         publish(next, external = true, structural = true, record = false)
         _restore.value = RestoreHint(entry.focusKey, entry.selection, System.nanoTime())
         updateHistoryFlags()
@@ -132,7 +134,9 @@ class NoteEditorViewModel(
     private fun entryOf(raw: JSONObject, focusKey: String? = null, selection: IntArray? = null): NoteHistory.Entry {
         val items = raw.optJSONArray("checkBoxes") ?: JSONArray()
         val structure = ChecklistModel.rows(items).joinToString(",") { "${it.opt("id")}:${it.optBoolean("done")}:${it.opt("indentLevel")}" }
-        return NoteHistory.Entry(raw.optString("noteTitle"), raw.optString("noteBody"), raw.optBoolean("isCbox"), items.toString(), structure, focusKey, selection)
+        return NoteHistory.Entry(raw.optString("noteTitle"), raw.optString("noteBody"), raw.optBoolean("isCbox"), items.toString(), structure,
+            focusKey, selection, raw.optJSONArray("images")?.toString() ?: "[]", raw.optString("bgColor"), raw.optString("bgImage"),
+            raw.optBoolean("pinned"), raw.optJSONArray("labels")?.toString() ?: "[]", raw.optString("binder"))
     }
 
     private fun updateHistoryFlags() { _canUndo.value = history.canUndo; _canRedo.value = history.canRedo }

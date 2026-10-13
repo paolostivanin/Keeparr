@@ -73,6 +73,7 @@ class NoteHtmlFixtureTest {
         for (edit in Fixtures.objects(Fixtures.editor.getJSONArray("titleEdits"))) {
             assertEquals(edit.getString("id"), edit.getString("html"), NoteHtml.titleHtml(edit.getString("text"), edit.getString("original")))
         }
+        assertEquals("Use &lt;b&gt;literal&lt;/b&gt; &amp;amp; text", NoteHtml.titleHtml("Use <b>literal</b> &amp; text"))
     }
 
     @Test fun untouchedDocumentsKeepTheirOriginalString() {

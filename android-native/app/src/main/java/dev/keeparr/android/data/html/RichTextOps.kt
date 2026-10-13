@@ -689,15 +689,27 @@ class RichTextController(val mode: HtmlMode = HtmlMode.Body) {
     }
 
     private fun withoutStyle(span: InlineTagSpan, tag: String): InlineTagSpan? {
-        if (span.tag in INLINE_STYLE_TAGS) return null
         val properties = when (tag) { "b" -> listOf("font-weight"); "i" -> listOf("font-style"); else -> listOf("text-decoration") }
         val remaining = span.attrs.firstOrNull { it.name == "style" }?.value?.let { value ->
             properties.fold<String, String?>(value) { acc, name -> acc?.let { InlineTagSpan.withoutStyleProperty(it, name) } }
         }
+        val semanticStyle = when (tag) {
+            "b" -> span.tag in setOf("b", "strong")
+            "i" -> span.tag in setOf("i", "em")
+            else -> span.tag in setOf("u", "ins")
+        }
+        val preserveSemanticWrapper = span.tag in INLINE_STYLE_TAGS && !semanticStyle
+        if (preserveSemanticWrapper) {
+            // e.g. italic text with a CSS bold override: keep the semantic
+            // italic wrapper, but remove only the requested CSS property.
+            val attrs = span.attrs.mapNotNull { if (it.name == "style") remaining?.let { style -> HtmlAttr("style", style) } else it }
+            return span.copySpan(attrs = attrs)
+        }
+        val tagName = if (semanticStyle) "span" else span.tag
         val others = span.attrs.filter { it.name != "style" }
         if (remaining == null && others.isEmpty()) return null
         val attrs = span.attrs.mapNotNull { if (it.name == "style") remaining?.let { style -> HtmlAttr("style", style) } else it }
-        return InlineTagSpan(span.tag, attrs, span.order)
+        return InlineTagSpan(tagName, attrs, span.order)
     }
 
     /** Active toolbar states for the selection: `b`, `i`, `u`, `h1`, `h2`, `bullet`, `quote`. */

@@ -20,6 +20,7 @@ import android.widget.EditText
 import dev.keeparr.android.data.html.Doc
 import dev.keeparr.android.data.html.EditCause
 import dev.keeparr.android.data.html.EmbedSpan
+import dev.keeparr.android.data.html.InlineTagSpan
 import dev.keeparr.android.data.html.HtmlMode
 import dev.keeparr.android.data.html.RichTextController
 
@@ -37,6 +38,7 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
     var onCaretRect: ((Rect) -> Unit)? = null
     /** An embed was tapped; [onRemove] is true for the corner handle of an image. */
     var onEmbedTap: ((span: EmbedSpan, offset: Int, onRemove: Boolean) -> Unit)? = null
+    var onLinkTap: ((String) -> Unit)? = null
     var onImageContent: ((Uri, String) -> Unit)? = null
     /** Rows only: Backspace with the caret at the very start of the row. Return true when it was handled. */
     var onBackspaceAtStart: (() -> Boolean)? = null
@@ -214,15 +216,19 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
 
     private fun tapAt(x: Float, y: Float) {
         val layout = layout ?: return
-        val listener = onEmbedTap ?: return
         val line = layout.getLineForVertical((y - totalPaddingTop + scrollY).toInt())
-        val offset = layout.getLineStart(line)
+        val offset = layout.getOffsetForHorizontal(line, x - totalPaddingLeft).coerceIn(0, (text.length - 1).coerceAtLeast(0))
+        val link = text.getSpans(offset, (offset + 1).coerceAtMost(text.length), InlineTagSpan::class.java).lastOrNull { it.link }
+        val href = link?.attrs?.firstOrNull { it.name == "href" }?.value
+        if (!href.isNullOrBlank() && onLinkTap != null) { onLinkTap?.invoke(href); return }
+        val listener = onEmbedTap ?: return
         val span = Doc.embedAt(text, offset) ?: return
         val top = layout.getLineTop(line) + totalPaddingTop.toFloat()
         val bottom = layout.getLineBottom(line) + totalPaddingTop.toFloat()
         if (y < top || y > bottom) return
         val area = RectF(totalPaddingLeft.toFloat(), top, totalPaddingLeft + span.maxWidth.toFloat(), bottom)
-        val onRemove = span.data.kind == dev.keeparr.android.data.html.EmbedKind.Image && span.removeHandle(area).contains(x, y)
+        val onRemove = span.data.kind == dev.keeparr.android.data.html.EmbedKind.Image &&
+            span.removeHandle(span.imageBounds(area)).contains(x, y)
         listener(span, offset, onRemove)
     }
 

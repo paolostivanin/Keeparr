@@ -92,6 +92,18 @@ class RichTextOpsTest {
         assertFalse(NoteHtml.serialize(twice).contains("<b><b>"))
     }
 
+    @Test fun removingBoldFromItalicTextPreservesItalicAndOtherAttributes() {
+        val doc = NoteHtml.parse("<div><i style=\"font-weight:bold; color:red\" data-x=\"kept\">abc</i></div>")
+        RichTextController().toggleInline(doc, "b", 0, 3)
+        assertEquals("<div><i style=\"color:red;\" data-x=\"kept\">abc</i></div>", NoteHtml.serialize(doc))
+    }
+
+    @Test fun removingSemanticBoldKeepsItsOtherAttributesOnANeutralWrapper() {
+        val doc = NoteHtml.parse("<div><strong style=\"color:red\" data-x=\"kept\">abc</strong></div>")
+        RichTextController().toggleInline(doc, "b", 0, 3)
+        assertEquals("<div><span style=\"color:red;\" data-x=\"kept\">abc</span></div>", NoteHtml.serialize(doc))
+    }
+
     @Test fun strikeSurvivesEditingNearby() {
         val doc = NoteHtml.parse("<div><s>x</s> y</div>")
         val controller = RichTextController()

@@ -125,3 +125,69 @@ export function sanitizeRowHtml(html: string): string {
   sanitizeNode(source, out);
   return out.innerHTML;
 }
+
+const PREVIEW_TAGS = new Set([
+  ...ROW_TAGS, 'DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE',
+  'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'IMG', 'HR'
+]);
+const PREVIEW_DROP = new Set([...ROW_DROP, 'SVG', 'MATH', 'INPUT', 'BUTTON', 'VIDEO', 'AUDIO', 'IFRAME', 'OBJECT', 'EMBED', 'FORM']);
+const PREVIEW_ATTRIBUTES: Record<string, readonly string[]> = {
+  A: ['href', 'target', 'rel'],
+  DIV: ['class', 'contenteditable'],
+  SPAN: ['class'],
+  IMG: ['src', 'alt', 'width', 'height', 'class', 'loading', 'decoding'],
+  OL: ['start', 'reversed', 'type'],
+  LI: ['value'],
+  TH: ['colspan', 'rowspan', 'scope'],
+  TD: ['colspan', 'rowspan'],
+};
+const SAFE_IMAGE_DATA = /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z\d+/]+=*$/i;
+
+function sanitizePreviewNode(node: Node, output: Node) {
+  for (const child of Array.from(node.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      output.appendChild(document.createTextNode(child.textContent || ''));
+      continue;
+    }
+    if (child.nodeType !== Node.ELEMENT_NODE) continue;
+    const element = child as Element;
+    const tag = element.tagName.toUpperCase();
+    if (PREVIEW_DROP.has(tag)) continue;
+    if (!PREVIEW_TAGS.has(tag)) {
+      sanitizePreviewNode(element, output);
+      continue;
+    }
+    const copy = document.createElement(tag.toLowerCase());
+    const allowed = new Set(PREVIEW_ATTRIBUTES[tag] ?? []);
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value;
+      if (/^on/i.test(name) || name === 'srcdoc' || (!allowed.has(name) && !name.startsWith('data-') && !name.startsWith('aria-') && !['title', 'dir', 'style'].includes(name))) continue;
+      if (name === 'style') {
+        const style = safeStyle(value);
+        if (style) copy.setAttribute('style', style);
+        continue;
+      }
+      if (name === 'class' && !/^[\w\s-]*$/.test(value)) continue;
+      if (name === 'href' && !SAFE_URL.test(value.replace(/[\u0000- ]/g, ''))) continue;
+      if (name === 'src' && !SAFE_URL.test(value.replace(/[\u0000- ]/g, '')) && !SAFE_IMAGE_DATA.test(value)) continue;
+      if (name === 'contenteditable' && !(tag === 'DIV' && value === 'false' && element.classList.contains('inline-note-image-wrap'))) continue;
+      copy.setAttribute(name, value);
+    }
+    if (tag === 'A' && copy.getAttribute('target') === '_blank') {
+      const rel = new Set((copy.getAttribute('rel') || '').split(/\s+/).filter(Boolean).filter(token => token.toLowerCase() !== 'opener'));
+      rel.add('noopener');
+      copy.setAttribute('rel', [...rel].join(' '));
+    }
+    sanitizePreviewNode(element, copy);
+    output.appendChild(copy);
+  }
+}
+
+/** Safe HTML for read-only card previews, retaining allowed inline colors and note structure. */
+export function sanitizeNotePreviewHtml(html: string): string {
+  const source = parseFragment(String(html ?? ''));
+  const out = document.createElement('div');
+  sanitizePreviewNode(source, out);
+  return out.innerHTML;
+}

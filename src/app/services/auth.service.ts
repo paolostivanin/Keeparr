@@ -58,6 +58,7 @@ export interface OidcLinkStatus {
 })
 export class AuthService {
   private readonly sessionKey = 'gk_session';
+  private readonly pendingThemeKey = 'gk_pending_theme';
   private readonly apiUrl = environment.apiUrl;
   private lastSessionExpiredNoticeAt = 0;
   private suppressSessionExpiredUntil = 0;
@@ -65,6 +66,8 @@ export class AuthService {
 
   constructor(private http: HttpClient) {
     this.applyTheme(this.currentUser?.theme || 'light');
+    window.addEventListener('online', this.retryPendingTheme);
+    if (this.currentUser && localStorage.getItem(this.pendingThemeKey)) this.retryPendingTheme();
   }
 
   get currentUser() {
@@ -197,6 +200,7 @@ export class AuthService {
       body: { currentPassword, confirmation }
     }));
     localStorage.removeItem(this.sessionKey);
+    localStorage.removeItem(this.pendingThemeKey);
     this.currentUser$.next(null);
     this.applyTheme('light');
   }
@@ -305,8 +309,30 @@ export class AuthService {
   }
 
   async updateTheme(theme: UserTheme) {
-    await this.updateAccountPreferences({ theme });
+    const current = this.currentUser;
+    if (!current) return;
+    // Apply and persist locally first so a transient/offline preference write
+    // never leaves the visible theme toggle inert.
+    const optimistic = { ...current, theme };
+    localStorage.setItem(this.sessionKey, JSON.stringify(optimistic));
+    this.currentUser$.next(optimistic);
+    this.applyTheme(theme);
+    localStorage.setItem(this.pendingThemeKey, theme);
+    try {
+      await this.updateAccountPreferences({ theme });
+      if (localStorage.getItem(this.pendingThemeKey) === theme) localStorage.removeItem(this.pendingThemeKey);
+    } catch {
+      localStorage.setItem(this.pendingThemeKey, theme);
+    }
   }
+
+  private readonly retryPendingTheme = () => {
+    const theme = localStorage.getItem(this.pendingThemeKey) as UserTheme | null;
+    if (!theme || !this.currentUser?.token) return;
+    void this.updateAccountPreferences({ theme }).then(() => {
+      if (localStorage.getItem(this.pendingThemeKey) === theme) localStorage.removeItem(this.pendingThemeKey);
+    }).catch(() => undefined);
+  };
 
   async loadAccountPreferences() {
     const user = await firstValueFrom(this.http.get<UserI>(
@@ -393,7 +419,7 @@ export class AuthService {
     if (!current) return;
     const session = {
       ...current,
-      theme: user.theme || current.theme,
+      theme: localStorage.getItem(this.pendingThemeKey) as UserTheme || user.theme || current.theme,
       showPastReminders: user.showPastReminders === true
     };
     localStorage.setItem(this.sessionKey, JSON.stringify(session));
@@ -443,6 +469,7 @@ export class AuthService {
       }
     }
     localStorage.removeItem(this.sessionKey);
+    localStorage.removeItem(this.pendingThemeKey);
     this.currentUser$.next(null);
     this.applyTheme('light');
   }

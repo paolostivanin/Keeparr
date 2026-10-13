@@ -138,7 +138,7 @@
     }
 
     .close-btn {
-      color: #3c4043;
+      color: var(--note-fg-eff, #202124);
     }
   }
 
@@ -251,7 +251,8 @@
       overflow-wrap: anywhere;
 
       &.ph {
-        color: rgba(255, 255, 255, 0.702);
+        color: var(--note-fg-eff, #202124);
+        opacity: 0.62;
         font-weight: 500;
         position: absolute;
         width: 100%;
@@ -365,7 +366,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #5f6368; // Consistent dark grey for mobile
+      color: var(--note-fg-eff, #202124);
       cursor: pointer;
       font-family: var(--font-display);
       font-size: 18px;
@@ -399,13 +400,13 @@
         background-position: center;
         background-size: 20px;
         opacity: 1; // Full opacity for clarity
-        filter: grayscale(1) brightness(0.4); // Force dark grey for SVG backgrounds
+        background-color: currentColor;
 
-        &.picture { background-image: url(/assets/images/svg/picture.svg); }
-        &.colab { background-image: url(/assets/images/svg/col.svg); }
-        &.paint { background-image: url(/assets/images/svg/paint.svg); }
-        &.check { background-image: url(/assets/images/svg/check.svg); }
-        &.attachment { background-image: url(/assets/images/svg/attachment.svg); }
+        &.picture { -webkit-mask: url(/assets/images/svg/picture.svg) center / contain no-repeat; mask: url(/assets/images/svg/picture.svg) center / contain no-repeat; }
+        &.colab { -webkit-mask: url(/assets/images/svg/col.svg) center / contain no-repeat; mask: url(/assets/images/svg/col.svg) center / contain no-repeat; }
+        &.paint { -webkit-mask: url(/assets/images/svg/paint.svg) center / contain no-repeat; mask: url(/assets/images/svg/paint.svg) center / contain no-repeat; }
+        &.check { -webkit-mask: url(/assets/images/svg/check.svg) center / contain no-repeat; mask: url(/assets/images/svg/check.svg) center / contain no-repeat; }
+        &.attachment { -webkit-mask: url(/assets/images/svg/attachment.svg) center / contain no-repeat; mask: url(/assets/images/svg/attachment.svg) center / contain no-repeat; }
       }
     }
 
@@ -421,7 +422,7 @@
   :host-context(.light-theme) {
     .mobile-bottom-bar .mobile-icon,
     .mobile-bottom-bar .timestamp {
-      color: #5f6368;
+      color: var(--note-fg-eff, #202124);
     }
     .mobile-bottom-bar {
       border-top-color: #e0e0e0;
@@ -1339,7 +1340,7 @@
   }
 
   .close-btn {
-    color: #3c4043;
+    color: var(--note-fg-eff, #202124);
 
     &:hover {
       background-color: rgba(60, 64, 67, 0.08);

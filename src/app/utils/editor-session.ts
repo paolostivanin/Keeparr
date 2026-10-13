@@ -166,7 +166,11 @@ export class EditorSessionTracker {
   }
 
   beginSave(): number {
-    this.inFlight = { generation: this.record.generation, draft: structuredClone(this.record.draft) };
+    // A caller may capture while a save is already running (for example, a
+    // co-edit autosave queued behind it). Keep the snapshot belonging to the
+    // actual request in flight; the next request captures its own snapshot
+    // after this one settles.
+    if (!this.inFlight) this.inFlight = { generation: this.record.generation, draft: structuredClone(this.record.draft) };
     this.record = { ...this.record, localState: 'saving', lastError: undefined };
     return this.inFlight.generation;
   }
@@ -241,14 +245,15 @@ export class EditorSessionPersister {
   private enqueue(op: NonNullable<EditorSessionPersister['pending']>) {
     this.pending = op;
     this.chain = this.chain.then(async () => {
-      if (this.pending !== op) return;
       try {
         if (op.kind === 'put') await this.storage.put(op.record);
         else await this.storage.delete(op.key);
-        this.pending = undefined;
+        // A later operation may have arrived while storage was pending. Do
+        // not clear it when the older operation completes.
+        if (this.pending === op) this.pending = undefined;
         this.setFailed(false);
       } catch {
-        this.setFailed(true);
+        if (this.pending === op) this.setFailed(true);
       }
     });
     return this.chain;

@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import dev.keeparr.android.data.ChecklistModel
 import dev.keeparr.android.data.html.HtmlMode
 import org.json.JSONObject
+import android.net.Uri
 
 /** What the rows of a checklist can ask of the note; the editor screen implements them with [ChecklistModel]. */
 interface ChecklistActions {
@@ -51,7 +52,8 @@ interface ChecklistActions {
 @Composable
 internal fun ChecklistRows(
     rows: List<JSONObject>, hideDone: Boolean, externalEdits: Long, colors: EditorColors, foreground: Color, background: Color,
-    embeds: EmbedBinder?, states: MutableMap<Long, RichEditorState>, actions: ChecklistActions
+    embeds: EmbedBinder?, states: MutableMap<Long, RichEditorState>, actions: ChecklistActions, onLinkTap: (String) -> Unit,
+    onImageContent: (Uri, String) -> Unit
 ) {
     val visible = rows.filter { !hideDone || !it.optBoolean("done") }
     Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
@@ -73,6 +75,8 @@ internal fun ChecklistRows(
                             RichTextField(
                                 state = state, html = item.getString("data"), externalEdits = externalEdits, colors = colors, hint = "List item",
                                 modifier = Modifier.fillMaxWidth(), embeds = embeds,
+                                onLinkTap = onLinkTap,
+                                onImageContent = onImageContent,
                                 onHtmlChange = { actions.setText(id, it) },
                                 onSplit = { left, rest, caret -> actions.split(id, left, rest, caret) },
                                 onBackspaceAtStart = { actions.backspaceAtStart(id) }

@@ -82,7 +82,7 @@ class NoteBackgroundTest {
         assertTrue(BackgroundArt.text(context, NoteBackground.Groceries, true, false).contains("""fill="#362f14""""))
     }
 
-    @Test fun aCardCarriesTheBackgroundAndDropsTheColorWhileAnUnknownImageIsKept() {
+    @Test fun aCardCarriesBothItsStoredColorAndIllustration() {
         fun card(vararg fields: Pair<String, String>): dev.keeparr.android.ui.NoteCardUiModel {
             val note = Note.create(1L)
             note.raw.put("id", 1).put("revision", 1)
@@ -91,13 +91,16 @@ class NoteBackgroundTest {
         }
         val image = card("bgColor" to "#fff8b8", "bgImage" to "url(\"/assets/images/backgrounds/gym.svg\")")
         assertEquals(NoteBackground.Gym, image.background)
-        assertNull("the image replaces the color", image.colorArgb)
+        assertEquals(0xFFFFF8B8.toInt(), image.colorArgb)
+        assertTrue(image.hasBackgroundImage)
         val unknown = card("bgColor" to "#fff8b8", "bgImage" to "url(/assets/images/backgrounds/image-1.svg)")
         assertNull(unknown.background)
-        assertNull("an unknown image still replaces the color, as on the web", unknown.colorArgb)
+        assertEquals(0xFFFFF8B8.toInt(), unknown.colorArgb)
+        assertTrue(unknown.hasBackgroundImage)
         val plain = card("bgColor" to "#fff8b8")
         assertNull(plain.background)
         assertEquals(0xFFFFF8B8.toInt(), plain.colorArgb)
+        assertFalse(plain.hasBackgroundImage)
     }
 
     @Test fun svgParserAcceptsADarkenedDocument() {

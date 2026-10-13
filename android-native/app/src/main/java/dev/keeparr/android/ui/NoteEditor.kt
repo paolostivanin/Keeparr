@@ -97,6 +97,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     var confirmHideCheckboxes by remember { mutableStateOf(false) }
     var inaccessible by remember { mutableStateOf(false) }
     val note = Note(raw)
+    var editorSessionActive by remember(note.syncId) { mutableStateOf(true) }
     val lockSource = incoming ?: note
     val cachedNote by remember(note.syncId, app.settings.profile) { app.repository.observeNote(note.syncId) }.collectAsStateWithLifecycle(original)
     val metadataNote = incoming ?: cachedNote ?: note
@@ -107,6 +108,16 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     fun change(vararg touched: String, external: Boolean = false, structural: Boolean = false, block: (JSONObject) -> Unit) =
         draftViewModel.change(*touched, external = external, structural = structural, block = block)
     fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
+    fun openNoteLink(rawUrl: String) {
+        val value = rawUrl.trim()
+        val scheme = android.net.Uri.parse(value).scheme?.lowercase()
+        val target = when (scheme) {
+            "http", "https", "mailto", "tel" -> value
+            null -> app.settings.origin.trimEnd('/') + if (value.startsWith('/')) value else "/$value"
+            else -> { onError("This link type is not supported."); return }
+        }
+        action { activity.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(target))) }
+    }
     fun close() { action { draftViewModel.finish(); onClose() } }
     val externalEdits by draftViewModel.externalEdits.collectAsStateWithLifecycle()
     val canUndo by draftViewModel.canUndo.collectAsStateWithLifecycle()
@@ -230,19 +241,26 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     fun addImage(uri: android.net.Uri) = action {
         val staged = Media(app).stage(uri)
         if (!InlineImages.isInlineImage(staged)) {
-            draftViewModel.flushAndQueueSync(); app.repository.attach(Note(draftViewModel.draft.value), staged)
+            if (editorSessionActive) draftViewModel.flushAndQueueSync()
+            app.repository.attach(note.syncId, staged)
         } else {
+            if (editorSessionActive) draftViewModel.flushAndQueueSync()
             // Upload ownership outlives this composable, so rotation or closing
             // the editor cannot cancel the staged-file upload midway.
             app.scope.launch {
                 try {
                     val outcome = InlineImages.place(staged, { Media(app).uploadInline(it) }) {
-                        draftViewModel.flushAndQueueSync()
-                        app.repository.attach(Note(draftViewModel.draft.value), staged)
+                        app.repository.attach(note.syncId, staged)
                     }
                     withContext(Dispatchers.Main.immediate) {
-                        if (outcome is InlineImages.Outcome.Inline) insertInline(outcome.html)
-                        draftViewModel.flushAndQueueSync()
+                        if (outcome is InlineImages.Outcome.Inline) {
+                            if (editorSessionActive && bodyState.view != null) {
+                                insertInline(outcome.html)
+                                draftViewModel.flushAndQueueSync()
+                            } else {
+                                app.repository.appendInlineImage(note.syncId, outcome.html)
+                            }
+                        }
                     }
                 } catch (error: Exception) {
                     withContext(Dispatchers.Main.immediate) { onError(error.message ?: "Image upload failed") }
@@ -253,6 +271,10 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     LaunchedEffect(draftViewModel) { draftViewModel.errors.collect(onError) }
     // The debounce window must not be lost when the editor leaves the foreground.
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(note.syncId) {
+        editorSessionActive = true
+        onDispose { editorSessionActive = false }
+    }
     DisposableEffect(lifecycleOwner, draftViewModel) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) app.scope.launch { runCatching { draftViewModel.flushLocal() } }
@@ -276,7 +298,10 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         if (changed && !inaccessible) {
             delay(600)
             if (!changed || inaccessible) return@LaunchedEffect
-            if (changed && !inaccessible) draftViewModel.flushAndQueueSync()
+            if (changed && !inaccessible) {
+                try { draftViewModel.flushAndQueueSync() }
+                catch (error: Exception) { onError(error.message ?: "Could not save changes") }
+            }
         }
     }
     DisposableEffect(note.id, inaccessible) {
@@ -303,14 +328,16 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         return
     }
     // The stored color is data; the dark variant is derived at render time. Everything below draws on `color`/`foreground`.
-    // A background image replaces the color (as on the web) and the text takes the theme's own color over it.
+    // The stored color shows through transparent parts of the illustration; text follows the theme over artwork.
     val bgImage = note.raw.text("bgImage")
     val background = NoteBackground.parse(bgImage)
-    val displayedColor = if (bgImage.isNotBlank()) null else NotePalette.display(note.raw.text("bgColor"), LocalDarkTheme.current)
+    val displayedColor = NotePalette.display(note.raw.text("bgColor"), LocalDarkTheme.current)
     val color = displayedColor?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
-    val foreground = displayedColor?.let { Color(NotePalette.textColor(it)) } ?: MaterialTheme.colorScheme.onSurface
+    val foreground = if (bgImage.isNotBlank()) MaterialTheme.colorScheme.onSurface
+        else displayedColor?.let { Color(NotePalette.textColor(it)) } ?: MaterialTheme.colorScheme.onSurface
     CompositionLocalProvider(LocalRichEditorFocus provides focus) {
-    NoteSurfaceTheme(color, foreground) {
+    NoteSurfaceTheme(color, foreground,
+        linkColor = if (bgImage.isNotBlank()) if (LocalDarkTheme.current) NotePalette.LINK_DARK_THEME else NotePalette.LINK_LIGHT_THEME else null) {
     SystemBarsOverride(lightBackground = NotePalette.textColor(color.toArgb()) == NotePalette.TEXT_LIGHT_THEME)
     Scaffold(topBar = {
         TopAppBar(title = {},
@@ -452,10 +479,11 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                 RichTextField(state = bodyState, html = note.body, externalEdits = externalEdits, colors = editorColors, hint = "Note",
                     modifier = Modifier.fillMaxWidth().heightIn(min = if (note.checklist) 24.dp else 160.dp), textSizeSp = 18f, minLines = if (note.checklist) 1 else 6, embeds = embeds,
                     onHtmlChange = { html -> change("noteBody") { it.put("noteBody", html) } },
-                    onEmbedTap = { span, offset, onRemove ->
+                     onEmbedTap = { span, offset, onRemove ->
                         if (span.data.kind == EmbedKind.Image) { if (onRemove) bodyState.view?.let { view -> view.edit { text -> view.controller.removeEmbedAt(text, offset) } } }
                         else embedDetail = span to offset
-                    },
+                     },
+                    onLinkTap = ::openNoteLink,
                     onImageContent = { uri, _ -> addImage(uri) })
             }
             if (note.checklist) {
@@ -463,19 +491,25 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                 if (completedCount > 0) TextButton(onClick = { draftViewModel.updateChecklistCollapsed(!hideDone) }) {
                     Text(if (hideDone) "Show completed ($completedCount)" else "Hide completed ($completedCount)")
                 }
-                ChecklistRows(note.items, hideDone, externalEdits, editorColors, foreground, color, embeds, rowStates, checklistActions)
+                ChecklistRows(note.items, hideDone, externalEdits, editorColors, foreground, color, embeds, rowStates, checklistActions,
+                    ::openNoteLink, { uri, _ -> addImage(uri) })
                 TextButton(onClick = { addChecklistItem() }) { Icon(Icons.Outlined.Add, null); Text("List item") }
             }
             ImagesAt("bottom")
             val attachments = (metadataNote.raw.optJSONArray("attachments")?.objects().orEmpty() + note.raw.optJSONArray("attachments")?.objects().orEmpty())
                 .distinctBy { it.text("syncId").ifBlank { it.optLong("id").toString() } }
-            attachments.forEach { attachment ->
-                TextButton(onClick = { action {
-                    val file = Media(app).download("/api/attachments/${attachment.getLong("id")}")
-                    val uri = FileProvider.getUriForFile(app, "dev.keeparr.android.files", file)
-                    activity.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, attachment.text("mimeType", "application/octet-stream")).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-                } }) { Icon(Icons.Outlined.AttachFile, null); Text(attachment.text("originalName")) }
-            }
+             attachments.forEach { attachment ->
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    TextButton(onClick = { action {
+                        val file = Media(app).download("/api/attachments/${attachment.getLong("id")}")
+                        val uri = FileProvider.getUriForFile(app, "dev.keeparr.android.files", file)
+                        activity.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, attachment.text("mimeType", "application/octet-stream")).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                    } }) { Icon(Icons.Outlined.AttachFile, null); Text(attachment.text("originalName")) }
+                    if (owner) IconButton(onClick = { action { app.repository.deleteAttachment(note.syncId, attachment.text("syncId")) } }) {
+                        Icon(Icons.Outlined.DeleteOutline, "Remove ${attachment.text("originalName")}")
+                    }
+                }
+             }
             if (metadataNote.labels.isNotEmpty()) Text(metadataNote.labels.joinToString(" · "), style = MaterialTheme.typography.labelMedium)
             if (metadataNote.binder.isNotEmpty()) Text("Binder: ${metadataNote.binder}", style = MaterialTheme.typography.labelMedium)
             selectedReminder?.let { TextButton(onClick = { reminderDialog = true }) {

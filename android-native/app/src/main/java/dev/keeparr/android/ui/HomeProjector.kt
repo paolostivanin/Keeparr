@@ -95,8 +95,9 @@ internal class HomeProjector {
         title = NoteHtml.titleText(note.title),
         // A checklist note whose body has content is a hybrid: the body shows above the items.
         bodyText = if (note.checklist && !NoteHtml.hasMeaningfulBody(note.body)) "" else NoteHtml.previewText(note.body),
-        colorArgb = if (note.raw.text("bgImage").isNotBlank()) null else dev.keeparr.android.data.NotePalette.parseStored(note.raw.text("bgColor")),
+        colorArgb = dev.keeparr.android.data.NotePalette.parseStored(note.raw.text("bgColor")),
         background = dev.keeparr.android.data.NoteBackground.parse(note.raw.text("bgImage")),
+        hasBackgroundImage = note.raw.text("bgImage").isNotBlank(),
         locked = note.locked,
         checklist = note.checklist,
         checklistItems = if (note.checklist) note.items.take(8).map { item ->

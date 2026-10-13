@@ -13,7 +13,7 @@ import { NoteCardActionsComponent } from './components/notes/note-card-actions.c
 import { InputComponent } from './components/input/input.component';
 import { ph } from './pipes/ph.pipe';
 import { NoteSurfacePipe } from './pipes/note-surface.pipe';
-import { RowHtmlDirective } from './directives/row-html.directive';
+import { NotePreviewHtmlDirective, RowHtmlDirective } from './directives/row-html.directive';
 import { AppRoutingModule } from './app-routing.module';
 import { CboxSortPipe } from './pipes/cbox-sort.pipe';
 import { CboxDonePipe } from './pipes/cbox-done.pipe';
@@ -38,6 +38,7 @@ import { ConnectionHeadersInterceptor } from './services/connection-headers.inte
         ph,
         NoteSurfacePipe,
         RowHtmlDirective,
+        NotePreviewHtmlDirective,
         CboxSortPipe,
         CboxDonePipe,
         NotesToolsPipe,

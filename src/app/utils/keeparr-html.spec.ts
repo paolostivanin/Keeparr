@@ -1,6 +1,6 @@
 import fixture from '../../../test-fixtures/native-contract.json';
 import { splitBodyIntoLines, type LineNode } from './checklist-conversion';
-import { escapeText, hasMeaningfulBody, sanitizeRowHtml, titleHtml, titleText } from './keeparr-html';
+import { escapeText, hasMeaningfulBody, sanitizeNotePreviewHtml, sanitizeRowHtml, titleHtml, titleText } from './keeparr-html';
 
 // The shared editor fixtures (docs/note-content-contract.md) replayed against the real browser.
 const editorHtml = (fixture as any).editorHtml;
@@ -81,6 +81,23 @@ describe('sanitizeRowHtml', () => {
   it('is stable: sanitizing twice changes nothing', () => {
     const once = sanitizeRowHtml('<b>a</b> <u onmouseover="x">b</u><br><span style="color:red">c</span>');
     expect(sanitizeRowHtml(once)).toBe(once);
+  });
+});
+
+describe('sanitizeNotePreviewHtml', () => {
+  it('retains safe rich inline colors and note structure for card previews', () => {
+    expect(sanitizeNotePreviewHtml('<div><span style="color:red;background-color:yellow">Important</span><ul><li>One</li></ul></div>'))
+      .toBe('<div><span style="color: red; background-color: yellow;">Important</span><ul><li>One</li></ul></div>');
+  });
+
+  it('removes active content and unsafe attributes while retaining safe text', () => {
+    expect(sanitizeNotePreviewHtml('<div onclick="x()"><script>alert(1)</script><a href="javascript:x()">safe</a><img src="javascript:x()" onerror="x()"></div>'))
+      .toBe('<div><a>safe</a><img></div>');
+  });
+
+  it('prevents reverse-tabnabbing from preview links', () => {
+    expect(sanitizeNotePreviewHtml('<a href="https://example.test" target="_blank" rel="opener">link</a>'))
+      .toBe('<a href="https://example.test" target="_blank" rel="noopener">link</a>');
   });
 });
 

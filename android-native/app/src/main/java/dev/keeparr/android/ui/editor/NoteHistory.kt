@@ -15,9 +15,12 @@ class NoteHistory(private val now: () -> Long = System::currentTimeMillis) {
         /** Rows' ids, states and levels: when this differs between two snapshots the change is structural. */
         val structure: String,
         /** Field that had the focus (`body`, `row:<id>`) and its selection, to put the caret back after undo. */
-        val focusKey: String? = null, val selection: IntArray? = null
+        val focusKey: String? = null, val selection: IntArray? = null,
+        val images: String = "[]", val bgColor: String = "", val bgImage: String = "", val pinned: Boolean = false,
+        val labels: String = "[]", val binder: String = ""
     ) {
-        fun sameContent(other: Entry) = title == other.title && body == other.body && checklist == other.checklist && items == other.items
+        fun sameContent(other: Entry) = title == other.title && body == other.body && checklist == other.checklist && items == other.items &&
+            images == other.images && bgColor == other.bgColor && bgImage == other.bgImage && pinned == other.pinned && labels == other.labels && binder == other.binder
     }
 
     private val entries = ArrayList<Entry>()

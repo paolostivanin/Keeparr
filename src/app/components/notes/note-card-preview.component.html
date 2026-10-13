@@ -47,7 +47,7 @@
         <section class="body-segments" [class.min]="(note.noteBody || '').length > 68">
           @for (segment of meta.bodySegments; track trackBodySegment($index, segment)) {
             @if (segment.type === 'html') {
-              <div class="body" [innerHTML]="segment.value" (contextmenu)="downloadInlineImage.emit($event)"></div>
+              <div class="body" [appNotePreviewHtml]="segment.value" (contextmenu)="downloadInlineImage.emit($event)"></div>
             } @else {
               <div class="link-previews"><app-link-preview [url]="segment.value"></app-link-preview></div>
             }
@@ -68,7 +68,7 @@
                 (click)="$event.stopPropagation()"></div>
               <div class="cbox-note-container min overview-cbox-note-container">
                 <div class="cbox-note overview-cbox-note" [attr.data-id]="checkbox.id"
-                  [class.cbox-done]="checkbox.done" [innerHTML]="checkbox.data"></div>
+                  [class.cbox-done]="checkbox.done" [appNotePreviewHtml]="checkbox.data"></div>
               </div>
               <div class="cbox-cancel-icon min H" (touchstart)="$event.stopPropagation()"
                 (touchend)="removeCheckboxFromEvent(checkbox, $event)" (mousedown)="$event.stopPropagation()"

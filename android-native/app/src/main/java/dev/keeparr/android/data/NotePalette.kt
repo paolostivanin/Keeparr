@@ -127,8 +127,12 @@ object NotePalette {
         return if (contrast(bg, luminance(TEXT_DARK_THEME)) > contrast(bg, luminance(TEXT_LIGHT_THEME))) TEXT_DARK_THEME else TEXT_LIGHT_THEME
     }
 
-    /** The link color that goes with [textColor] for the same background. */
-    fun linkColor(background: Int): Int = if (textColor(background) == TEXT_LIGHT_THEME) LINK_LIGHT_THEME else LINK_DARK_THEME
+    /** Theme accent where readable, otherwise the high-contrast text color (links are also underlined). */
+    fun linkColor(background: Int): Int {
+        val foreground = textColor(background)
+        val preferred = if (foreground == TEXT_LIGHT_THEME) LINK_LIGHT_THEME else LINK_DARK_THEME
+        return if (contrast(preferred, background) >= 4.5) preferred else foreground
+    }
 
     /** The theme's own text and link colors, for a note without a color or one drawn over a background image. */
     fun themeText(dark: Boolean): Int = if (dark) TEXT_DARK_THEME else TEXT_LIGHT_THEME

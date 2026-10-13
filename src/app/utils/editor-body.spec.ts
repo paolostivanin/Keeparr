@@ -26,6 +26,24 @@ describe('editor body transformations', () => {
     expect(stripEditorChrome(html)).toBe('https://a.test');
   });
 
+  it('round-trips entity-like text in bare URLs without parsing it as HTML', () => {
+    const html = 'https://example.test/?q=&amp;copy;';
+    expect(roundTrip(html)).toBe(html);
+  });
+
+  it('keeps the original link when a preview is replaced with text', () => {
+    const root = document.createElement('div');
+    root.innerHTML = decorateLinks('<a href="https://example.test/?q=1&amp;x=2">link</a>');
+    const slot = root.querySelector<HTMLElement>('.editor-link-preview-slot')!;
+    const hiddenLink = document.createElement('span');
+    hiddenLink.className = 'editor-hidden-link';
+    const template = document.createElement('template');
+    template.innerHTML = slot.dataset['originalHtml']!;
+    hiddenLink.append(template.content);
+    slot.replaceWith(hiddenLink);
+    expect(stripEditorChrome(root.innerHTML)).toBe('<a href="https://example.test/?q=1&amp;x=2">link</a>');
+  });
+
   it('extracts at most three distinct http(s) URLs without trailing punctuation', () => {
     const urls = extractUrlsFromHtml('<a href="https://a.test/">a</a> https://a.test/, https://b.test) https://c.test; https://d.test javascript:alert(1)');
     expect(urls.length).toBe(3);

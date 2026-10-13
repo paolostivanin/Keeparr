@@ -16,10 +16,11 @@ internal data class NoteCardUiModel(
     val syncId: String,
     val title: String,
     val bodyText: String,
-    /** The stored color, null when the note has a background image (the image replaces the color, as on the web). */
+    /** The stored color remains beneath any illustration, matching the web surface composition. */
     val colorArgb: Int?,
     /** The known illustrated background, or null for none and for unknown values, which are kept but not drawn. */
     val background: NoteBackground?,
+    val hasBackgroundImage: Boolean,
     val locked: Boolean,
     val checklist: Boolean,
     val checklistItems: List<ChecklistCardItem>,

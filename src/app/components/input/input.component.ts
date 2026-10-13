@@ -105,6 +105,7 @@ export class InputComponent implements OnInit {
   showSelectionFormatting = false
   selectionFormattingStyle: Record<string, string> = {}
   private textHistoryTarget?: HTMLElement
+  private editorLifecycleGeneration = 0
   private textSelectionFrame?: number
   /** The mouse button is held down in the text: the selection is still being dragged. */
   private pointerSelecting = false
@@ -311,6 +312,7 @@ export class InputComponent implements OnInit {
   }
 
   notePhClick() {
+    if (this.noteMain?.nativeElement.hidden) this.editorLifecycleGeneration++
     this.toggleNoteVisibility(true)
     if (this.isCbox.value) this.cboxPh?.nativeElement.focus()
     else this.noteBody?.nativeElement.focus()
@@ -362,6 +364,7 @@ export class InputComponent implements OnInit {
   }
 
   closeNote() {
+    this.editorLifecycleGeneration++
     this.endEditorSession()
     this.teardownDrawingResize()
     this.toggleNoteVisibility(false)
@@ -724,12 +727,17 @@ export class InputComponent implements OnInit {
           return false
         }
         this.editorSaveSucceeded(sessionGeneration)
+        // Once the first snapshot exists, keep the composer attached to that
+        // note while collaborators/attachments are processed. Edits typed in
+        // the meantime then have a normal existing-note save path.
+        const created = this.notesService.notesList$.value?.find(note => note.id === id)
+        this.isEditing = true
+        this.noteToEdit = { ...noteObj, id, syncId: created?.syncId || noteObj.syncId, revision: created?.revision || noteObj.revision }
+        this.saveBaselineSnapshot = this.noteSaveSnapshot(this.noteToEdit)
         await this.applyPendingCollaborators(id, pendingCollaboratorIds)
         if (!(await this.uploadPendingAttachments(id))) {
-          this.isEditing = true
           const saved = this.notesService.notesList$.value?.find(note => note.id === id)
-          this.noteToEdit = { ...noteObj, id, syncId: saved?.syncId }
-          this.saveBaselineSnapshot = this.noteSaveSnapshot(this.noteToEdit)
+          this.noteToEdit = { ...this.noteToEdit, syncId: saved?.syncId || this.noteToEdit.syncId, revision: saved?.revision || this.noteToEdit.revision }
           return false
         }
         this.flushPendingReminderSaves(id, noteObj)
@@ -738,6 +746,9 @@ export class InputComponent implements OnInit {
         }
         if (this.isTrashed) {
           this.Shared.snackBar({ action: 'trashed', opposite: 'untrashed' }, { trashed: false }, id)
+        }
+        if (this.noteSaveSnapshot(this.liveEditorNote()) !== this.saveBaselineSnapshot) {
+          return await this.saveNoteNow(true)
         }
         this.closeNote()
     }
@@ -752,7 +763,11 @@ export class InputComponent implements OnInit {
       if (!idAttr) return
       const id = Number(idAttr)
       const cb = next.find(c => c.id === id)
-      if (cb) cb.data = cboxEl.innerHTML
+      if (cb) {
+        const source = cboxEl.dataset['sourceHtml']
+        const rendered = cboxEl.dataset['renderedHtml']
+        cb.data = source !== undefined && cboxEl.innerHTML === rendered ? source : cboxEl.innerHTML
+      }
     })
     if (updateModel) this.checkBoxes = next
     return next
@@ -1555,12 +1570,27 @@ export class InputComponent implements OnInit {
     const files = Array.from(fileList).filter(file => file.type.startsWith('image/'))
     if (!files.length) return
     // A checklist keeps its items: the image goes into a body shown above them (the note becomes hybrid).
+    const editorBodyAtStart = this.noteBody?.nativeElement
+    const editorSessionAtStart = this.editorSession
+    const lifecycleAtStart = this.editorLifecycleGeneration
     if (this.isCbox.value && !this.isHybridNote) {
       this.isHybridNote = true
       this.cd.detectChanges()
     }
     if (event) this.placeCaretFromDrop(event)
-    const imageData = await Promise.all(files.map(file => this.fileToImage(file, 'bottom')))
+    let uploads: PromiseSettledResult<NoteImageI>[]
+    try {
+      uploads = await Promise.allSettled(files.map(file => this.fileToImage(file, 'bottom')))
+    } catch (error) {
+      this.showAttachmentMessage('Could not upload the selected image.')
+      return
+    }
+    const imageData = uploads.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+    if (uploads.some(result => result.status === 'rejected')) this.showAttachmentMessage('Some images could not be uploaded.')
+    // Uploads may finish after this composer was closed or a different note
+    // was opened. Never append their result to whichever editor is current.
+    if (this.destroyed || lifecycleAtStart !== this.editorLifecycleGeneration || !editorBodyAtStart || this.noteBody?.nativeElement !== editorBodyAtStart ||
+        editorSessionAtStart && this.editorSession !== editorSessionAtStart) return
     imageData.forEach(image => this.insertInlineImage(image))
     this.updateInputLength({ body: this.noteBody?.nativeElement.innerHTML.length || 0 })
     if (this.isEditing) await this.saveNote(false)
@@ -1806,10 +1836,28 @@ export class InputComponent implements OnInit {
     if (!wrap) return
     // Also remove the trailing <br> spacer that was inserted alongside the wrapper.
     const next = wrap.nextElementSibling
-    wrap.remove()
-    if (next && next.tagName === 'DIV' && next.innerHTML.trim().toLowerCase() === '<br>') next.remove()
     const body = this.noteBody?.nativeElement
-    if (body) this.onNoteBodyInput(body)
+    if (body) {
+      const range = document.createRange()
+      range.setStartBefore(wrap)
+      const hasSpacer = !!next && next.tagName === 'DIV' && next.innerHTML.trim().toLowerCase() === '<br>'
+      range.setEndAfter(hasSpacer ? next! : wrap)
+      body.focus()
+      const selection = window.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+      // A browser edit command participates in contenteditable's undo stack;
+      // direct DOM removal did not.
+      const deleted = document.execCommand('delete')
+      if (!deleted || wrap.isConnected) {
+        wrap.remove()
+        if (hasSpacer && next) next.remove()
+      }
+      this.onNoteBodyInput(body)
+    } else {
+      wrap.remove()
+      if (next && next.tagName === 'DIV' && next.innerHTML.trim().toLowerCase() === '<br>') next.remove()
+    }
     this.queueCoEditAutosave()
   }
 
@@ -1958,7 +2006,9 @@ export class InputComponent implements OnInit {
     const row = event.currentTarget as HTMLDivElement
     const tail = this.takeCboxTextAfterCaret(row)
     row.append(document.createTextNode(lines[0]))
-    this.onCboxInput(id, row)
+    // Do not checkpoint the first half as an independent text edit: the paste
+    // plus its new rows is one structural operation and Undo must restore the
+    // pre-paste row (including the extracted suffix).
     const rest = lines.slice(1).map(escapeHtml)
     rest[rest.length - 1] += tail
     const added = this.addCheckBoxes(rest, id)
@@ -2371,6 +2421,8 @@ export class InputComponent implements OnInit {
   }
 
   private focusCboxInputAtStart(el: HTMLElement) {
+    const id = Number(el.dataset['cboxId'])
+    if (Number.isFinite(id)) (this.explicitCboxFocusIds ??= new Set<number>()).add(id)
     el.focus()
     const range = document.createRange()
     range.selectNodeContents(el)
@@ -2603,15 +2655,37 @@ export class InputComponent implements OnInit {
     const remove = document.createElement('button')
     remove.type = 'button'
     remove.className = 'editor-link-preview-remove'
-    remove.title = 'Remove link preview'
-    remove.setAttribute('aria-label', 'Remove link preview')
+    remove.title = 'Show link as text'
+    remove.setAttribute('aria-label', 'Show link as text')
     remove.innerHTML = '<span class="material-symbols-outlined">close</span>'
     remove.addEventListener('mousedown', event => event.stopPropagation())
     remove.addEventListener('click', event => {
       event.preventDefault()
       event.stopPropagation()
-      const slot = remove.closest('.editor-link-preview-slot')
-      slot?.remove()
+      const slot = remove.closest('.editor-link-preview-slot') as HTMLElement | null
+      if (slot) {
+        const hiddenLink = document.createElement('span')
+        hiddenLink.className = 'editor-hidden-link'
+        if (slot.dataset['originalIsText'] === 'true') {
+          hiddenLink.textContent = slot.dataset['originalHtml'] || slot.dataset['url'] || ''
+        } else {
+          const template = document.createElement('template')
+          template.innerHTML = slot.dataset['originalHtml'] || ''
+          hiddenLink.append(template.content)
+        }
+        const body = this.noteBody?.nativeElement
+        let replaced = false
+        if (body?.contains(slot)) {
+          const range = document.createRange()
+          range.selectNode(slot)
+          body.focus()
+          const selection = window.getSelection()
+          selection?.removeAllRanges()
+          selection?.addRange(range)
+          replaced = document.execCommand('insertHTML', false, hiddenLink.outerHTML)
+        }
+        if (!replaced) slot.replaceWith(hiddenLink)
+      }
       if (this.noteBody?.nativeElement) this.onNoteBodyInput(this.noteBody.nativeElement)
     })
     return remove
@@ -4566,6 +4640,14 @@ export class InputComponent implements OnInit {
             nodeStack.push(node.childNodes[i]);
           }
         }
+      }
+      if (!foundStart) {
+        // Link previews replace a long URL text run with a short atomic card.
+        // A saved offset can therefore be past the end of the rewritten text;
+        // put the caret after the final slot instead of at the body's start.
+        const lastSlot = element.querySelector<HTMLElement>('.editor-link-preview-slot:last-of-type')
+        if (lastSlot && !lastSlot.nextSibling) range.setStartAfter(lastSlot)
+        else { range.selectNodeContents(element); range.collapse(false) }
       }
       selection.removeAllRanges();
       selection.addRange(range);

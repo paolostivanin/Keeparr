@@ -4,6 +4,7 @@ import { By } from '@angular/platform-browser';
 import { NoteI } from 'src/app/interfaces/notes';
 import { AuthService } from 'src/app/services/auth.service';
 import { NoteSurfacePipe } from 'src/app/pipes/note-surface.pipe';
+import { NotePreviewHtmlDirective } from 'src/app/directives/row-html.directive';
 import { NoteCardPreviewComponent, NotePreviewMeta } from './note-card-preview.component';
 
 const meta: NotePreviewMeta = {
@@ -49,7 +50,7 @@ describe('NoteCardPreviewComponent', () => {
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
-      declarations: [NoteCardPreviewComponent, PreviewHostComponent, NoteSurfacePipe],
+      declarations: [NoteCardPreviewComponent, PreviewHostComponent, NoteSurfacePipe, NotePreviewHtmlDirective],
       providers: [{ provide: AuthService, useValue: { currentUser: { id: 1 }, authenticatedImageUrl: (value: string) => value } }],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).compileComponents();
@@ -107,7 +108,7 @@ describe('NoteCardPreviewComponent', () => {
       document.body.classList.add('light-theme');
       expect(getComputedStyle(main).getPropertyValue('--note-bg-eff').trim()).toBe('#fff8b8');
       expect(getComputedStyle(main).getPropertyValue('--note-fg-eff').trim()).toBe('#202124');
-      expect(getComputedStyle(main).getPropertyValue('--note-link-eff').trim()).toBe('#1a73e8');
+      expect(getComputedStyle(main).getPropertyValue('--note-link-eff').trim()).toBe('#202124');
     } finally {
       document.body.classList.remove('light-theme');
     }

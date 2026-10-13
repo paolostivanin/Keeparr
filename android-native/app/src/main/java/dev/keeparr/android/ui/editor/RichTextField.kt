@@ -147,6 +147,7 @@ fun RichTextField(
     onSplit: ((left: String, rest: List<String>, caret: Int) -> Unit)? = null,
     onBackspaceAtStart: (() -> Boolean)? = null,
     onEmbedTap: ((EmbedSpan, Int, Boolean) -> Unit)? = null,
+    onLinkTap: ((String) -> Unit)? = null,
     onImageContent: ((android.net.Uri, String) -> Unit)? = null,
     onSelectionUpdated: (() -> Unit)? = null
 ) {
@@ -179,17 +180,14 @@ fun RichTextField(
             view.minLines = minLines
             view.applyNoteColors(colors.text, colors.link)
             view.onEmbedTap = onEmbedTap
+            view.onLinkTap = onLinkTap
             view.onImageContent = onImageContent
             view.controller.onSplit = { left, rest, caret ->
-                // Publish only the structural result, never the temporary row
-                // containing a newline. Newer IME/paste changes supersede queued splits.
-                view.deferNextDocumentChange = true
-                val generation = ++state.splitGeneration
-                view.post {
-                    if (generation != state.splitGeneration) return@post
-                    state.reset(left, keepSelection = false)
-                    onSplit?.invoke(left, rest, caret)
-                }
+                // Commit the split in the same text-change turn. Posting this
+                // allowed another IME/clipboard edit to land in the temporary
+                // newline-containing row and then be replaced by the stale split.
+                state.reset(left, keepSelection = false)
+                onSplit?.invoke(left, rest, caret)
             }
             view.onBackspaceAtStart = onBackspaceAtStart
             if (externalEdits != state.seenExternal) {

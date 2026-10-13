@@ -1298,25 +1298,44 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     event.stopPropagation()
     event.preventDefault()
     if (this.ignoreSyntheticOverviewCheckboxMouse(event)) return
-    const full = await this.completeNote(note)
-    if (!full) return
-    note = full
-    const checkBoxes = (note.checkBoxes || []).map(item => ({ ...item }))
-    this.toggleChecklistItemWithChildren(checkBoxes, cb.id)
-    await this.notesService.updateKey({ checkBoxes }, note.id!)
-    this.scheduleBuildMasonry(true)
+    return this.serializeOverviewMutation(note, async latest => {
+      const full = await this.completeNote(latest)
+      if (!full) return
+      const checkBoxes = (full.checkBoxes || []).map(item => ({ ...item }))
+      this.toggleChecklistItemWithChildren(checkBoxes, cb.id)
+      await this.notesService.updateKey({ checkBoxes }, full.id!)
+      this.scheduleBuildMasonry(true)
+    })
   }
 
   async removeOverviewCheckbox(note: NoteI, cb: CheckboxI, event: Event) {
     event.stopPropagation()
     event.preventDefault()
     if (this.ignoreSyntheticOverviewCheckboxMouse(event)) return
-    const full = await this.completeNote(note)
-    if (!full) return
-    note = full
-    const checkBoxes = (note.checkBoxes || []).filter(item => item.id !== cb.id).map(item => ({ ...item }))
-    await this.notesService.updateKey({ checkBoxes }, note.id!)
-    this.scheduleBuildMasonry(true)
+    return this.serializeOverviewMutation(note, async latest => {
+      const full = await this.completeNote(latest)
+      if (!full) return
+      const checkBoxes = (full.checkBoxes || []).filter(item => item.id !== cb.id).map(item => ({ ...item }))
+      await this.notesService.updateKey({ checkBoxes }, full.id!)
+      this.scheduleBuildMasonry(true)
+    })
+  }
+
+  private overviewMutations = new Map<number, Promise<void>>()
+
+  /** Card actions derive a complete array, so serialize them and reread the newest cached version per note. */
+  private serializeOverviewMutation(note: NoteI, mutation: (latest: NoteI) => Promise<void>) {
+    const id = note.id
+    if (!id) return Promise.resolve()
+    const prior = this.overviewMutations.get(id) || Promise.resolve()
+    const current = prior.catch(() => undefined).then(async () => {
+      const latest = this.notesService.notesList$.value?.find(candidate => candidate.id === id) || note
+      await mutation(latest)
+    }).finally(() => {
+      if (this.overviewMutations.get(id) === current) this.overviewMutations.delete(id)
+    })
+    this.overviewMutations.set(id, current)
+    return current
   }
 
   private ignoreSyntheticOverviewCheckboxMouse(event: Event) {
@@ -2110,7 +2129,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   colorMenu = {
     bgColor: (data: bgColors) => {
-      this.Shared.note.db.updateKey({ bgColor: data })
+      this.Shared.note.db.updateKey({ bgColor: data, bgImage: '' })
     },
     bgImage: (data: bgImages) => {
       this.Shared.note.db.updateKey({ bgImage: this.normalizeBgImage(data) })

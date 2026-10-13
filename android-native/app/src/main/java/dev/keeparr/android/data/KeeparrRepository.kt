@@ -104,6 +104,16 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
     suspend fun save(note: Note, synchronize: Boolean = true, profile: String = settings.profile) =
         editMutex.withLock { saveLocked(note, synchronize, profile) }
 
+    /** Appends a completed inline upload to the latest durable note, never to a stale editor snapshot. */
+    suspend fun appendInlineImage(syncId: String, html: String) = editMutex.withLock {
+        val current = note(syncId) ?: error("This note is no longer available on this profile.")
+        val raw = current.raw.copyJson()
+        val body = raw.text("noteBody")
+        val separator = if (body.isBlank() || body.endsWith("<div><br></div>")) "" else "<div><br></div>"
+        raw.put("noteBody", body + separator + html + "<div><br></div>")
+        saveLocked(Note(raw), synchronize = true, profile = settings.profile)
+    }
+
     private suspend fun saveLocked(note: Note, synchronize: Boolean, profile: String) {
         if (synchronize && profile != settings.profile) error("This draft belongs to a different Keeparr profile.")
         // Outbox reads must share the write transaction: a sync acknowledgement landing between them would leave the new
@@ -426,6 +436,17 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                                     val images = note.optJSONArray("images") ?: JSONArray()
                                     if ((0 until images.length()).none { images.optJSONObject(it)?.text("id") == image.text("id") }) images.put(image)
                                     note.put("images", images)
+                                    // The dependent edit was captured before the upload acknowledgement. Rebase only
+                                    // this new image into its full-note snapshot so unrelated newer edits survive.
+                                    store.dependents(profile, entry.operationId)
+                                        .filter { it.type == "note.upsert" && it.syncId == noteSyncId }
+                                        .forEach { dependent ->
+                                            val payload = JSONObject(dependent.payload)
+                                            val successorImages = payload.optJSONArray("images") ?: JSONArray()
+                                            if ((0 until successorImages.length()).none { successorImages.optJSONObject(it)?.text("id") == image.text("id") }) successorImages.put(image)
+                                            payload.put("images", successorImages)
+                                            store.enqueue(dependent.copy(payload = payload.toString()))
+                                        }
                                 } else {
                                     val attachmentSyncId = uploaded.text("syncId")
                                     store.put(Record(profile, "attachment", attachmentSyncId, uploaded.toString()))
@@ -1005,6 +1026,43 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                 file.copyJson().put("noteSyncId", note.syncId).toString(), dependsOnOperationId = noteCreation?.operationId))
         }
         changed(effect = EffectScope())
+    }
+
+    suspend fun attach(syncId: String, file: JSONObject) = editMutex.withLock {
+        val profile = settings.profile
+        val key = "$syncId:${file.getString("file")}"
+        database.withTransaction {
+            require(store.record(profile, "note", syncId) != null) { "This note belongs to a different Keeparr profile." }
+            val noteCreation = store.pending(profile).lastOrNull { it.type == "note.upsert" && it.syncId == syncId }
+            store.enqueue(Outbox(UUID.randomUUID().toString(), profile, "media.upload", key,
+                file.copyJson().put("noteSyncId", syncId).toString(), dependsOnOperationId = noteCreation?.operationId))
+        }
+        changed(effect = EffectScope())
+    }
+
+    /** Removes an owned uploaded attachment through the replayable sync protocol. */
+    suspend fun deleteAttachment(noteSyncId: String, attachmentSyncId: String) = editMutex.withLock {
+        val profile = settings.profile
+        val changedNote = database.withTransaction {
+            val row = store.record(profile, "note", noteSyncId) ?: return@withTransaction false
+            val raw = JSONObject(row.payload)
+            val attachments = raw.optJSONArray("attachments") ?: JSONArray()
+            val kept = JSONArray()
+            var found = false
+            for (index in 0 until attachments.length()) {
+                val item = attachments.optJSONObject(index) ?: continue
+                if (item.text("syncId") == attachmentSyncId) found = true else kept.put(item)
+            }
+            if (!found) return@withTransaction false
+            raw.put("attachments", kept)
+            store.put(row.copy(payload = raw.toString()))
+            store.remove(profile, "attachment", attachmentSyncId)
+            val priorDelete = unsent(profile, "attachment.delete", attachmentSyncId)
+            if (priorDelete == null) store.enqueue(Outbox(UUID.randomUUID().toString(), profile, "attachment.delete", attachmentSyncId,
+                JSONObject().put("syncId", attachmentSyncId).toString()))
+            true
+        }
+        if (changedNote) changed(effect = EffectScope(notes = setOf(noteSyncId)))
     }
 
     fun presence(noteId: Long?) {
