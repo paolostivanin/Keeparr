@@ -1588,6 +1588,130 @@ class KeeparrRepositoryTest {
         assertTrue("the delivered notification must not outlive the note's visibility", visible.isEmpty())
     }
 
+    // First mutation answers 409 with [latest]; later ones are accepted. Records every mutation sent.
+    private fun rejectOnceThenAccept(latest: JSONObject, sent: MutableList<JSONObject>) {
+        (repository.api as FakeNativeApi).callHandler = { path, _, body ->
+            when {
+                path == "/api/sync/mutations" -> {
+                    val mutation = body!!.getJSONArray("mutations").getJSONObject(0)
+                    sent += mutation
+                    val result = if (sent.size == 1) JSONObject().put("ok", false).put("status", 409).put("resourceType", "note")
+                        .put("error", "The note changed since this draft was opened").put("latest", latest)
+                    else JSONObject().put("ok", true).put("resourceType", "note").put("syncId", mutation.getString("syncId")).put("id", latest.getLong("id"))
+                    JSONObject().put("results", JSONArray().put(result)).toString()
+                }
+                path.startsWith("/api/sync/changes?") -> JSONObject().put("changes", JSONArray()).put("cursor", 0).put("hasMore", false).toString()
+                path == "/api/native/reminders/occurrences" -> "[]"
+                else -> error("Unexpected request $path")
+            }
+        }
+    }
+
+    private fun checklist(vararg items: Pair<String, Boolean>) = JSONArray().also { rows ->
+        items.forEachIndexed { index, (text, done) -> rows.put(JSONObject().put("id", "row-$index").put("data", text).put("done", done).put("indentLevel", 0)) }
+    }
+
+    @Test fun serverColourChangeAndLocalBodyEditMergeWithoutAConflict() = runBlocking {
+        profile.token = "test-session"
+        val base = syncNote(61, "merge-colour", 3).raw.put("noteBody", "<div>base</div>").put("bgColor", "")
+        repository.store.put(Record(profile.profile, "note", "merge-colour", base.toString()))
+        repository.store.cursor(SyncState(profile.profile, 0))
+        repository.save(Note(base.copyJson().put("noteBody", "<div>local</div>")))
+        val latest = base.copyJson().put("revision", 4).put("bgColor", "#cbf0f8").put("unknownField", "keep")
+        val sent = mutableListOf<JSONObject>()
+        rejectOnceThenAccept(latest, sent)
+
+        repository.sync()
+
+        assertEquals(2, sent.size)
+        assertEquals(4L, sent[1].getLong("baseRevision"))
+        val payload = sent[1].getJSONObject("payload")
+        assertEquals("<div>local</div>", payload.getString("noteBody"))
+        assertEquals("#cbf0f8", payload.getString("bgColor"))
+        assertEquals("keep", payload.getString("unknownField"))
+        assertTrue(repository.store.pending(profile.profile).none { it.conflict != null })
+    }
+
+    @Test fun localChecklistToggleMergesWithServerAddedItem() = runBlocking {
+        profile.token = "test-session"
+        val base = syncNote(62, "merge-checklist", 7).raw.put("isCbox", true).put("checkBoxes", checklist("milk" to false, "eggs" to false))
+        repository.store.put(Record(profile.profile, "note", "merge-checklist", base.toString()))
+        repository.store.cursor(SyncState(profile.profile, 0))
+        // Different fields on each side: the user ticks a row, the server renames the note.
+        repository.save(Note(base.copyJson().put("checkBoxes", checklist("milk" to true, "eggs" to false))))
+        val latest = base.copyJson().put("revision", 8).put("noteTitle", "Groceries")
+        val sent = mutableListOf<JSONObject>()
+        rejectOnceThenAccept(latest, sent)
+
+        repository.sync()
+
+        val payload = sent[1].getJSONObject("payload")
+        assertEquals("Groceries", payload.getString("noteTitle"))
+        assertTrue(payload.getJSONArray("checkBoxes").getJSONObject(0).getBoolean("done"))
+        assertEquals(8L, sent[1].getLong("baseRevision"))
+        assertTrue(repository.store.pending(profile.profile).isEmpty())
+    }
+
+    @Test fun sameFieldChangedOnBothSidesStaysAManualConflict() = runBlocking {
+        profile.token = "test-session"
+        val base = syncNote(63, "merge-conflict", 2, "Base").raw
+        repository.store.put(Record(profile.profile, "note", "merge-conflict", base.toString()))
+        repository.store.cursor(SyncState(profile.profile, 0))
+        repository.save(Note(base.copyJson().put("noteTitle", "Local")))
+        val sent = mutableListOf<JSONObject>()
+        rejectOnceThenAccept(base.copyJson().put("revision", 3).put("noteTitle", "Server"), sent)
+
+        repository.sync()
+
+        assertEquals(1, sent.size)
+        val parked = repository.store.pending(profile.profile).single()
+        assertEquals(OutboxState.CONFLICT, parked.state)
+        assertNotNull(parked.conflict)
+    }
+
+    @Test fun entryWithoutABaseSnapshotStillParksAsAConflict() = runBlocking {
+        profile.token = "test-session"
+        val base = syncNote(64, "merge-legacy", 2).raw
+        repository.store.put(Record(profile.profile, "note", "merge-legacy", base.copyJson().put("pinned", true).toString()))
+        repository.store.enqueue(Outbox("legacy-op", profile.profile, "note.upsert", "merge-legacy", base.copyJson().put("pinned", true).toString(), baseRevision = 2))
+        repository.store.cursor(SyncState(profile.profile, 0))
+        rejectOnceThenAccept(base.copyJson().put("revision", 3).put("bgColor", "#cbf0f8"), mutableListOf())
+
+        repository.sync()
+
+        assertEquals(OutboxState.CONFLICT, repository.store.pending(profile.profile).single().state)
+    }
+
+    @Test fun editsQueuedBehindARejectedSaveAreMergedAndStillSentAfterwards() = runBlocking {
+        profile.token = "test-session"
+        val base = syncNote(65, "merge-chain", 5).raw.put("noteBody", "<div>base</div>")
+        repository.store.put(Record(profile.profile, "note", "merge-chain", base.toString()))
+        repository.store.cursor(SyncState(profile.profile, 0))
+        val first = base.copyJson().put("noteBody", "<div>one</div>")
+        repository.save(Note(first))
+        // The first save goes in flight, then a later edit chains behind it.
+        val inFlight = repository.store.pending(profile.profile).single()
+        repository.store.enqueue(inFlight.copy(state = OutboxState.IN_FLIGHT, attempted = true))
+        repository.save(Note(first.copyJson().put("pinned", true)))
+        assertEquals(2, repository.store.pending(profile.profile).size)
+        val reminder = Outbox("waiting-reminder", profile.profile, "reminder.upsert", "r1", JSONObject().put("noteSyncId", "merge-chain").toString(),
+            dependsOnOperationId = inFlight.operationId)
+        repository.store.enqueue(reminder)
+        val latest = base.copyJson().put("revision", 6).put("bgColor", "#cbf0f8")
+        val sent = mutableListOf<JSONObject>()
+        rejectOnceThenAccept(latest, sent)
+
+        repository.sync()
+
+        val upserts = sent.filter { it.getString("type") == "note.upsert" }
+        assertEquals(2, upserts.size)
+        val merged = upserts[1].getJSONObject("payload")
+        assertEquals("<div>one</div>", merged.getString("noteBody"))
+        assertTrue(merged.getBoolean("pinned"))
+        assertEquals("#cbf0f8", merged.getString("bgColor"))
+        assertTrue(repository.store.pending(profile.profile).none { it.conflict != null || it.operationId == inFlight.operationId })
+    }
+
     private class FakeProfile(override var origin: String, override var userId: Long) : ConnectionProfile {
         private val aliases = mutableMapOf<String, String>()
         private val gatewayHeaders = mutableMapOf<String, String>()

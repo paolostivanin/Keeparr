@@ -23,7 +23,9 @@ data class Outbox(@PrimaryKey val operationId: String, val profile: String, val 
     val payload: String, val baseRevision: Long? = null, val baseScheduleVersion: Long? = null, val conflict: String? = null,
     val state: String = OutboxState.QUEUED, val dependsOnOperationId: String? = null, val createdAt: Long = System.currentTimeMillis(),
     // Once sent, the server may hold a receipt for this operationId, so later edits must chain instead of rewriting it.
-    @ColumnInfo(defaultValue = "0") val attempted: Boolean = false)
+    @ColumnInfo(defaultValue = "0") val attempted: Boolean = false,
+    // Guarded note fields (NoteMerge.GUARD_FIELDS as JSON) of the version this edit started from; lets a 409 be merged field by field.
+    val baseFields: String? = null)
 
 @Entity(tableName = "sync_state")
 data class SyncState(@PrimaryKey val profile: String, val cursor: Long)
@@ -126,5 +128,11 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
-@Database(entities = [Record::class, Outbox::class, SyncState::class, Delivery::class], version = 4, exportSchema = true)
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE outbox ADD COLUMN baseFields TEXT")
+    }
+}
+
+@Database(entities = [Record::class, Outbox::class, SyncState::class, Delivery::class], version = 5, exportSchema = true)
 abstract class KeeparrDatabase : RoomDatabase() { abstract fun store(): Store }

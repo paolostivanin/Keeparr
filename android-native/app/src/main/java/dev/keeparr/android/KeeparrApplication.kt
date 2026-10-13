@@ -36,7 +36,7 @@ class KeeparrApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         settings = ConnectionSettings(this, applicationScope = scope)
-        database = Room.databaseBuilder(this, KeeparrDatabase::class.java, "keeparr.sqlite").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+        database = Room.databaseBuilder(this, KeeparrDatabase::class.java, "keeparr.sqlite").addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
         reminders = ReminderScheduler(this)
         repository = KeeparrRepository(this, database, settings, KeeparrApi(this, settings))
         scope.launch {

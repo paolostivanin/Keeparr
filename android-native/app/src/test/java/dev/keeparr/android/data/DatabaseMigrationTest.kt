@@ -42,6 +42,34 @@ class DatabaseMigrationTest {
         } finally { helper.close() }
     }
 
+    @Test fun v4OutboxRowsGainAnEmptyBaseSnapshot() {
+        val context = RuntimeEnvironment.getApplication()
+        val configuration = SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(null)
+            .callback(object : SupportSQLiteOpenHelper.Callback(4) {
+                override fun onCreate(database: SupportSQLiteDatabase) {
+                    database.execSQL("""CREATE TABLE outbox (
+                        operationId TEXT NOT NULL, profile TEXT NOT NULL, type TEXT NOT NULL, syncId TEXT NOT NULL,
+                        payload TEXT NOT NULL, baseRevision INTEGER, baseScheduleVersion INTEGER, conflict TEXT,
+                        state TEXT NOT NULL, dependsOnOperationId TEXT, createdAt INTEGER NOT NULL,
+                        attempted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(operationId))""")
+                }
+                override fun onUpgrade(database: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+            }).build()
+        val helper = FrameworkSQLiteOpenHelperFactory().create(configuration)
+        val database = helper.writableDatabase
+        try {
+            database.execSQL("INSERT INTO outbox VALUES ('op', 'profile', 'note.upsert', 'note', 'draft', 3, NULL, NULL, 'queued', NULL, 7, 1)")
+            MIGRATION_4_5.migrate(database)
+            database.query("SELECT payload, attempted, baseFields FROM outbox WHERE operationId = 'op'").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("draft", cursor.getString(0))
+                assertEquals(1, cursor.getInt(1))
+                assertTrue(cursor.isNull(2))
+            }
+        } finally { helper.close() }
+    }
+
     @Test fun v1OutboxRowsSurviveMigrationAndCanRepresentSuccessorOperations() {
         val context = RuntimeEnvironment.getApplication()
         val configuration = SupportSQLiteOpenHelper.Configuration.builder(context)

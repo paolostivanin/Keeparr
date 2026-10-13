@@ -128,7 +128,7 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                     store.inFlight(profile, "note.upsert", note.syncId) != null || store.conflicted(profile, "note.upsert", note.syncId) != null))
                 return@withTransaction null
             store.put(Record(profile, "note", note.syncId, payload))
-            store.enqueue(noteUpsertEntry(profile, note.syncId, raw, payload))
+            store.enqueue(noteUpsertEntry(profile, note.syncId, raw, payload, previous?.payload))
             recordEffect("note", previous?.payload, payload)
         } ?: return
         if (profile == settings.profile) changed(synchronize, effect)
@@ -158,7 +158,7 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
     }
 
     // Only call inside a transaction.
-    private suspend fun noteUpsertEntry(profile: String, syncId: String, raw: JSONObject, payload: String = raw.toString()): Outbox {
+    private suspend fun noteUpsertEntry(profile: String, syncId: String, raw: JSONObject, payload: String = raw.toString(), base: String? = null): Outbox {
         val conflicted = store.conflicted(profile, "note.upsert", syncId)
         if (conflicted != null) return conflicted.copy(payload = payload)
         val queued = store.queued(profile, "note.upsert", syncId)
@@ -169,7 +169,9 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
         }
         val predecessor = queued ?: store.inFlight(profile, "note.upsert", syncId)
         return Outbox(UUID.randomUUID().toString(), profile, "note.upsert", syncId, payload,
-            baseRevision = raw.optLong("revision"), dependsOnOperationId = pendingMedia?.operationId ?: predecessor?.operationId)
+            baseRevision = raw.optLong("revision"), dependsOnOperationId = pendingMedia?.operationId ?: predecessor?.operationId,
+            // What the edit started from: the stored note before this save (a synced note, or the predecessor's draft).
+            baseFields = base?.takeIf { raw.optLong("revision") > 0 }?.let { runCatching { NoteMerge.pickGuardFields(JSONObject(it)).toString() }.getOrNull() })
     }
 
     // An operation that was sent once may already be applied by the server, which then holds a receipt for its ID and
@@ -518,6 +520,8 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                             if (result.optBoolean("retryable") || statusCode >= 500 || statusCode == 429) {
                                 retryError = ApiException(statusCode, result.text("error", "The server could not apply this change yet."))
                                 store.requeue(entry.operationId)
+                            } else if (statusCode == 409 && entry.type == "note.upsert" && autoMergeRejectedNote(entry, result)?.also { effect += it } != null) {
+                                // Concurrent edits to other fields were merged and re-queued; nothing for the user to resolve.
                             } else {
                                 store.enqueue(entry.copy(state = OutboxState.CONFLICT, conflict = result.toString()))
                                 store.conflictDependents(profile, entry.operationId, result.toString())
@@ -767,6 +771,50 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
         return changed
     }
 
+    /**
+     * A guarded note save the server rejected is merged with the server's version field by field (see [NoteMerge]).
+     * When no field changed on both sides the merged draft replaces the rejected entry and its chained successors as one
+     * queued save based on the server's revision; the effect is returned. Null means a manual conflict (or nothing safe to
+     * merge). A merge only happens when it advances the base revision, so a repeated 409 for the same revision cannot loop.
+     * Only call inside a transaction.
+     */
+    private suspend fun autoMergeRejectedNote(entry: Outbox, result: JSONObject): EffectScope? {
+        val latest = result.optJSONObject("latest") ?: return null
+        val base = entry.baseFields?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return null
+        if (latest.optLong("revision") <= (entry.baseRevision ?: return null)) return null
+        val profile = entry.profile
+        val storedRow = store.record(profile, "note", entry.syncId) ?: return null
+        val pending = store.pending(profile)
+        // The successors queued behind the rejected save, transitively; the stored note already contains all their edits.
+        val retired = mutableListOf(entry)
+        var index = 0
+        while (index < retired.size) {
+            pending.filter { it.dependsOnOperationId == retired[index].operationId && it.type == "note.upsert" && it.syncId == entry.syncId }
+                .forEach { if (retired.none { r -> r.operationId == it.operationId }) retired += it }
+            index += 1
+        }
+        // An upsert for this note outside that chain (e.g. waiting for an upload) is not covered by the merge.
+        if (pending.any { it.type == "note.upsert" && it.syncId == entry.syncId && retired.none { r -> r.operationId == it.operationId } }) return null
+        if (retired.any { it.state == OutboxState.IN_FLIGHT && it.operationId != entry.operationId }) return null
+        val local = runCatching { JSONObject(storedRow.payload) }.getOrNull() ?: return null
+        val outcome = NoteMerge.merge(base, local, latest)
+        if (outcome.conflicts.isNotEmpty()) return null
+        val merged = outcome.merged
+        val replacement = entry.copy(operationId = UUID.randomUUID().toString(), payload = merged.toString(),
+            baseRevision = latest.getLong("revision"), state = OutboxState.QUEUED, dependsOnOperationId = null, conflict = null,
+            attempted = false, baseFields = NoteMerge.pickGuardFields(latest).toString())
+        store.enqueue(replacement)
+        // Anything else that was waiting on a retired save (a reminder, an upload) now waits on the replacement.
+        for (old in retired) {
+            for (waiting in store.dependents(profile, old.operationId)) {
+                if (retired.none { it.operationId == waiting.operationId }) store.enqueue(waiting.copy(dependsOnOperationId = replacement.operationId))
+            }
+        }
+        retired.forEach { store.acknowledge(it.operationId) }
+        store.put(storedRow.copy(payload = merged.toString()))
+        return recordEffect("note", storedRow.payload, merged.toString())
+    }
+
     suspend fun resolve(entry: Outbox, resolution: ConflictResolution) = editMutex.withLock {
         val conflict = JSONObject(entry.conflict!!)
         val latest = conflict.optJSONObject("latest")
@@ -784,7 +832,7 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                         store.put(Record(entry.profile, "note", entry.syncId, merged.toString()))
                         store.enqueue(entry.copy(operationId = UUID.randomUUID().toString(), payload = merged.toString(),
                             baseRevision = latest.getLong("revision"), state = OutboxState.QUEUED, dependsOnOperationId = null, conflict = null,
-                            attempted = false))
+                            attempted = false, baseFields = NoteMerge.pickGuardFields(latest).toString()))
                         store.remove(entry.profile, "recovery", entry.syncId)
                     }
                     ConflictResolution.SAVE_AS_COPY -> {
