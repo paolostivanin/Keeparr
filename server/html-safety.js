@@ -7,7 +7,10 @@
 const sanitizeHtml = require('sanitize-html');
 const { Parser } = require('htmlparser2');
 
-const ACTIVE_TAGS = new Set(['script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'meta', 'base', 'link', 'form', 'svg', 'math', 'style']);
+// These parser-context tags are sanitized too: htmlparser2 and HTML5 browsers
+// disagree about their contents, which can turn inert text into active markup.
+const ACTIVE_TAGS = new Set(['script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'meta', 'base', 'link', 'form', 'svg', 'math', 'style',
+  'noscript', 'noembed', 'noframes', 'xmp', 'plaintext', 'textarea', 'title', 'listing']);
 const URL_ATTRIBUTES = new Set(['href', 'src', 'xlink:href', 'action', 'formaction', 'data', 'poster', 'background']);
 
 function hasActiveContent(html) {

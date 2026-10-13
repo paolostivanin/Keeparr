@@ -137,6 +137,9 @@ test('note HTML with active content is neutralized and clean HTML is left byte f
     const result = neutralizeActiveHtml(html).toLowerCase();
     for (const fragment of forbidden) assert.ok(!result.includes(fragment), `${html} -> ${result}`);
   }
+  const parserMismatch = '<noscript><p title="</noscript><img src=x onerror=alert(1)>">';
+  assert.equal(hasActiveContent(parserMismatch), true);
+  assert.doesNotMatch(neutralizeActiveHtml(parserMismatch), /<img\b/i);
   assert.match(neutralizeActiveHtml('<div style="x" onclick="steal()">kept text</div>'), /kept text/);
   assert.match(neutralizeActiveHtml('<p>a</p><img src=x onerror=alert(1)>'), /<p>a<\/p>/);
 
