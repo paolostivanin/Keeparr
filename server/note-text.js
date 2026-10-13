@@ -10,9 +10,16 @@ function plainText(value) {
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replace(/&#(?:x([0-9a-f]{1,6})|(\d{1,7}));/gi, decodeNumericEntity)
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// Decimal and hex character references (`&#232;`, `&#xe8;`); invalid code points stay as written.
+function decodeNumericEntity(match, hex, decimal) {
+  const codePoint = hex ? parseInt(hex, 16) : parseInt(decimal, 10);
+  if (!Number.isInteger(codePoint) || codePoint < 1 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return match;
+  return String.fromCodePoint(codePoint);
 }
 
 function parseJson(value, fallback) {

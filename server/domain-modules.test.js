@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { plainText, parseJson, escapeHtml, notePreviewText, noteLinkCount } = require('./note-text');
-const { searchTextFromQuery, searchTokensFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere } = require('./note-search');
+const { searchTextFromQuery, searchTokensFromQuery, searchGroupsFromQuery, searchOperatorsFromQuery, noteOperatorWhere, noteSearchWhere } = require('./note-search');
 const {
   normalizeRepeatRule, normalizeReminderDueAt, normalizeLocationTrigger, reminderScheduleDefinitionChanged, parseRepeatRule,
   reminderScheduleChanged, normalizeReminderPayload, reminderResponse
@@ -15,6 +15,33 @@ test('note text helpers strip markup, tolerate bad JSON and bound previews', () 
   assert.equal(notePreviewText({ noteBody: '', checkBoxes: JSON.stringify([{ data: '<b>one</b>' }, { data: 'two' }]) }), 'one two');
   assert.equal(notePreviewText({ noteBody: 'x'.repeat(1000) }).length, 280);
   assert.equal(noteLinkCount({ noteBody: 'see https://a.test/x, and https://a.test/x.', checkBoxes: JSON.stringify([{ data: 'http://b.test' }]) }), 2);
+});
+
+test('plainText decodes numeric character references', () => {
+  assert.equal(plainText('<div>Caff&#232; &#xE8; &#x1F600; &#0; &#xD800; &#99999999;</div>'), 'Caffè è \u{1F600} &#0; &#xD800; &#99999999;');
+});
+
+test('accented searches also match numeric character references', async () => {
+  const sqlite3 = require('sqlite3');
+  const db = new sqlite3.Database(':memory:');
+  const run = (sql, params = []) => new Promise((resolve, reject) => db.run(sql, params, error => (error ? reject(error) : resolve())));
+  const all = (sql, params = []) => new Promise((resolve, reject) => db.all(sql, params, (error, rows) => (error ? reject(error) : resolve(rows))));
+  try {
+    await run(`CREATE TABLE notes (id INTEGER PRIMARY KEY, noteTitle TEXT, noteBody TEXT, checkBoxes TEXT, labels TEXT, attachmentNames TEXT, locked INTEGER)`);
+    for (const [id, body] of [[1, 'Caffè'], [2, 'Caff&#232;'], [3, 'Caff&#xe8;'], [4, 'tea'], [5, 'Caffe plain']]) {
+      await run('INSERT INTO notes (id, noteBody, locked) VALUES (?, ?, 0)', [id, body]);
+    }
+    const find = async query => {
+      const where = noteSearchWhere(searchGroupsFromQuery(query));
+      return (await all(`SELECT id FROM notes WHERE ${where.clause} ORDER BY id`, where.params)).map(row => row.id);
+    };
+    assert.deepEqual(await find('caffè'), [1, 2, 3, 5]);
+    assert.deepEqual(await find('CAFFÈ'), [1, 2, 3, 5]);
+    assert.deepEqual(await find('caffe'), [5], 'unaccented queries keep their previous meaning');
+    assert.deepEqual(await find('tea'), [4]);
+  } finally {
+    await new Promise(resolve => db.close(resolve));
+  }
 });
 
 test('search operators are separated from the text and become SQL predicates', () => {
