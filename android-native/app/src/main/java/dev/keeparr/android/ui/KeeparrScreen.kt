@@ -56,6 +56,7 @@ import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
 import dev.keeparr.android.R
 import dev.keeparr.android.data.*
+import dev.keeparr.android.data.html.NoteHtml
 import dev.keeparr.android.reminders.ReminderScheduler
 import kotlinx.coroutines.*
 import org.json.JSONArray
@@ -119,7 +120,7 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
                             val note = Note.create(app.settings.userId, createChecklist)
                             val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
                             note.raw.put("noteTitle", intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty())
-                                .put("noteBody", Html.escapeHtml(text).replace("\n", "<br>"))
+                                .put("noteBody", NoteHtml.plainTextToHtml(text))
                             repo.save(note); openEditor(note)
                             val uris = if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
                                 else listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
@@ -380,11 +381,11 @@ private fun HomeScreen(app: KeeparrApplication, notes: List<Note>, reminders: Li
                 Text(result.text("error", "This edit conflicts with a newer version."))
                 if (entry.type == "note.upsert") {
                     val draft = JSONObject(entry.payload)
-                    Text("Your draft: ${draft.text("noteTitle")}", Modifier.padding(top = 12.dp))
-                    Text(NoteFormat.previewText(draft.text("noteBody")))
+                    Text("Your draft: ${NoteHtml.titleText(draft.text("noteTitle"))}", Modifier.padding(top = 12.dp))
+                    Text(NoteHtml.previewText(draft.text("noteBody")))
                     latest?.let { server ->
-                        Text("Server version: ${server.text("noteTitle")}", Modifier.padding(top = 12.dp))
-                        Text(NoteFormat.previewText(server.text("noteBody")))
+                        Text("Server version: ${NoteHtml.titleText(server.text("noteTitle"))}", Modifier.padding(top = 12.dp))
+                        Text(NoteHtml.previewText(server.text("noteBody")))
                         val localItems = draft.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
                         val serverItems = server.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
                         val differing = (localItems.keys + serverItems.keys).filter { id ->
@@ -501,6 +502,7 @@ private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, modifier: M
                 else {
                 note.imagePath?.let { MediaImage(app, it) }
                 if (note.title.isNotBlank()) Text(note.title, style = MaterialTheme.typography.titleMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                if (note.bodyText.isNotBlank()) Text(note.bodyText, style = body, maxLines = 12, overflow = TextOverflow.Ellipsis)
                 if (note.checklist) note.checklistItems.forEach { item -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     // The box is as tall as one text line and scales with the font size, so it stays centered on the first line.
                     Box(Modifier.height(textDp(body.lineHeight)), contentAlignment = Alignment.Center) {
@@ -508,7 +510,7 @@ private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, modifier: M
                             if (item.done) "Completed" else "Not completed", Modifier.size(textDp(18.sp)))
                     }
                     Text(item.text, style = body, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                } } else if (note.bodyText.isNotBlank()) Text(note.bodyText, style = body, maxLines = 12, overflow = TextOverflow.Ellipsis)
+                } }
                 note.reminderText?.let { reminderText ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Outlined.Schedule, "Reminder", Modifier.size(textDp(14.sp)))
@@ -556,7 +558,7 @@ internal fun searchVisibleNotes(notes: List<Note>, filter: String, search: Strin
     val visible = NoteOrder.visible(notes, filter)
     if (search.isBlank()) return visible
     return visible.filter { note ->
-        !note.locked && (note.title + " " + NoteFormat.displayText(note.body) + " " + note.items.joinToString { it.text("data") })
+        !note.locked && (NoteHtml.titleText(note.title) + " " + NoteHtml.plainText(note.body) + " " + note.items.joinToString { NoteHtml.plainText(it.text("data")) })
             .contains(search, true)
     }
 }

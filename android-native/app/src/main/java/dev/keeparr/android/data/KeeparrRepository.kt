@@ -4,6 +4,7 @@ import android.content.Context
 import android.text.Html
 import androidx.room.withTransaction
 import dev.keeparr.android.KeeparrApplication
+import dev.keeparr.android.data.html.NoteHtml
 import dev.keeparr.android.reminders.ReminderScheduler
 import dev.keeparr.android.widgets.NotesWidget
 import kotlinx.coroutines.*
@@ -238,7 +239,7 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
                 existing.text("timezone", "UTC") != timezone || existingRule != requestedRule
             raw.put("noteId", note.id).put("noteSyncId", note.syncId).put("userId", settings.userId).put("dueAtUtc", due)
                 .put("timezone", timezone).put("repeatRule", requestedRule ?: JSONObject.NULL).put("status", "pending")
-                .put("title", if (note.locked) "Keeparr reminder" else note.title).put("body", if (note.locked) "" else NoteFormat.displayText(note.body).take(500))
+                .put("title", if (note.locked) "Keeparr reminder" else NoteHtml.titleText(note.title)).put("body", if (note.locked) "" else NoteHtml.plainText(note.body).take(500))
             val id = raw.getString("syncId")
             val conflicted = store.conflicted(profile, "reminder.upsert", id)
             val queued = unsent(profile, "reminder.upsert", id)

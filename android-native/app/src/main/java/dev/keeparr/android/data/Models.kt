@@ -4,6 +4,7 @@ import android.text.Html
 import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import dev.keeparr.android.data.html.NoteHtml
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Node
@@ -57,10 +58,8 @@ data class Note(val raw: JSONObject) {
     val labels get() = raw.optJSONArray("labels")?.objects().orEmpty().filter { it.optBoolean("added") }.map { it.text("name") }
 
     // Anything the user would lose by discarding the note; bgColor and pinned are cosmetic and don't count.
-    val hasContent get() = Jsoup.parseBodyFragment(title).text().isNotBlank() ||
-        NoteFormat.bodyLines(body).isNotEmpty() || body.contains("<img", ignoreCase = true) ||
-        (body.isNotBlank() && !NoteFormat.editable(body)) ||
-        items.any { it.opt("data") !is String || Jsoup.parseBodyFragment(it.text("data")).text().isNotBlank() } ||
+    val hasContent get() = NoteHtml.titleText(title).isNotBlank() || NoteHtml.hasMeaningfulBody(body) ||
+        items.any { it.opt("data") !is String || NoteHtml.titleText(it.text("data")).isNotBlank() } ||
         (raw.optJSONArray("images")?.length() ?: 0) > 0 || (raw.optJSONArray("attachments")?.length() ?: 0) > 0 ||
         labels.isNotEmpty() || binder.isNotBlank()
 
@@ -109,7 +108,8 @@ object EditorSnapshotPolicy {
             return Note(local.raw.copyJson().put("id", incoming.id).put("revision", incoming.revision))
         }
         if (dirty && local.id > 0 && incoming.id == local.id && sameEditableContent(local, incoming)) return incoming
-        if (!dirty && local.id > 0 && incoming.id == local.id && incoming.raw.toString() != local.raw.toString()) return incoming
+        // A clean draft follows the server, but never to an older revision (a late echo of something already superseded).
+        if (!dirty && local.id > 0 && incoming.id == local.id && incoming.revision >= local.revision && incoming.raw.toString() != local.raw.toString()) return incoming
         return null
     }
 }

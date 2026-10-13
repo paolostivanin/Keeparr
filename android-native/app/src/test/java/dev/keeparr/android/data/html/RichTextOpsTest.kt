@@ -61,7 +61,7 @@ class RichTextOpsTest {
                 assertEquals(id, row.getString("text"), doc.toString())
                 val controller = RichTextController(HtmlMode.Row)
                 var result: List<String>? = null
-                controller.onSplit = { left, rest -> result = listOf(left) + rest }
+                controller.onSplit = { left, rest, _ -> result = listOf(left) + rest }
                 val edit = row.getJSONObject("edit")
                 val selection = edit.getJSONArray("selection")
                 controller.paste(doc, selection.getInt(0), selection.getInt(1), edit.getString("insert"))

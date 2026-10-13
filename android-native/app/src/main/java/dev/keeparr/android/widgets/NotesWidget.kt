@@ -5,7 +5,7 @@ import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.*
 import android.graphics.Color
-import android.text.Html
+import dev.keeparr.android.data.html.NoteHtml
 import android.view.View
 import android.widget.RemoteViews
 import android.widget.RemoteViewsService
@@ -155,8 +155,8 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
         val color = NotePalette.parse(note.raw.text("bgColor"))
         val foreground = color?.let(::widgetForegroundColor)
         if (item != null) {
-            val itemLabel = item?.let { Html.fromHtml(boundedWidgetText(it.text("data"), 4096), Html.FROM_HTML_MODE_COMPACT)
-                .toString().ifBlank { "Checklist item" }.let { text -> boundedWidgetText(text, 256) } }
+            val itemLabel = item?.let { NoteHtml.plainText(boundedWidgetText(it.text("data"), 4096))
+                .ifBlank { "Checklist item" }.let { text -> boundedWidgetText(text, 256) } }
             val done = item.optBoolean("done")
             val itemRow = RemoteViews(app.packageName, R.layout.widget_checklist_item_row)
             itemRow.tint(R.id.checklist_card_background, "setColorFilter", color, R.color.widget_note_card)
@@ -170,7 +170,7 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
             return itemRow
         }
         return RemoteViews(app.packageName, R.layout.widget_row).apply {
-            val title = if (note.locked) "Locked note" else (if (note.pinned) "📌 " else "") + note.title
+            val title = if (note.locked) "Locked note" else (if (note.pinned) "📌 " else "") + NoteHtml.titleText(note.title)
             setTextViewText(R.id.row_title, boundedWidgetText(title, 160))
             setViewVisibility(R.id.row_title, if (title.isBlank()) View.GONE else View.VISIBLE)
             tint(R.id.row_title, "setTextColor", foreground, R.color.widget_text)
@@ -219,20 +219,20 @@ internal fun boundedWidgetText(text: String, maxCharacters: Int) = text.take(max
 internal const val WIDGET_CARD_MAX_LINES = 6
 internal const val WIDGET_SINGLE_NOTE_MAX_LINES = 30
 
-// Compact mode keeps one newline between paragraphs; the legacy flag adds blank lines that eat the card's line budget.
-private fun widgetPlainText(html: String, maxCharacters: Int) =
-    Html.fromHtml(boundedWidgetText(html, maxCharacters), Html.FROM_HTML_MODE_COMPACT).toString().trim()
+// One newline between lines, never the blank lines a platform conversion adds, which would eat the card's line budget.
+private fun widgetPlainText(html: String, maxCharacters: Int) = NoteHtml.plainText(boundedWidgetText(html, maxCharacters)).trim()
 
 internal fun widgetNoteBodyText(note: Note, single: Boolean): String = when {
     note.locked -> "Open Keeparr to view"
-    single && note.checklist -> "Checklist · ${note.items.size} item(s)"
-    // A checklist's items are drawn as icon rows (see widgetChecklistLines), not as body text.
-    note.checklist -> ""
-    // Bullets are spans, not characters, so only a body with a list needs the bullet-aware conversion; every other body
-    // keeps the widget's own whitespace handling.
-    note.body.contains("<li", ignoreCase = true) -> NoteFormat.previewText(boundedWidgetText(note.body, 8192)).trim()
-    else -> widgetPlainText(note.body, 8192)
+    // A hybrid note's body comes first; the checklist's items are drawn as icon rows (see widgetChecklistLines).
+    single && note.checklist -> (hybridBodyText(note) + "Checklist · ${note.items.size} item(s)")
+    note.checklist -> hybridBodyText(note).trim()
+    // Bullets and numbers are drawn by the editor, not characters, so the preview text adds them.
+    else -> NoteHtml.previewText(boundedWidgetText(note.body, 8192)).lines().filter { it.isNotBlank() }.joinToString("\n").trim()
 }
+
+private fun hybridBodyText(note: Note): String =
+    if (NoteHtml.hasMeaningfulBody(note.body)) NoteHtml.previewText(boundedWidgetText(note.body, 8192)).trim() + "\n" else ""
 
 /** The checklist rows a card shows (done, text), at most as many as the card has lines. */
 internal fun widgetChecklistLines(note: Note): List<Pair<Boolean, String>> =

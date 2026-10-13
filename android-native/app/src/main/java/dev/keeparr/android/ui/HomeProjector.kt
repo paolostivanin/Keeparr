@@ -1,7 +1,7 @@
 package dev.keeparr.android.ui
 
 import dev.keeparr.android.data.Note
-import dev.keeparr.android.data.NoteFormat
+import dev.keeparr.android.data.html.NoteHtml
 import dev.keeparr.android.data.NoteOrder
 import dev.keeparr.android.data.ReminderFormat
 import dev.keeparr.android.data.text
@@ -71,7 +71,7 @@ internal class HomeProjector {
 
     private fun searchText(note: Note): String {
         val entry = meta.getValue(note.syncId)
-        return entry.searchText ?: (note.title + " " + NoteFormat.displayText(note.body) + " " + note.items.joinToString { it.text("data") })
+        return entry.searchText ?: (NoteHtml.titleText(note.title) + " " + NoteHtml.plainText(note.body) + " " + note.items.joinToString { NoteHtml.plainText(it.text("data")) })
             .also { entry.searchText = it; searchTextBuilds++ }
     }
 
@@ -92,15 +92,17 @@ internal class HomeProjector {
 
     private fun buildCard(note: Note, reminderText: String?) = NoteCardUiModel(
         syncId = note.syncId,
-        title = NoteFormat.displayText(note.title),
-        bodyText = if (note.checklist) "" else NoteFormat.previewText(note.body),
+        title = NoteHtml.titleText(note.title),
+        // A checklist note whose body has content is a hybrid: the body shows above the items.
+        bodyText = if (note.checklist && !NoteHtml.hasMeaningfulBody(note.body)) "" else NoteHtml.previewText(note.body),
         colorArgb = dev.keeparr.android.data.NotePalette.parse(note.raw.text("bgColor")),
         locked = note.locked,
         checklist = note.checklist,
         checklistItems = if (note.checklist) note.items.take(8).map { item ->
-            ChecklistCardItem(item.optLong("id"), NoteFormat.displayText(item.text("data")), item.optBoolean("done"))
+            ChecklistCardItem(item.optLong("id"), NoteHtml.plainText(item.text("data")), item.optBoolean("done"))
         } else emptyList(),
-        imagePath = note.raw.optJSONArray("images")?.optJSONObject(0)?.text("dataUrl")?.takeIf { it.isNotBlank() },
+        imagePath = note.raw.optJSONArray("images")?.optJSONObject(0)?.text("dataUrl")?.takeIf { it.isNotBlank() }
+            ?: NoteHtml.firstImageSrc(note.body),
         labels = note.labels.toList(),
         shared = note.shared,
         pinned = note.pinned,

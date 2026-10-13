@@ -114,6 +114,18 @@ object ChecklistModel {
         return result
     }
 
+    /** Like [split] for a multi-line edit: the row takes [left], each of [rest] becomes a new unchecked row after it. */
+    fun splitInto(rows: List<JSONObject>, id: Long, left: String, rest: List<String>): List<JSONObject>? {
+        val index = rows.indexOfFirst { idOf(it) == id }
+        if (index < 0 || isStructured(rows[index])) return null
+        val first = nextId(rows)
+        val level = levelOf(rows[index])
+        val result = rows.toMutableList()
+        result[index] = with(rows[index], "data" to left)
+        rest.forEachIndexed { i, html -> result.add(index + 1 + i, JSONObject().put("id", first + i).put("done", false).put("data", html).put("indentLevel", level)) }
+        return result
+    }
+
     /** True when the row's html shows text (tags stripped, entities decoded, nbsp counted as a space). */
     fun hasVisibleText(html: String): Boolean = NoteHtml.titleText(html).isNotBlank()
 

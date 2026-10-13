@@ -12,6 +12,7 @@ import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
 import dev.keeparr.android.R
 import dev.keeparr.android.data.*
+import dev.keeparr.android.data.html.NoteHtml
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -96,7 +97,7 @@ private class AndroidReminderNotificationSink(private val app: KeeparrApplicatio
             Intent(app, ReminderReceiver::class.java).setAction(state).setData(Uri.parse("keeparrnative://action/$state/${Uri.encode(key)}"))
                 .putExtra("profile", app.settings.profile).putExtra("occurrence", occurrence.toString()).putExtra("alarmKey", key),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val title = if (note?.locked == true) "Keeparr reminder" else note?.title?.ifBlank { null } ?: occurrence.text("title", "Keeparr reminder")
+        val title = if (note?.locked == true) "Keeparr reminder" else note?.let { NoteHtml.titleText(it.title) }?.ifBlank { null } ?: NoteHtml.titleText(occurrence.text("title", "Keeparr reminder"))
         val body = if (note?.locked == true) "Open Keeparr to view this note" else occurrence.text("body")
         val notification = NotificationCompat.Builder(app, "keeparr_time_reminders").setSmallIcon(R.drawable.ic_keeparr)
             .setContentTitle(title).setContentText(body).setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -112,7 +113,7 @@ private class AndroidReminderNotificationSink(private val app: KeeparrApplicatio
         val open = Intent(app, MainActivity::class.java).setData(Uri.parse("keeparrnative://note/${Uri.encode(key)}"))
             .putExtra("noteSyncId", note?.syncId)
         val content = PendingIntent.getActivity(app, 0, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val title = if (note?.locked == true) "Keeparr reminder" else note?.title?.ifBlank { null } ?: "Keeparr reminders"
+        val title = if (note?.locked == true) "Keeparr reminder" else note?.let { NoteHtml.titleText(it.title) }?.ifBlank { null } ?: "Keeparr reminders"
         val body = if (note?.locked == true) "$count older reminders were missed. Open Keeparr to view this note."
             else "$count older reminders were missed ($firstDueAtUtc – $lastDueAtUtc)."
         val notification = NotificationCompat.Builder(app, "keeparr_time_reminders").setSmallIcon(R.drawable.ic_keeparr)

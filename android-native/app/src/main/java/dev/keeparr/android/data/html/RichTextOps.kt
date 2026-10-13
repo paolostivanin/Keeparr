@@ -16,7 +16,7 @@ enum class EditCause { Typed, Paste }
  * [onSplit] as the row html on its left and the html of the rows that follow.
  */
 class RichTextController(val mode: HtmlMode = HtmlMode.Body) {
-    var onSplit: ((left: String, rest: List<String>) -> Unit)? = null
+    var onSplit: ((left: String, rest: List<String>, caretInLast: Int) -> Unit)? = null
 
     /** True while the controller itself edits the document, so a text watcher can ignore the resulting callbacks. */
     var isApplying = false
@@ -92,6 +92,16 @@ class RichTextController(val mode: HtmlMode = HtmlMode.Body) {
             return false
         }
         val finalLines = Doc.lines(text)
+        // Typing inside one non-empty line: the block spans move with the text on their own.
+        val sameLine = newlines == 0 && firstIndex == lastIndex && !inserted.contains(EMBED_CHAR) && snapshot.infos[firstIndex] != null && snapshot.infos[firstIndex]!!.path.lastOrNull()?.isEmbed != true &&
+            oldLines[firstIndex].end > oldLines[firstIndex].start && finalLines.size == oldLines.size &&
+            finalLines[firstIndex].end > finalLines[firstIndex].start && Doc.spanAt(text, finalLines[firstIndex]) != null
+        if (sameLine) {
+            val span = Doc.spanAt(text, finalLines[firstIndex])!!
+            if (span.info.placeholderBr) span.info = span.info.with(trailingBr = false, placeholderBr = false)
+            Doc.refresh(text)
+            return true
+        }
         val produced = ArrayList<BlockInfo>()
         produced += firstInfo
         var previous = firstInfo
@@ -238,11 +248,15 @@ class RichTextController(val mode: HtmlMode = HtmlMode.Body) {
         if (inserted.none { it == '\n' }) return
         val pieces = ArrayList<String>()
         var start = 0
+        var lastStart = 0
         for (i in 0..text.length) if (i == text.length || text[i] == '\n') {
             pieces += StringBuilder().also { NoteHtml.writeInline(it, text, start, i) }.toString()
+            lastStart = start
             start = i + 1
         }
-        onSplit?.invoke(pieces.first(), pieces.drop(1))
+        // The caret sits right after the inserted text, which is where the old tail of the row continues.
+        val caret = (snapshot.lo + insertedLength - lastStart).coerceAtLeast(0)
+        onSplit?.invoke(pieces.first(), pieces.drop(1), caret)
     }
 
     /** True when the caret change did not come from typing, so a pending bold/italic/underline no longer applies. */
@@ -339,6 +353,60 @@ class RichTextController(val mode: HtmlMode = HtmlMode.Body) {
             Doc.applyInfos(text, infos)
         } finally { isApplying = false }
         Selection.setSelection(text, from.coerceIn(0, text.length))
+    }
+
+    // ---- embeds -----------------------------------------------------------------------------------------
+
+    /**
+     * Inserts an atomic embed at [caret] on a line of its own, followed by a blank line: the shape the web writes for an
+     * inline image. Text before and after the caret stays on its own lines. Returns the offset after the embed.
+     */
+    fun insertEmbed(text: Editable, caret: Int, html: String): Int {
+        if (mode != HtmlMode.Body) return caret
+        val data = HtmlParser.parse(html).firstNotNullOfOrNull { it.embed } ?: return caret
+        val at = caret.coerceIn(0, text.length)
+        val lines = Doc.lines(text)
+        val index = Doc.lineIndexAt(lines, at)
+        val line = lines[index]
+        val infos = readInfos(text)
+        val info = infos[index] ?: defaultInfo()
+        val leaf = info.path.lastOrNull()
+        val beforeText = at > line.start
+        val afterText = at < line.end
+        val insertion = (if (beforeText) "\n" else "") + EMBED_CHAR + "\n" + (if (afterText) "\n" else "")
+        isApplying = true
+        try {
+            text.insert(at, insertion)
+            val embedAt = at + if (beforeText) 1 else 0
+            // Formatting that ran across the caret must not cover the embed or the blank line.
+            for (span in text.getSpans(at, at + insertion.length, InlineTagSpan::class.java)) {
+                val start = text.getSpanStart(span); val end = text.getSpanEnd(span)
+                text.removeSpan(span)
+                if (start < at) text.setSpan(span, start, at, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                if (end > at + insertion.length) text.setSpan(if (start < at) span.copySpan() else span, at + insertion.length, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            text.setSpan(EmbedSpan(data.html, data), embedAt, embedAt + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            val parent = info.path.dropLast(1)
+            val result = ArrayList<BlockInfo?>(infos.size + 3)
+            result.addAll(infos.subList(0, index))
+            if (beforeText) result += info.with(trailingBr = false, placeholderBr = false)
+            result += BlockInfo(parent + Frame(null, emptyList(), data.html))
+            result += BlockInfo(parent + Frame("div"), BreakKind.BLOCK, trailingBr = true, placeholderBr = true)
+            if (afterText) result += if (leaf?.isEmbed == true) info else BlockInfo(parent + (if (leaf == null || leaf.isAnonymous) Frame("div") else leaf.copy()))
+            result.addAll(infos.subList(index + 1, infos.size))
+            Doc.applyInfos(text, result)
+            mergeInline(text)
+            Selection.setSelection(text, embedAt + 2)
+            return embedAt + 2
+        } finally { isApplying = false }
+    }
+
+    /** Removes the embed whose character is at [offset] as a unit; false when there is none. */
+    fun removeEmbedAt(text: Editable, offset: Int): Boolean {
+        if (mode != HtmlMode.Body || Doc.embedAt(text, offset) == null) return false
+        val lines = Doc.lines(text)
+        removeLine(text, readInfos(text), Doc.lineIndexAt(lines, offset))
+        return true
     }
 
     // ---- block structure helpers ------------------------------------------------------------------------

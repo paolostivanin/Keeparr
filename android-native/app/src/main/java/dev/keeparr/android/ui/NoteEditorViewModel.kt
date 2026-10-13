@@ -21,6 +21,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import dev.keeparr.android.data.ChecklistModel
+import dev.keeparr.android.ui.editor.NoteHistory
+import org.json.JSONArray
 import org.json.JSONObject
 
 class NoteEditorViewModel(
@@ -30,6 +33,25 @@ class NoteEditorViewModel(
     private val profile = repository.settings.profile
     private val _draft = MutableStateFlow(initial.raw.copyJson())
     val draft = _draft.asStateFlow()
+    /** The note exactly as the editor was opened; "Undo changes" returns to it, whatever happened since (a rotation, say). */
+    private val opened = initial.raw.copyJson()
+    private val _externalEdits = MutableStateFlow(0L)
+    /**
+     * Bumped only when something other than typing replaced field content: another device's version, a rebase on the server's
+     * answer, undo, a structural checklist operation. Editors reset their text then and at no other time.
+     */
+    val externalEdits = _externalEdits.asStateFlow()
+    private val history = NoteHistory()
+    private val _canUndo = MutableStateFlow(false)
+    val canUndo = _canUndo.asStateFlow()
+    private val _canRedo = MutableStateFlow(false)
+    val canRedo = _canRedo.asStateFlow()
+    /** The field that had the caret when an undo or redo step was recorded; the editor puts it back after the reset. */
+    class RestoreHint(val focusKey: String?, val selection: IntArray?, val serial: Long)
+    private val _restore = MutableStateFlow<RestoreHint?>(null)
+    val restore = _restore.asStateFlow()
+    @Volatile private var focusProvider: () -> Pair<String?, IntArray?> = { null to null }
+    @Volatile private var nextIsStructural = false
     private val _draftGeneration = MutableStateFlow(0L)
     val draftGeneration = _draftGeneration.asStateFlow()
     private val startedAsNew = initial.id <= 0
@@ -54,6 +76,7 @@ class NoteEditorViewModel(
     private var persistenceJob: Job? = null
 
     init {
+        history.reset(entryOf(_draft.value))
         viewModelScope.launch(Dispatchers.IO) {
             repository.acceptedNoteSnapshots.collect { accepted ->
                 if (accepted.profile == profile && accepted.note.syncId == serverBase.syncId) {
@@ -73,18 +96,58 @@ class NoteEditorViewModel(
      * so only those are deep-copied and the rest of the note (inline images, drawings, unknown fields) is shared with
      * the previous draft instead of being re-serialized on every keystroke. With no names the whole note is copied.
      */
-    @Synchronized fun change(vararg touched: String, block: (JSONObject) -> Unit) {
-        publish(_draft.value.copyForEdit(touched).also(block))
+    @Synchronized fun change(vararg touched: String, external: Boolean = false, structural: Boolean = false, block: (JSONObject) -> Unit) {
+        publish(_draft.value.copyForEdit(touched).also(block), external = external, structural = structural)
     }
 
     @Synchronized fun replace(value: JSONObject) {
-        publish(value.copyJson())
+        publish(value.copyJson(), external = true, structural = true)
     }
 
-    private fun publish(next: JSONObject) {
+    /** "Undo changes": back to the note as the editor was opened. */
+    @Synchronized fun undoAll() {
+        publish(opened.copyJson(), external = true, structural = true)
+    }
+
+    /** The editor tells the session where the caret is, so undo steps can put it back. */
+    fun trackFocus(provider: () -> Pair<String?, IntArray?>) { focusProvider = provider }
+
+    /** The next change is a step of its own (a toolbar command): it is not merged into the typing before it. */
+    fun markStructural() { nextIsStructural = true }
+
+    @Synchronized fun undo() = history.undo()?.let { restoreEntry(it) }
+
+    @Synchronized fun redo() = history.redo()?.let { restoreEntry(it) }
+
+    @Synchronized fun consumeRestore(hint: RestoreHint) { if (_restore.value === hint) _restore.value = null }
+
+    private fun restoreEntry(entry: NoteHistory.Entry) {
+        val next = _draft.value.copyForEdit(arrayOf("checkBoxes")).put("noteTitle", entry.title).put("noteBody", entry.body)
+            .put("isCbox", entry.checklist).put("checkBoxes", JSONArray(entry.items))
+        publish(next, external = true, structural = true, record = false)
+        _restore.value = RestoreHint(entry.focusKey, entry.selection, System.nanoTime())
+        updateHistoryFlags()
+    }
+
+    private fun entryOf(raw: JSONObject, focusKey: String? = null, selection: IntArray? = null): NoteHistory.Entry {
+        val items = raw.optJSONArray("checkBoxes") ?: JSONArray()
+        val structure = ChecklistModel.rows(items).joinToString(",") { "${it.opt("id")}:${it.optBoolean("done")}:${it.opt("indentLevel")}" }
+        return NoteHistory.Entry(raw.optString("noteTitle"), raw.optString("noteBody"), raw.optBoolean("isCbox"), items.toString(), structure, focusKey, selection)
+    }
+
+    private fun updateHistoryFlags() { _canUndo.value = history.canUndo; _canRedo.value = history.canRedo }
+
+    private fun publish(next: JSONObject, external: Boolean = false, structural: Boolean = false, record: Boolean = true) {
         _draft.value = next
         _draftGeneration.value += 1
         _dirty.value = true
+        if (external) _externalEdits.value += 1
+        if (record) {
+            val (focusKey, selection) = focusProvider()
+            history.record(entryOf(next, focusKey, selection), structural || nextIsStructural || external)
+            nextIsStructural = false
+            updateHistoryFlags()
+        }
         persistLocally(next)
     }
 
@@ -110,6 +173,8 @@ class NoteEditorViewModel(
         EditorSnapshotPolicy.apply(local, incoming, dirty = false)?.let {
             _draft.value = it.raw
             _draftGeneration.value += 1
+            _externalEdits.value += 1
+            history.reset(entryOf(it.raw)); updateHistoryFlags()
             serverBase = incoming
             _incoming.value = null
             _dirty.value = !EditorSnapshotPolicy.sameEditableContent(Note(it.raw), serverBase)
@@ -123,6 +188,11 @@ class NoteEditorViewModel(
         serverBase = accepted
         val rebased = if (noLaterEditThanAcceptedOperation) accepted.raw.copyJson()
             else _draft.value.copyJson().put("id", accepted.id).put("revision", accepted.revision)
+        // Typing is not interrupted unless the answer changed what the fields show.
+        if (!EditorSnapshotPolicy.sameEditableContent(Note(rebased), current)) {
+            _externalEdits.value += 1
+            history.reset(entryOf(rebased)); updateHistoryFlags()
+        }
         _draft.value = rebased
         _draftGeneration.value += 1
         _dirty.value = !noLaterEditThanAcceptedOperation && !EditorSnapshotPolicy.sameEditableContent(Note(rebased), accepted)

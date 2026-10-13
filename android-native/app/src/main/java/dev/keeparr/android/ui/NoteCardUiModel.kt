@@ -2,7 +2,6 @@ package dev.keeparr.android.ui
 
 import androidx.compose.runtime.Immutable
 import dev.keeparr.android.data.Note
-import dev.keeparr.android.data.NoteFormat
 import dev.keeparr.android.data.NotePalette
 import dev.keeparr.android.data.ReminderFormat
 import dev.keeparr.android.data.text
