@@ -2,7 +2,7 @@
 
 Status: implementation in progress, based on repository revision `f97698d` and the Android investigation on 2026-10-03. The server protocol extensions, native project foundation, and first app flows are present; device acceptance and the complete release scope are still outstanding. The plan below remains the product and validation target.
 
-Implementation review found correctness defects and unfinished flows. Feature presence in the checkpoint below does not mean acceptance is complete. Follow [the remediation and completion handoff](native-android-remediation-plan.md) for prioritized fixes, regression tests, and release gates.
+Implementation review found correctness defects and unfinished flows. Feature presence in the checkpoint below does not mean acceptance is complete. Follow [the remediation and completion handoff](native-android-remediation-plan.md) for prioritized fixes, regression tests, and release gates. Note bodies, titles and checklist rows follow [the note content contract](note-content-contract.md).
 
 ## Implementation checkpoint
 
@@ -119,7 +119,7 @@ Use Keeparr's current web UI and live Android behavior as the primary feature re
 - Long-press selection and drag ordering; keep the logical sequence stable across grid/list switches. Editing a note must not reorder it unless the user or a reminder rule requests that.
 - Light/dark themes, existing note colors, font scaling, TalkBack labels, keyboard handling, and responsive layouts.
 
-**Content compatibility is a release gate:** `noteBody` is HTML, and checklist item `data` is not restricted to plain strings by the interface. Build representative fixtures and a native supported-format adapter. Preserve images, links, formatting and unknown fields through edits. If a document contains unsupported editable structure, retain the original and expose a clear read-only state until support exists. Do not save a flattened plain-text replacement over it. Existing drawings should remain viewable and preserved before a drawing editor is available.
+**Content compatibility is a release gate:** `noteBody` is HTML, and checklist item `data` is not restricted to plain strings by the interface. Build representative fixtures and a native supported-format adapter. Preserve images, links, formatting and unknown fields through edits. String content is never read-only: every body and checklist item the web can write is editable natively, and content the editor cannot express natively is preserved byte-for-byte (atomic embeds) or kept with its tag and attributes (inline and block frames). Only structured, non-string checklist item data stays read-only, shown with a label. The vocabulary, codec rules and shared fixtures are in [the note content contract](note-content-contract.md). Do not save a flattened plain-text replacement over rich content. Existing drawings should remain viewable and preserved before a drawing editor is available.
 
 Treat existing locked-note behavior as a visibility feature with compatible unlocking; hide previews from widgets and notification content by default. The current lock model is not end-to-end encryption.
 

@@ -35,6 +35,10 @@ This document records the current authoritative state and write boundaries while
 | Native operation semantics | `server/native-client.js` and sync mutation functions in `server/server.js` | Revision checks, operation receipts, LWW compatibility, resource change cursors, and negotiated incremental replies are covered by protocol tests. |
 | Realtime/reminder domain helpers | `server/reminder-recurrence.js`, `server/oauth-mcp.js`, and server services | Existing extracted modules should remain the boundaries when adjacent routes are split. |
 
+## Note content codec
+
+Bodies, titles and checklist rows are HTML strings written by two clients. The normative vocabulary, escaping, editing semantics and shared fixtures (`test-fixtures/native-contract.json`) are in [the note content contract](note-content-contract.md). Both clients must pass the same fixtures; a fixture change needs a matching change on the web and Android sides.
+
 ## Durable-write invariants
 
 - A successful local note or staged attachment save means the local document and replayable intent have both committed.

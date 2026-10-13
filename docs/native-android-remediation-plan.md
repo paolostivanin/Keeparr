@@ -302,7 +302,7 @@ WP6 implementation notes (2026-10-05): `NoteEditorViewModel` owns lifecycle-scop
 1. Create synthetic fixtures for plain paragraphs, links, inline styles, nested checklists, rich item strings, structured item data, inline images, drawing data URLs/SVG, attachments, unknown attributes/fields, locked notes and unsupported bodies.
 2. Decide supported format for each editable body/item, not just `noteBody`. Rich item strings must not enter a plain-text replacement path.
 3. Implement loss-aware native adapters. Preserve unknown fields and original markup when the relevant content was not edited.
-4. Keep unsupported bodies/items read-only with readable previews/media where feasible. Retain originals verbatim; never delete entries solely because the editor cannot represent them.
+4. Keep string bodies and items editable (see [the note content contract](note-content-contract.md)). Content the editor cannot express natively is preserved byte-for-byte as an atomic embed or kept with its tag and attributes; only structured, non-string items stay read-only with a readable label. Retain originals verbatim; never delete entries solely because the editor cannot represent them.
 5. Toggle/reorder/indent changes only intended fields, preserving identity, nested content, links and unrelated metadata.
 6. Copy/share is an explicit export; plain-text exports must not replace stored rich content.
 7. Verify cached/authenticated drawing and inline-image viewing. Drawing creation stays deferred.
@@ -312,7 +312,7 @@ WP7 implementation notes (2026-10-05): the server stores opaque note properties 
 
 ### Required regression tests
 
-- Edit a rich checklist item without losing formatting/link, or verify it stays read-only until supported.
+- Edit a rich checklist item without losing formatting/link; only structured (non-string) items stay read-only.
 - Toggle/reorder/indent structured/rich entries without changing unrelated JSON/markup.
 - Native edit -> server -> web -> native preserves supported content; unsupported originals survive edits to other fields verbatim.
 - Exercise actual adapters and repository/server paths. Copying a `JSONObject` is not sufficient round-trip evidence.
