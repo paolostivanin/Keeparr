@@ -17,6 +17,8 @@ export class SetupComponent {
   displayNameTouched = false;
   password = '';
   confirmPassword = '';
+  setupToken = '';
+  setupTokenRequired = false;
   importTakeoutAfterCreate = false;
   enable2fa = false;
   totpSecret = '';
@@ -33,7 +35,9 @@ export class SetupComponent {
   isRestoring = false;
 
 
-  constructor(private auth: AuthService, private router: Router) { }
+  constructor(private auth: AuthService, private router: Router) {
+    this.auth.setupTokenRequired().then(required => this.setupTokenRequired = required, () => undefined);
+  }
 
   onUsernameChange(value: string) {
     this.username = value;
@@ -79,7 +83,7 @@ export class SetupComponent {
 
     this.isSaving = true;
     try {
-      const result = await this.auth.createInitialAdmin(this.username, this.displayName, this.password, this.enable2fa ? this.totpSecret : undefined, this.enable2fa ? this.totpToken : undefined);
+      const result = await this.auth.createInitialAdmin(this.username, this.displayName, this.password, this.enable2fa ? this.totpSecret : undefined, this.enable2fa ? this.totpToken : undefined, this.setupToken.trim() || undefined);
       if (result.backupCodes) {
         this.backupCodes = result.backupCodes;
         // Reset so the "I have saved my backup codes" button on the next
@@ -97,11 +101,11 @@ export class SetupComponent {
 
   onBackupFileSelected(event: any) {
     const file = event.target.files[0];
-    if (file && file.name.endsWith('.sqlite')) {
+    if (file && /\.(zip|sqlite)$/i.test(file.name)) {
       this.selectedBackupFile = file;
       this.error = '';
     } else {
-      this.error = 'Please select a valid .sqlite backup file.';
+      this.error = 'Please select a Keeparr backup (.zip or .sqlite).';
       this.selectedBackupFile = null;
     }
   }

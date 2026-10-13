@@ -42,7 +42,8 @@ export class UserManagementComponent implements OnInit {
   // Backup management
   backupSchedule = 'none';
   backupTime = '03:00';
-  absolutePath = '';
+  backupKeepCount = 7;
+  backupTotalSize = 0;
   lastAutomatedAt: string | null = null;
   lastManualAt: string | null = null;
   backupFiles: any[] = [] as any[];
@@ -184,7 +185,8 @@ export class UserManagementComponent implements OnInit {
       const status = await this.auth.getBackupStatus();
       this.backupSchedule = status.schedule;
       this.backupTime = status.backupTime;
-      this.absolutePath = status.absolutePath;
+      this.backupKeepCount = status.keepCount ?? 7;
+      this.backupTotalSize = status.totalSize ?? 0;
       this.lastAutomatedAt = status.lastAutomatedAt;
       this.lastManualAt = status.lastManualAt;
       this.backupFiles = status.files;
@@ -192,11 +194,28 @@ export class UserManagementComponent implements OnInit {
   }
 
 
+  private clampedKeepCount() {
+    const value = Math.round(Number(this.backupKeepCount));
+    return Number.isFinite(value) ? Math.min(60, Math.max(1, value)) : 7;
+  }
+
+  async saveBackupKeepCount() {
+    this.automatedBackupError = '';
+    this.automatedBackupSuccess = '';
+    this.backupKeepCount = this.clampedKeepCount();
+    try {
+      await this.auth.saveBackupSchedule(this.backupSchedule, this.backupTime, this.backupKeepCount);
+      this.automatedBackupSuccess = `Keeping the newest ${this.backupKeepCount} automated backups.`;
+    } catch (error) {
+      this.automatedBackupError = this.getErrorMessage(error, 'Could not update backup retention.');
+    }
+  }
+
   async changeBackupSchedule(schedule: string) {
     this.automatedBackupError = '';
     this.automatedBackupSuccess = '';
     try {
-      await this.auth.saveBackupSchedule(schedule, this.backupTime);
+      await this.auth.saveBackupSchedule(schedule, this.backupTime, this.clampedKeepCount());
       this.backupSchedule = schedule;
       this.automatedBackupSuccess = `Backup schedule updated to ${schedule}.`;
       // The time-picker input is rendered conditionally on schedule !== 'none'.
@@ -243,7 +262,7 @@ export class UserManagementComponent implements OnInit {
             this.backupTime = newTime;
             
             try {
-              await this.auth.saveBackupSchedule(this.backupSchedule, this.backupTime);
+              await this.auth.saveBackupSchedule(this.backupSchedule, this.backupTime, this.clampedKeepCount());
               this.automatedBackupSuccess = `Backup time updated to ${data.hour}:${data.minutes} ${data.type}.`;
             } catch (error) {
               this.automatedBackupError = this.getErrorMessage(error, 'Could not update backup time.');
@@ -296,8 +315,13 @@ export class UserManagementComponent implements OnInit {
     } catch {}
   }
 
-  downloadBackup(filename: string) {
-    window.open(this.auth.getBackupDownloadUrl(filename), '_blank');
+  async downloadBackup(filename: string) {
+    this.manualBackupError = '';
+    try {
+      await this.auth.downloadBackup(filename);
+    } catch (error) {
+      this.manualBackupError = this.getErrorMessage(error, 'Could not download backup.');
+    }
   }
 
   formatSize(bytes: number) {

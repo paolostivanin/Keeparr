@@ -27,6 +27,7 @@ import { LayoutScheduler, browserLayoutClock } from 'src/app/utils/layout-schedu
 import { NoteBodySegment, NotePreviewMeta } from './note-card-preview.component';
 import { NoteListWindow, NoteListWindowModel } from './note-list-window';
 import { MasonryWindowResult, NoteMasonryWindowModel } from './note-masonry-window';
+import { inertDiv } from 'src/app/utils/inert-html';
 
 declare var Snackbar: any;
 type PluginListenerHandle = { remove: () => Promise<void> | void };
@@ -2734,8 +2735,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   private notePlainText(value?: string | null) {
-    const div = document.createElement('div')
-    div.innerHTML = value || ''
+    const div = inertDiv(value || '')
     return (div.textContent || div.innerText || '').replace(/\s+/g, ' ').trim()
   }
 

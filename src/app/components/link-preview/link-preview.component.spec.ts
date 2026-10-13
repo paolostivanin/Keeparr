@@ -17,7 +17,7 @@ describe('LinkPreviewComponent', () => {
       declarations: [LinkPreviewComponent],
       providers: [
         { provide: NotesService, useValue: { getLinkPreview, peekLinkPreviewCache: () => null } },
-        { provide: AuthService, useValue: { token: '', authenticatedImageUrl: (value: string) => value } }
+        { provide: AuthService, useValue: { token: '', authenticatedImageUrl: (value: string) => value, withMediaTicket: (value: string) => value } }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).compileComponents();

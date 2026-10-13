@@ -33,6 +33,17 @@ test('hashed assets are immutable and entry points always revalidate', () => wit
   }
 }));
 
+test('the shell and assets carry a CSP that forbids inline scripts and framing', () => withApp(async origin => {
+  for (const entry of ['/', '/settings', '/main-ABCDEF12.js']) {
+    const response = await fetch(origin + entry);
+    const csp = response.headers.get('content-security-policy') || '';
+    assert.match(csp, /script-src 'self'/, entry);
+    assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval/, entry);
+    assert.match(csp, /frame-ancestors 'none'/, entry);
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff', entry);
+  }
+}));
+
 test('client routes fall back to the shell but missing assets and API paths are 404', () => withApp(async origin => {
   assert.match(await (await fetch(`${origin}/settings/profile`)).text(), /<!doctype html>/);
   for (const missing of ['/chunk-REPLACED1.js', '/styles-OLD12345.css', '/api/not-a-route', '/api/notes/missing/child']) {

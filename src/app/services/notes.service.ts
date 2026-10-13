@@ -272,10 +272,24 @@ export class NotesService {
     }
   }
 
-  private connectRealtime(token: string) {
+  private async connectRealtime(token: string) {
     this.shouldReconnectRealtime = true;
-    const url = this.realtimeUrl(token);
-    console.log('[Keeparr WS] connecting to', url.replace(/token=[^&]+/, 'token=***'));
+    const serial = ++this.realtimeConnectSerial;
+    let ticket: string;
+    try {
+      const result = await firstValueFrom(this.http.post<{ ticket: string }>(
+        `${environment.apiUrl}/realtime/ticket`, {}, { headers: this.auth.authHeaders() }
+      ));
+      ticket = result.ticket;
+    } catch (error) {
+      console.warn('[Keeparr WS] ticket request failed', error);
+      if (serial === this.realtimeConnectSerial) this.scheduleRealtimeReconnect();
+      return;
+    }
+    // Logged out, switched account or disconnected while the ticket was in flight.
+    if (!this.shouldReconnectRealtime || this.auth.token !== token || serial !== this.realtimeConnectSerial) return;
+    const url = this.realtimeUrl(ticket);
+    console.log('[Keeparr WS] connecting to', url.replace(/ticket=[^&]+/, 'ticket=***'));
     this.realtimeSocket = new WebSocket(url);
     const socket = this.realtimeSocket;
 
@@ -328,10 +342,15 @@ export class NotesService {
     this.realtimeSocket.onclose = (event) => {
       console.warn('[Keeparr WS] closed', event.code, event.reason);
       if (this.realtimeSocket !== socket) return;
-      if (!this.shouldReconnectRealtime || !this.auth.token) return;
-      // Back off while the server is unreachable instead of retrying every two seconds indefinitely.
-      this.realtimeReconnect = setTimeout(() => this.connectRealtime(this.auth.token), reconnectDelay(this.realtimeFailures++));
+      this.scheduleRealtimeReconnect();
     };
+  }
+
+  private scheduleRealtimeReconnect() {
+    if (!this.shouldReconnectRealtime || !this.auth.token) return;
+    if (this.realtimeReconnect) clearTimeout(this.realtimeReconnect);
+    // Back off while the server is unreachable instead of retrying every two seconds indefinitely.
+    this.realtimeReconnect = setTimeout(() => { void this.connectRealtime(this.auth.token); }, reconnectDelay(this.realtimeFailures++));
   }
 
   private shouldSuppressRealtimeCreate(message: any) {
@@ -468,7 +487,10 @@ export class NotesService {
     await this.update({ ...full, images: (full.images || []).filter(img => img.id !== image.id) }, full.id!);
   }
 
+  private realtimeConnectSerial = 0;
+
   private disconnectRealtime() {
+    this.realtimeConnectSerial++;
     this.shouldReconnectRealtime = false;
     this.realtimeFailures = 0;
     if (this.realtimeReconnect) clearTimeout(this.realtimeReconnect);
@@ -476,14 +498,14 @@ export class NotesService {
     this.realtimeSocket = undefined;
   }
 
-  private realtimeUrl(token: string) {
-    const encodedToken = encodeURIComponent(token);
+  private realtimeUrl(ticket: string) {
+    const encodedToken = encodeURIComponent(ticket);
     if (environment.apiUrl.startsWith('http')) {
-      return `${environment.apiUrl.replace(/^http/, 'ws')}/realtime?token=${encodedToken}`;
+      return `${environment.apiUrl.replace(/^http/, 'ws')}/realtime?ticket=${encodedToken}`;
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}${environment.apiUrl}/realtime?token=${encodedToken}`;
+    return `${protocol}//${window.location.host}${environment.apiUrl}/realtime?ticket=${encodedToken}`;
   }
 
   async add(noteObj: NoteI) {
@@ -875,7 +897,7 @@ export class NotesService {
   }
 
   async downloadImage(src: string, filename?: string) {
-    const imageUrl = this.auth.authenticatedImageUrl(src);
+    const imageUrl = await this.auth.authenticatedImageUrlReady(src);
     const response = await fetch(imageUrl);
     if (!response.ok) throw new Error('Could not download image.');
     const blob = await response.blob();
@@ -1656,6 +1678,7 @@ export class NotesService {
   private async cacheNoteMedia(note: NoteI) {
     if (!this.offlineSync.partition || !navigator.onLine) return;
     const urls = this.noteImageUrls(note);
+    await this.auth.ensureMediaTicket();
     await Promise.all(urls.map(url => this.offlineStore.cacheMedia(
       this.offlineSync.partition,
       this.auth.canonicalImageUrl(url),
@@ -1675,8 +1698,9 @@ export class NotesService {
     const replace = (value: string) => {
       let next = value || '';
       replacements.forEach((offline, canonical) => {
-        next = next.split(canonical).join(offline);
-        next = next.split(this.auth.authenticatedImageUrl(canonical)).join(offline);
+        // Match the canonical URL with any (changing) ticket query so a rotated ticket cannot break replacement.
+        const escaped = canonical.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        next = next.replace(new RegExp(`${escaped}(?:\\?ticket=[^"'&\\s<>]*)?`, 'g'), () => offline);
       });
       return next;
     };

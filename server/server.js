@@ -65,6 +65,7 @@ const KEEPARR_VERSION = (() => {
     return '0.0';
   }
 })();
+const backupArchive = require('./backup-archive');
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/paolostivanin/Keeparr/releases/latest';
 
 function configureDatabase(database) {
@@ -198,30 +199,93 @@ const uploadAttachment = multer({
 
 // ─── Backup Logic ──────────────────────────────────────────────────────────
 
+const BACKUP_FILE_PATTERN = /^backup-[A-Za-z0-9._-]+\.(?:zip|sqlite)$/;
+const DEFAULT_BACKUP_KEEP_COUNT = 7;
+let backupInProgress = false;
+
+function backupDirectory() {
+  return path.join(dataDir, 'backups');
+}
+
+function normalizeBackupKeepCount(value) {
+  const count = Number(value);
+  return Number.isInteger(count) && count >= 1 && count <= 60 ? count : null;
+}
+
+// Keeps the newest `keep` automated backups. Manual backups are never removed here.
+async function pruneAutomatedBackups() {
+  const keep = normalizeBackupKeepCount(await getAppSetting('backupKeepCount', DEFAULT_BACKUP_KEEP_COUNT)) ?? DEFAULT_BACKUP_KEEP_COUNT;
+  const directory = backupDirectory();
+  if (!fs.existsSync(directory)) return;
+  const automated = fs.readdirSync(directory)
+    .filter(name => BACKUP_FILE_PATTERN.test(name) && !name.includes('-manual'))
+    .map(name => ({ name, createdAt: fs.statSync(path.join(directory, name)).mtimeMs }))
+    .sort((a, b) => b.createdAt - a.createdAt);
+  for (const old of automated.slice(keep)) {
+    try { fs.unlinkSync(path.join(directory, old.name)); } catch (error) { console.error('[Backup] could not remove', old.name, error.message); }
+  }
+}
+
 async function performBackup(isManual = false) {
-  const backupDir = path.join(dataDir, 'backups');
+  if (backupInProgress) throw new Error('A backup is already running.');
+  backupInProgress = true;
+  const backupDir = backupDirectory();
   fs.mkdirSync(backupDir, { recursive: true });
 
   const now = new Date().toISOString();
   const timestamp = now.replace(/[:.]/g, '-');
-  const filename = `backup-${timestamp}${isManual ? '-manual' : ''}.sqlite`;
+  const filename = `backup-${timestamp}${isManual ? '-manual' : ''}.zip`;
   const destPath = path.join(backupDir, filename);
+  const snapshotPath = path.join(backupDir, `.snapshot-${timestamp}.sqlite`);
 
-  await withDatabaseLock(() => new Promise((resolve, reject) => {
-    // Using VACUUM INTO for a safe, consistent backup while excluding active transactions.
-    db.run(`VACUUM INTO ?`, [destPath], err => {
-      if (!err) return resolve();
-      try {
-        fs.copyFileSync(dbPath, destPath);
-        resolve();
-      } catch (copyError) { reject(copyError); }
+  try {
+    // The database lock is held only while the snapshot is taken; copying the files must not stall other users.
+    await withDatabaseLock(() => new Promise((resolve, reject) => {
+      // VACUUM INTO gives a consistent snapshot that includes everything still in the -wal file.
+      db.run(`VACUUM INTO ?`, [snapshotPath], err => err ? reject(err) : resolve());
+    }));
+    await backupArchive.writeBackupArchive({
+      destPath, dbSnapshotPath: snapshotPath, uploadDir, attachmentDir, vapidPath, appVersion: KEEPARR_VERSION
     });
-  }));
+  } finally {
+    try { fs.unlinkSync(snapshotPath); } catch {}
+    backupInProgress = false;
+  }
   const setting = isManual ? 'lastManualBackupAt' : 'lastAutomatedBackupAt';
   await setAppSetting(setting, now);
+  if (!isManual) await pruneAutomatedBackups();
   return filename;
 }
 
+
+// Hourly: expired sessions and OAuth rows, and idempotency records no client can still be replaying.
+const RECEIPT_RETENTION_DAYS = 90;
+async function runHousekeeping() {
+  const now = new Date().toISOString();
+  const cutoff = new Date(Date.now() - RECEIPT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  await run('DELETE FROM sessions WHERE expiresAt IS NOT NULL AND expiresAt <= ?', [now]);
+  await run('DELETE FROM oauth_pending_authorizations WHERE expiresAt <= ?', [now]);
+  await run('DELETE FROM oauth_authorization_codes WHERE expiresAt <= ?', [now]);
+  await run('DELETE FROM oauth_access_tokens WHERE expiresAt <= ? OR revokedAt IS NOT NULL', [now]);
+  await run('DELETE FROM oauth_refresh_tokens WHERE expiresAt <= ? OR revokedAt IS NOT NULL', [now]);
+  await run('DELETE FROM native_mutation_results WHERE createdAt < ?', [cutoff]);
+  await run(`DELETE FROM native_upload_receipts WHERE state = 'deleted' AND updatedAt < ?`, [cutoff]);
+  // Leftovers of a backup or restore that was interrupted (a stop, a crash): never complete, never listed.
+  const directory = backupDirectory();
+  if (!backupInProgress && fs.existsSync(directory)) {
+    for (const name of fs.readdirSync(directory)) {
+      if (!/\.partial$|^\.snapshot-|^\.restore-/.test(name)) continue;
+      const full = path.join(directory, name);
+      try { if (Date.now() - fs.statSync(full).mtimeMs > 60 * 60 * 1000) fs.rmSync(full, { recursive: true, force: true }); } catch {}
+    }
+  }
+}
+
+function startHousekeeping() {
+  const tick = () => runHousekeeping().catch(error => console.error('[Housekeeping] failed:', error.message));
+  setTimeout(tick, 30_000).unref?.();
+  setInterval(tick, 60 * 60 * 1000).unref?.();
+}
 
 function startBackupScheduler() {
   setInterval(async () => {
@@ -268,7 +332,7 @@ function startBackupScheduler() {
     } catch (err) {
       console.error('Backup scheduler error:', err.message);
     }
-  }, 60 * 1000); // Check every minute
+  }, Number(process.env.KEEPARR_BACKUP_CHECK_MS) || 60 * 1000); // Check every minute (the override is for tests)
 }
 
 
@@ -464,6 +528,14 @@ async function init() {
   const sessionColumns = await all('PRAGMA table_info(sessions)');
   if (!sessionColumns.some(column => column.name === 'expiresAt')) {
     await run(`ALTER TABLE sessions ADD COLUMN expiresAt TEXT`);
+  }
+  // Tokens are stored as SHA-256 hashes, so a database or backup copy does not contain usable logins. Rows from before this
+  // change are converted one by one and flagged, which keeps the conversion safe to repeat after an interruption.
+  if (!sessionColumns.some(column => column.name === 'hashed')) {
+    await run(`ALTER TABLE sessions ADD COLUMN hashed INTEGER NOT NULL DEFAULT 0`);
+  }
+  for (const legacy of await all('SELECT token FROM sessions WHERE hashed = 0')) {
+    await run('UPDATE sessions SET token = ?, hashed = 1 WHERE token = ? AND hashed = 0', [mcpTokenHash(legacy.token), legacy.token]);
   }
   // Purge expired sessions on startup
   await run('DELETE FROM sessions WHERE expiresAt IS NOT NULL AND expiresAt <= ?', [new Date().toISOString()]);
@@ -1064,8 +1136,8 @@ async function createSession(user) {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
   await run(
-    'INSERT INTO sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)',
-    [token, user.id, now.toISOString(), expiresAt]
+    'INSERT INTO sessions (token, userId, createdAt, expiresAt, hashed) VALUES (?, ?, ?, ?, 1)',
+    [mcpTokenHash(token), user.id, now.toISOString(), expiresAt]
   );
   return { token, user: publicUser(user) };
 }
@@ -2419,7 +2491,8 @@ async function runStartupMaintenance() {
      WHERE trashed = 1 AND trashedAt IS NULL`,
     [now]
   );
-  await run('UPDATE notes SET trashedAt = NULL WHERE trashed = 0');
+  // Only rows that need it: any UPDATE fires the revision trigger, and a no-op bump makes every client's next save conflict.
+  await run('UPDATE notes SET trashedAt = NULL WHERE trashed = 0 AND trashedAt IS NOT NULL');
   await purgeExpiredTrashedNotes();
 }
 
@@ -2465,6 +2538,20 @@ const registerLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, key: 'reg
 const setupLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, key: 'setup' });
 const oauthRegistrationLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 30, key: 'oauth-register' });
 
+// Failed passwords per account, regardless of address: rotating client addresses must not give unlimited guesses.
+const loginFailures = new Map(); // username -> { count, lockedUntil }
+function loginLockSeconds(username) {
+  const entry = loginFailures.get(username);
+  return entry?.lockedUntil > Date.now() ? Math.ceil((entry.lockedUntil - Date.now()) / 1000) : 0;
+}
+function recordLoginFailure(username) {
+  const entry = loginFailures.get(username) || { count: 0, lockedUntil: 0 };
+  entry.count += 1;
+  if (entry.count >= 10) { entry.lockedUntil = Date.now() + 15 * 60 * 1000; entry.count = 0; }
+  loginFailures.set(username, entry);
+  if (loginFailures.size > 10_000) for (const [name, value] of loginFailures) if (value.lockedUntil <= Date.now() && !value.count) loginFailures.delete(name);
+}
+
 const totpFailures = new Map(); // userId -> { count, lockedUntil }
 function checkTotpLock(userId) {
   const entry = totpFailures.get(userId);
@@ -2507,12 +2594,61 @@ async function resolveSessionFromToken(token) {
      JOIN users ON users.id = sessions.userId
      WHERE sessions.token = ? AND users.enabled = 1
        AND (sessions.expiresAt IS NULL OR sessions.expiresAt > ?)`,
-    [token, new Date().toISOString()]
+    [mcpTokenHash(token), new Date().toISOString()]
   );
 }
 
 function mcpTokenHash(token) {
   return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+// Page assets (<img src>) and WebSockets cannot send an Authorization header. They use short-lived tickets instead of the
+// session token, so the session never appears in a URL, a proxy log or a Referer header.
+// A media ticket is stateless and read-only: it is accepted only by requireAuthOrMediaTicket (image and image-proxy GETs).
+const MEDIA_TICKET_TTL_MS = 2 * 60 * 60 * 1000;
+let urlTicketSecretCache = '';
+async function urlTicketSecret() {
+  if (urlTicketSecretCache) return urlTicketSecretCache;
+  let secret = await getAppSetting('urlTicketSecret', '');
+  if (!secret) {
+    secret = randomHex(32);
+    await setAppSetting('urlTicketSecret', secret);
+  }
+  urlTicketSecretCache = secret;
+  return secret;
+}
+async function mediaTicketSignature(userId, expires) {
+  return crypto.createHmac('sha256', await urlTicketSecret()).update(`media|${userId}|${expires}`).digest('hex');
+}
+async function issueMediaTicket(userId) {
+  const expires = Date.now() + MEDIA_TICKET_TTL_MS;
+  return { ticket: `${userId}.${expires}.${await mediaTicketSignature(userId, expires)}`, expiresAt: new Date(expires).toISOString() };
+}
+async function resolveMediaTicket(ticket) {
+  const match = /^(\d{1,12})\.(\d{10,16})\.([0-9a-f]{64})$/.exec(String(ticket || ''));
+  if (!match) return null;
+  const [, userId, expires, signature] = match;
+  if (Number(expires) <= Date.now()) return null;
+  const expected = await mediaTicketSignature(userId, expires);
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  return await get('SELECT * FROM users WHERE id = ? AND enabled = 1', [Number(userId)]);
+}
+
+// Realtime tickets are single use and live for seconds; they remember which session asked, so that session's socket can
+// later be told apart from the user's other devices.
+const REALTIME_TICKET_TTL_MS = 30 * 1000;
+const realtimeTickets = new Map(); // ticket -> { userId, sessionHash, expires }
+function issueRealtimeTicket(userId, sessionHash) {
+  const now = Date.now();
+  for (const [key, value] of realtimeTickets) if (value.expires <= now) realtimeTickets.delete(key);
+  const ticket = randomHex(24);
+  realtimeTickets.set(ticket, { userId, sessionHash, expires: now + REALTIME_TICKET_TTL_MS });
+  return ticket;
+}
+function redeemRealtimeTicket(ticket) {
+  const entry = realtimeTickets.get(String(ticket || ''));
+  realtimeTickets.delete(String(ticket || ''));
+  return entry && entry.expires > Date.now() ? entry : null;
 }
 
 async function resolveMcpToken(token) {
@@ -2608,6 +2744,7 @@ async function requireAuth(req, res, next) {
 
     req.user = session;
     req.token = token;
+    req.tokenHash = mcpTokenHash(token);
     if (mcpAccess) {
       req.mcpToken = mcpAccess.oauthClientId
         ? { id: mcpAccess.oauthGrantId, type: 'oauth', prefix: mcpAccess.oauthClientId }
@@ -2629,47 +2766,14 @@ async function requireAuth(req, res, next) {
   }
 }
 
-// For endpoints loaded as page assets (e.g. <img src="...">) where the
-// browser can't attach an Authorization header. Accepts the token via the
-// `token` query param in addition to the header.
-async function requireAuthOrQueryToken(req, res, next) {
+// For endpoints loaded as page assets (<img src>) where the browser cannot attach an Authorization header: the header as
+// usual, or a short-lived read-only media ticket in `?ticket=`. A session token in the URL is never accepted.
+async function requireAuthOrMediaTicket(req, res, next) {
   try {
-    const header = req.header('authorization') || '';
-    let token = header.startsWith('Bearer ') ? header.slice(7) : '';
-    const tokenFromQuery = !token && !!req.query.token;
-    if (tokenFromQuery) token = String(req.query.token);
-    if (!token) return sendAuthenticationRequired(req, res);
-    if (tokenFromQuery && token.startsWith('keeparr_oauth_')) return sendAuthenticationRequired(req, res);
-    let session = await resolveSessionFromToken(token);
-    let mcpAccess = null;
-    if (!session) mcpAccess = await resolveMcpToken(token);
-    if (!session && !mcpAccess) return sendAuthenticationRequired(req, res);
-    if (mcpAccess && !isAllowedMcpApiRequest(req.method, req.originalUrl || req.path)) {
-      return res.status(403).json({ error: 'This endpoint is not available to external access tokens.' });
-    }
-    if (mcpAccess?.oauthClientId) {
-      if (!oauthTokenCanCallApi(mcpAccess, req)) {
-        return res.status(403).json({ error: 'This OAuth token was issued for a different protected resource.' });
-      }
-      const requiredScope = ['GET', 'HEAD'].includes(req.method) ? 'keeparr.read' : 'keeparr.write';
-      if (!hasOAuthScope(mcpAccess, requiredScope)) {
-        res.set('WWW-Authenticate', `Bearer error="insufficient_scope", scope="${requiredScope}"`);
-        return res.status(403).json({ error: `This OAuth token does not have the ${requiredScope} scope.` });
-      }
-    }
-    session = session || mcpAccess;
-    req.user = session;
-    req.token = token;
-    if (mcpAccess) {
-      req.mcpToken = mcpAccess.oauthClientId
-        ? { id: mcpAccess.oauthGrantId, type: 'oauth', prefix: mcpAccess.oauthClientId }
-        : { id: mcpAccess.mcpTokenId, type: 'mcp', prefix: mcpAccess.tokenPrefix };
-      req.mcpCapabilities = {
-        allowLockedNotes: !!mcpAccess.mcpAllowLockedNotes,
-        allowPermanentDelete: !!mcpAccess.mcpAllowPermanentDelete
-      };
-      trackExternalAccessUse(mcpAccess).catch(() => undefined);
-    }
+    if ((req.header('authorization') || '').startsWith('Bearer ')) return requireAuth(req, res, next);
+    const user = await resolveMediaTicket(req.query.ticket);
+    if (!user) return sendAuthenticationRequired(req, res);
+    req.user = user;
     next();
   } catch (error) {
     next(error);
@@ -2770,7 +2874,8 @@ async function hydrateNoteUserFields(rows, requesterUserId) {
 
 const realtimeClients = new Map();
 
-function addRealtimeClient(userId, socket) {
+function addRealtimeClient(userId, socket, sessionHash = '') {
+  socket.sessionHash = sessionHash;
   if (!realtimeClients.has(userId)) {
     realtimeClients.set(userId, new Set());
     broadcastRealtimeToAll({ type: 'global-presence', userId, online: true });
@@ -2787,16 +2892,34 @@ function addRealtimeClient(userId, socket) {
   });
 }
 
-function closeRealtimeClientsForUser(userId, reason = 'Account disabled.') {
+// With `exceptSessionHash`, the sockets of that session stay open (the device that just changed its password).
+function closeRealtimeClientsForUser(userId, reason = 'Account disabled.', exceptSessionHash = '') {
   const sockets = realtimeClients.get(userId);
   if (!sockets) return;
-  sockets.forEach(socket => {
+  for (const socket of [...sockets]) {
+    if (exceptSessionHash && socket.sessionHash === exceptSessionHash) continue;
     try {
       socket.close(1008, reason);
     } catch {}
+    sockets.delete(socket);
+  }
+  if (!sockets.size) {
+    realtimeClients.delete(userId);
+    broadcastRealtimeToAll({ type: 'global-presence', userId, online: false });
+  }
+}
+
+// Signs a user out of everything that could still act for them: sessions (optionally keeping one), the local MCP token and
+// every OAuth grant with its tokens (unless `sessionsOnly`). Open sockets of the revoked sessions are closed.
+async function revokeUserCredentials(userId, { exceptSessionHash = '', reason = 'Signed out.', sessionsOnly = false } = {}) {
+  await withDatabaseTransaction(async () => {
+    await run('DELETE FROM sessions WHERE userId = ? AND token != ?', [userId, exceptSessionHash]);
+    if (sessionsOnly) return;
+    await run(`DELETE FROM external_unlock_challenges WHERE userId = ? AND principalType IN ('mcp', 'oauth')`, [userId]);
+    await run('DELETE FROM mcp_tokens WHERE userId = ?', [userId]);
+    await run('DELETE FROM oauth_grants WHERE userId = ?', [userId]);
   });
-  realtimeClients.delete(userId);
-  broadcastRealtimeToAll({ type: 'global-presence', userId, online: false });
+  closeRealtimeClientsForUser(userId, reason, exceptSessionHash);
 }
 
 function broadcastRealtime(userIds, payload) {
@@ -2958,28 +3081,32 @@ async function broadcastPresenceUpdate(noteId) {
   broadcastRealtime(recipients, { type: 'presence-update', noteId, activeEditors });
 }
 
+let wss;
 function setupRealtime() {
-  const wss = new WebSocketServer({ server, path: '/api/realtime' });
+  wss = new WebSocketServer({ server, path: '/api/realtime', maxPayload: 64 * 1024 });
 
   wss.on('connection', async (socket, req) => {
+    // Attached before anything is awaited: an unhandled 'error' event (a malformed frame, say) would end the process.
+    socket.on('error', error => console.error('Realtime socket error', error?.message || error));
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''))?.[1] || '';
-      const token = bearer || url.searchParams.get('token') || '';
-      const session = await get(
+      // The Authorization header (native clients) or a single-use ticket from POST /api/realtime/ticket (browsers).
+      const sessionHash = bearer ? mcpTokenHash(bearer) : redeemRealtimeTicket(url.searchParams.get('ticket'))?.sessionHash || '';
+      const session = sessionHash ? await get(
         `SELECT users.* FROM sessions
          JOIN users ON users.id = sessions.userId
          WHERE sessions.token = ? AND users.enabled = 1
            AND (sessions.expiresAt IS NULL OR sessions.expiresAt > ?)`,
-        [token, new Date().toISOString()]
-      );
+        [sessionHash, new Date().toISOString()]
+      ) : null;
 
       if (!session) {
         socket.close(1008, 'Authentication required.');
         return;
       }
 
-      addRealtimeClient(session.id, socket);
+      addRealtimeClient(session.id, socket, sessionHash);
 
       socket.on('message', async (data) => {
         try {
@@ -3011,6 +3138,7 @@ function setupRealtime() {
       });
 
       socket.on('close', async () => {
+       try {
         const socketsForUser = realtimeClients.get(session.id);
         if (socketsForUser) {
           socketsForUser.delete(socket);
@@ -3028,6 +3156,9 @@ function setupRealtime() {
             await broadcastPresenceUpdate(noteId);
           }
         }
+       } catch (error) {
+        console.error('Realtime close handling failed', error?.message || error);
+       }
       });
 
       socket.send(JSON.stringify({ type: 'ready', at: new Date().toISOString() }));
@@ -3484,16 +3615,31 @@ mountOAuthAndMcpRoutes(app, {
   oauthRegistrationLimiter, internalBaseUrl: `http://127.0.0.1:${port}`
 });
 
+// Optional operator secret for the first-admin form, so whoever reaches a fresh instance first cannot claim it.
+function setupTokenMatches(supplied) {
+  const expected = String(process.env.KEEPARR_SETUP_TOKEN || '');
+  if (!expected) return true;
+  const a = Buffer.from(String(supplied || ''));
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 app.get('/api/setup/status', asyncRoute(async (_req, res) => {
   const row = await get('SELECT COUNT(*) AS count FROM users');
-  res.json({ hasUsers: row.count > 0 });
+  res.json({ hasUsers: row.count > 0, setupTokenRequired: row.count === 0 && !!process.env.KEEPARR_SETUP_TOKEN });
 }));
 
+// Setup is checked and applied as one step, so two simultaneous requests cannot both create an administrator.
+let setupAdminInProgress = false;
 app.post('/api/setup/admin', setupLimiter, asyncRoute(async (req, res) => {
+  if (setupAdminInProgress) return res.status(409).json({ error: 'Initial setup is already in progress.' });
+  setupAdminInProgress = true;
+  try {
   const row = await get('SELECT COUNT(*) AS count FROM users');
   if (row.count > 0) return res.status(409).json({ error: 'Initial setup is already complete.' });
+  if (!setupTokenMatches(req.body?.setupToken)) return res.status(403).json({ error: 'The setup token is missing or incorrect.' });
 
-  const { totpSecret, totpToken, ...userData } = req.body;
+  const { totpSecret, totpToken, setupToken: _setupToken, ...userData } = req.body;
   let backupCodes = null;
 
   if (totpSecret) {
@@ -3506,55 +3652,99 @@ app.post('/api/setup/admin', setupLimiter, asyncRoute(async (req, res) => {
   const user = await createUser({ ...userData, role: 'admin', totpSecret: totpSecret || null, totpBackupCodes: backupCodes ? JSON.stringify(backupCodes) : null });
   await setAppSetting('originalAdminUserId', String(user.id));
   res.status(201).json({ user: publicUser(user), backupCodes });
+  } finally {
+    setupAdminInProgress = false;
+  }
 }));
 
-app.post('/api/setup/restore', setupLimiter, multer({ dest: path.join(dataDir, 'backups') }).single('backup'), asyncRoute(async (req, res) => {
+// Refuse before multer writes anything: restore is only possible when the operator enabled it and no user exists yet.
+const restoreUpload = multer({ dest: path.join(dataDir, 'backups'), limits: { fileSize: Number(process.env.KEEPARR_RESTORE_MAX_BYTES) || 2 * 1024 * 1024 * 1024, files: 1 } });
+app.post('/api/setup/restore', setupLimiter, asyncRoute(async (req, res, next) => {
   // Guard: even if all users are deleted, restore must be explicitly enabled
   // by the operator via KEEPARR_ALLOW_RESTORE=1. Otherwise an attacker who can
   // wipe the DB could swap in an arbitrary SQLite to take over.
   if (process.env.KEEPARR_ALLOW_RESTORE !== '1') {
-    if (req.file) try { fs.unlinkSync(req.file.path); } catch {}
     return res.status(403).json({ error: 'Restore is disabled. Set KEEPARR_ALLOW_RESTORE=1 on the server to enable.' });
   }
   const row = await get('SELECT COUNT(*) AS count FROM users');
-  if (row.count > 0) {
-    if (req.file) try { fs.unlinkSync(req.file.path); } catch {}
-    return res.status(403).json({ error: 'Initial setup already complete.' });
-  }
+  if (row.count > 0) return res.status(403).json({ error: 'Initial setup already complete.' });
+  next();
+}), restoreUpload.single('backup'), asyncRoute(async (req, res) => {
 
   if (!req.file) return res.status(400).json({ error: 'Backup file is required.' });
 
   const tempPath = req.file.path;
+  const stagingDir = path.join(backupDirectory(), `.restore-${randomHex(8)}`);
+  const cleanup = () => {
+    try { fs.rmSync(tempPath, { force: true }); } catch {}
+    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
+  };
 
-  // Validate the upload is actually a SQLite database (magic header).
+  // Everything is unpacked and checked in a staging directory first; live data is not touched until it all passes.
+  let staged;
   try {
     const fd = fs.openSync(tempPath, 'r');
     const header = Buffer.alloc(16);
     fs.readSync(fd, header, 0, 16, 0);
     fs.closeSync(fd);
-    if (header.toString('utf8', 0, 16) !== 'SQLite format 3\0') {
-      try { fs.unlinkSync(tempPath); } catch {}
-      return res.status(400).json({ error: 'File is not a valid SQLite backup.' });
+    if (header.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
+      fs.mkdirSync(stagingDir, { recursive: true });
+      staged = await backupArchive.extractBackupArchive(tempPath, stagingDir);
+    } else if (header.toString('utf8', 0, 16) === 'SQLite format 3\0') {
+      staged = { dbPath: tempPath, uploads: [], attachments: [], vapidPath: '' }; // legacy database-only backup
+    } else {
+      cleanup();
+      return res.status(400).json({ error: 'File is not a Keeparr backup (.zip or .sqlite).' });
     }
+    await backupArchive.validateBackupDatabase(staged.dbPath);
   } catch (e) {
-    try { fs.unlinkSync(tempPath); } catch {}
-    return res.status(400).json({ error: 'Could not read backup file.' });
+    cleanup();
+    return res.status(400).json({ error: e.message || 'Could not read backup file.' });
   }
 
+  const rollbackPath = `${dbPath}.pre-restore`;
+  const copiedFiles = [];
+  const removeSqliteSidecars = () => { for (const suffix of ['-wal', '-shm']) { try { fs.rmSync(dbPath + suffix, { force: true }); } catch {} } };
   try {
     await withDatabaseExclusive(async setConnection => {
       await new Promise((resolve, reject) => db.close(error => error ? reject(error) : resolve()));
-      fs.copyFileSync(tempPath, dbPath);
-      fs.unlinkSync(tempPath);
-      db = configureDatabase(new sqlite3.Database(dbPath));
-      setConnection(db);
-      await init();
+      removeSqliteSidecars();
+      const hadDatabase = fs.existsSync(dbPath);
+      if (hadDatabase) fs.renameSync(dbPath, rollbackPath);
+      try {
+        fs.copyFileSync(staged.dbPath, dbPath);
+        for (const [directory, names, prefix] of [[uploadDir, staged.uploads, 'uploads'], [attachmentDir, staged.attachments, 'attachments']]) {
+          for (const name of names) {
+            const target = path.join(directory, name);
+            try {
+              fs.copyFileSync(path.join(stagingDir, prefix, name), target, fs.constants.COPYFILE_EXCL);
+              copiedFiles.push(target);
+            } catch (error) { if (error.code !== 'EEXIST') throw error; }
+          }
+        }
+        if (staged.vapidPath) fs.copyFileSync(staged.vapidPath, vapidPath);
+        db = configureDatabase(new sqlite3.Database(dbPath));
+        setConnection(db);
+        await init();
+        urlTicketSecretCache = ''; // the restored database carries its own secret
+        loginFailures.clear();
+      } catch (error) {
+        // Put the previous database back and reopen it, so a failed restore leaves the instance as it was.
+        await new Promise(resolve => db.close(() => resolve()));
+        removeSqliteSidecars();
+        for (const file of copiedFiles) { try { fs.unlinkSync(file); } catch {} }
+        try { fs.rmSync(dbPath, { force: true }); } catch {}
+        if (hadDatabase) fs.renameSync(rollbackPath, dbPath);
+        db = configureDatabase(new sqlite3.Database(dbPath));
+        setConnection(db);
+        throw error;
+      }
+      try { fs.rmSync(rollbackPath, { force: true }); } catch {}
     });
-
-    res.json({ success: true });
+    cleanup();
+    res.json({ success: true, files: (staged.uploads?.length || 0) + (staged.attachments?.length || 0) });
   } catch (e) {
-    // Attempt to recover current DB if possible
-    db = configureDatabase(new sqlite3.Database(dbPath));
+    cleanup();
     res.status(500).json({ error: 'Restore failed: ' + e.message });
   }
 }));
@@ -3562,11 +3752,18 @@ app.post('/api/setup/restore', setupLimiter, multer({ dest: path.join(dataDir, '
 app.post('/api/auth/login', loginLimiter, asyncRoute(async (req, res) => {
   const username = normalizeUsername(req.body.username);
   const password = String(req.body.password || '');
+  const lockedFor = loginLockSeconds(username);
+  if (lockedFor > 0) {
+    res.setHeader('Retry-After', String(lockedFor));
+    return res.status(429).json({ error: `Too many failed sign-in attempts. Try again in ${Math.ceil(lockedFor / 60)} minutes.` });
+  }
   const user = await get('SELECT * FROM users WHERE username = ?', [username]);
 
   if (!user || hashPassword(password, user.passwordSalt) !== user.passwordHash) {
+    recordLoginFailure(username);
     return res.status(401).json({ error: 'Username or password is incorrect.' });
   }
+  loginFailures.delete(username);
 
   if (!user.enabled) {
     return res.status(403).json({ error: 'Your account is pending approval by an administrator.' });
@@ -3624,6 +3821,23 @@ app.get('/api/auth/2fa/generate', requireAuth, asyncRoute(async (req, res) => {
 app.post('/api/auth/2fa/enable', requireAuth, asyncRoute(async (req, res) => {
   const { secret, token } = req.body;
   if (!secret || !token) return res.status(400).json({ error: 'Secret and token required.' });
+  // A session alone must not be enough to set or replace the second factor.
+  const user = await get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+  if (hashPassword(String(req.body.currentPassword || ''), user.passwordSalt) !== user.passwordHash) {
+    return res.status(400).json({ error: 'Enter your current password to set up 2FA.' });
+  }
+  if (user.totpEnabled) {
+    const lockedFor = checkTotpLock(user.id);
+    if (lockedFor > 0) {
+      return res.status(429).json({ error: `Too many invalid 2FA attempts. Try again in ${Math.ceil(lockedFor / 60)} minutes.` });
+    }
+    const current = String(req.body.currentToken || '').trim();
+    if (!current || !(await verifySecondFactor(user, current))) {
+      recordTotpFailure(user.id);
+      return res.status(401).json({ error: 'Enter a current authenticator code or a backup code to replace 2FA.', requires2FA: true });
+    }
+    clearTotpFailures(user.id);
+  }
 
   const isValid = verifyTotpToken(token, secret);
   if (!isValid) return res.status(400).json({ error: 'Invalid 2FA code.' });
@@ -3631,6 +3845,7 @@ app.post('/api/auth/2fa/enable', requireAuth, asyncRoute(async (req, res) => {
   const backupCodes = generateBackupCodes();
   await run('UPDATE users SET totpSecret = ?, totpEnabled = 1, totpBackupCodes = ? WHERE id = ?',
     [secret, JSON.stringify(backupCodes), req.user.id]);
+  await revokeUserCredentials(req.user.id, { exceptSessionHash: req.tokenHash, reason: 'Two-factor authentication changed.', sessionsOnly: true });
 
   res.json({ success: true, backupCodes });
 }));
@@ -3652,11 +3867,25 @@ app.delete('/api/auth/2fa/disable', requireAuth, asyncRoute(async (req, res) => 
     clearTotpFailures(user.id);
   }
   await run('UPDATE users SET totpSecret = NULL, totpEnabled = 0, totpBackupCodes = NULL WHERE id = ?', [req.user.id]);
+  await revokeUserCredentials(req.user.id, { exceptSessionHash: req.tokenHash, reason: 'Two-factor authentication changed.', sessionsOnly: true });
   res.json({ success: true });
 }));
 
+app.post('/api/auth/media-ticket', requireAuth, asyncRoute(async (req, res) => {
+  if (req.mcpToken) return res.status(403).json({ error: 'This endpoint is not available to external access tokens.' });
+  res.json(await issueMediaTicket(req.user.id));
+}));
+
+app.post('/api/realtime/ticket', requireAuth, asyncRoute(async (req, res) => {
+  if (req.mcpToken) return res.status(403).json({ error: 'This endpoint is not available to external access tokens.' });
+  res.json({ ticket: issueRealtimeTicket(req.user.id, req.tokenHash), expiresInSeconds: REALTIME_TICKET_TTL_MS / 1000 });
+}));
+
 app.post('/api/auth/logout', requireAuth, asyncRoute(async (req, res) => {
-  await run('DELETE FROM sessions WHERE token = ?', [req.token]);
+  await run('DELETE FROM sessions WHERE token = ?', [req.tokenHash]);
+  for (const socket of [...(realtimeClients.get(req.user.id) || [])]) {
+    if (socket.sessionHash === req.tokenHash) { try { socket.close(1008, 'Signed out.'); } catch {} }
+  }
   res.status(204).end();
 }));
 
@@ -3893,6 +4122,11 @@ app.delete('/api/users/me', requireAuth, asyncRoute(async (req, res) => {
     return res.status(400).json({ error: 'Current password is incorrect.' });
   }
 
+  if (req.user.role === 'admin') {
+    const admins = await get(`SELECT COUNT(*) AS count FROM users WHERE role = 'admin'`);
+    if (admins.count <= 1) return res.status(400).json({ error: 'At least one administrator account is required. Promote another user first.' });
+  }
+
   const deletedUserId = req.user.id;
   await deleteUserAndOwnedData(deletedUserId);
   broadcastRealtime([deletedUserId], { type: 'account-deleted' });
@@ -3943,8 +4177,8 @@ app.patch('/api/users/me/password', requireAuth, asyncRoute(async (req, res) => 
   const newSalt = randomHex(16);
   const newHash = hashPassword(newPassword, newSalt);
   await run('UPDATE users SET passwordHash = ?, passwordSalt = ? WHERE id = ?', [newHash, newSalt, req.user.id]);
-  // Invalidate all other sessions for this user
-  await run('DELETE FROM sessions WHERE userId = ? AND token != ?', [req.user.id, req.token]);
+  // Every other device, the MCP token and all OAuth apps must authenticate again; this device stays signed in.
+  await revokeUserCredentials(req.user.id, { exceptSessionHash: req.tokenHash, reason: 'Password was changed.' });
   res.json({ success: true });
 }));
 
@@ -3961,9 +4195,8 @@ app.patch('/api/users/:id/reset-password', requireAuth, requireAdmin, asyncRoute
   const newSalt = randomHex(16);
   const newHash = hashPassword(newPassword, newSalt);
   await run('UPDATE users SET passwordHash = ?, passwordSalt = ? WHERE id = ?', [newHash, newSalt, userId]);
-  // Force the target user to re-authenticate everywhere
-  await run('DELETE FROM sessions WHERE userId = ?', [userId]);
-  closeRealtimeClientsForUser(userId, 'Password was reset.');
+  // Force the target user to re-authenticate everywhere, including MCP and OAuth access.
+  await revokeUserCredentials(userId, { reason: 'Password was reset.' });
   res.json({ success: true });
 }));
 
@@ -3976,10 +4209,7 @@ app.patch('/api/users/:id/toggle-enabled', requireAuth, requireAdmin, asyncRoute
   if (req.user.id === userId) return res.status(400).json({ error: 'You cannot disable your own account.' });
 
   await run('UPDATE users SET enabled = ? WHERE id = ?', [enabled, userId]);
-  if (!enabled) {
-    await run('DELETE FROM sessions WHERE userId = ?', [userId]);
-    closeRealtimeClientsForUser(userId);
-  }
+  if (!enabled) await revokeUserCredentials(userId, { reason: 'Account disabled.' });
   const updated = await get('SELECT * FROM users WHERE id = ?', [userId]);
   res.json(publicUser(updated));
 }));
@@ -4013,30 +4243,37 @@ app.get('/api/admin/backup/status', requireAuth, requireAdmin, asyncRoute(async 
   const backupTime = await getAppSetting('backupTime', '03:00');
   const lastAutomatedAt = await getAppSetting('lastAutomatedBackupAt', null);
   const lastManualAt = await getAppSetting('lastManualBackupAt', null);
-  const backupDir = path.join(dataDir, 'backups');
-  const absolutePath = path.resolve(backupDir);
+  const keepCount = normalizeBackupKeepCount(await getAppSetting('backupKeepCount', DEFAULT_BACKUP_KEEP_COUNT)) ?? DEFAULT_BACKUP_KEEP_COUNT;
+  const backupDir = backupDirectory();
   let files = [];
   if (fs.existsSync(backupDir)) {
     files = fs.readdirSync(backupDir)
-      .filter(f => f.endsWith('.sqlite'))
+      .filter(f => BACKUP_FILE_PATTERN.test(f))
       .map(f => {
         const stats = fs.statSync(path.join(backupDir, f));
         return { filename: f, size: stats.size, createdAt: stats.birthtime };
       })
       .sort((a, b) => b.createdAt - a.createdAt);
   }
-  res.json({ schedule, backupTime, lastAutomatedAt, lastManualAt, files, absolutePath });
+  res.json({ schedule, backupTime, keepCount, totalSize: files.reduce((sum, file) => sum + file.size, 0), lastAutomatedAt, lastManualAt, files });
 }));
 
 
 app.post('/api/admin/backup/schedule', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
-  const { schedule, backupTime } = req.body;
+  const { schedule, backupTime, keepCount } = req.body;
   if (schedule && !['none', 'daily', 'weekly', 'monthly'].includes(schedule)) {
     return res.status(400).json({ error: 'Invalid schedule.' });
   }
+  if (backupTime !== undefined && backupTime !== '' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(backupTime))) {
+    return res.status(400).json({ error: 'Backup time must be HH:MM.' });
+  }
+  if (keepCount !== undefined && normalizeBackupKeepCount(keepCount) === null) {
+    return res.status(400).json({ error: 'Keep between 1 and 60 backups.' });
+  }
   if (schedule) await setAppSetting('backupSchedule', schedule);
   if (backupTime) await setAppSetting('backupTime', backupTime);
-  res.json({ success: true, schedule, backupTime });
+  if (keepCount !== undefined) await setAppSetting('backupKeepCount', normalizeBackupKeepCount(keepCount));
+  res.json({ success: true, schedule, backupTime, keepCount });
 }));
 
 
@@ -4045,7 +4282,7 @@ app.post('/api/admin/backup/now', requireAuth, requireAdmin, asyncRoute(async (_
     const filename = await performBackup(true);
     res.json({ success: true, filename });
   } catch (e) {
-    res.status(500).json({ error: 'Backup failed: ' + e.message });
+    res.status(e.message === 'A backup is already running.' ? 409 : 500).json({ error: 'Backup failed: ' + e.message });
   }
 }));
 
@@ -4055,6 +4292,7 @@ app.post('/api/admin/users/:id/disable-2fa', requireAuth, requireAdmin, asyncRou
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
   await run('UPDATE users SET totpSecret = NULL, totpBackupCodes = NULL, totpEnabled = 0 WHERE id = ?', [userId]);
+  await revokeUserCredentials(userId, { reason: 'Two-factor authentication was disabled by an administrator.', sessionsOnly: true });
   res.json({ success: true, message: '2FA disabled for user.' });
 }));
 
@@ -4126,7 +4364,7 @@ function resolveBackupFilePath(filename) {
   // Reject any filename containing path separators or traversal segments
   // before path.join silently normalizes them out of the backup dir.
   if (typeof filename !== 'string') return null;
-  if (!/^backup-[A-Za-z0-9._-]+\.sqlite$/.test(filename)) return null;
+  if (!BACKUP_FILE_PATTERN.test(filename)) return null;
   if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) return null;
   const backupDir = path.resolve(path.join(dataDir, 'backups'));
   const resolved = path.resolve(path.join(backupDir, filename));
@@ -4135,7 +4373,7 @@ function resolveBackupFilePath(filename) {
   return resolved;
 }
 
-app.get('/api/admin/backup/download/:filename', requireAuthOrQueryToken, requireAdmin, (req, res) => {
+app.get('/api/admin/backup/download/:filename', requireAuth, requireAdmin, (req, res) => {
   const filePath = resolveBackupFilePath(req.params.filename);
   if (!filePath) return res.status(400).end();
   if (!fs.existsSync(filePath)) return res.status(404).end();
@@ -4477,7 +4715,7 @@ app.post('/api/uploads/images', requireAuth, upload.single('image'), asyncRoute(
   }
 }));
 
-app.get('/api/uploads/images/:filename', requireAuthOrQueryToken, asyncRoute(async (req, res) => {
+app.get('/api/uploads/images/:filename', requireAuthOrMediaTicket, asyncRoute(async (req, res) => {
   const filename = safeStoredImageFilename(req.params.filename);
   if (!filename) return res.status(400).send('Invalid image filename.');
 
@@ -7706,7 +7944,7 @@ app.get('/api/link-preview', requireAuth, asyncRoute(async (req, res) => {
   }
 }));
 
-app.get('/api/proxy-image', requireAuthOrQueryToken, asyncRoute(async (req, res) => {
+app.get('/api/proxy-image', requireAuthOrMediaTicket, asyncRoute(async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).send('URL required');
 
@@ -8008,6 +8246,14 @@ async function readZipEntries(filePath) {
       entryName: normalized,
       isDirectory: !!(raw.isDirectory ?? raw.type === 'Directory'),
       getData: async () => {
+        // The declared size is checked before anything is inflated; adm-zip caps its output at that size.
+        const declared = Number(raw.header?.size ?? raw._file?.uncompressedSize ?? 0);
+        if (declared > TAKEOUT_MAX_PER_ENTRY_BYTES) {
+          throw new Error(`Entry "${normalized}" is too large (${formatBytes(declared)}). Max ${formatBytes(TAKEOUT_MAX_PER_ENTRY_BYTES)}.`);
+        }
+        if (totalExtracted + declared > TAKEOUT_MAX_TOTAL_BYTES) {
+          throw new Error(`ZIP expands beyond the safe extraction limit (${formatBytes(TAKEOUT_MAX_TOTAL_BYTES)}).`);
+        }
         const data = await getRawData(raw);
         if (!data) return Buffer.alloc(0);
         if (data.length > TAKEOUT_MAX_PER_ENTRY_BYTES) {
@@ -8213,10 +8459,36 @@ app.use((error, _req, res, _next) => {
   res.status(error.status || 500).json({ error: error.message || 'Server error.' });
 });
 
+// A stray rejected promise or socket error must not take the whole server down mid-request.
+process.on('unhandledRejection', reason => console.error('Unhandled rejection', reason));
+process.on('uncaughtException', error => console.error('Uncaught exception', error));
+
+// Docker stops with SIGTERM: stop taking connections, let queued database work finish, then close the database.
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received, shutting down.`);
+  setTimeout(() => process.exit(1), 8000).unref();
+  const finish = async () => {
+    try { await databaseQueue; } catch {}
+    await new Promise(resolve => db.close(() => resolve()));
+    process.exit(0);
+  };
+  try { wss?.clients?.forEach(client => client.terminate()); } catch {}
+  server.close(() => { finish(); });
+  server.closeIdleConnections?.();
+  // Keep-alive connections would hold server.close open; finish even if they linger.
+  setTimeout(() => { finish(); }, 3000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 init().then(() => {
   setupRealtime();
   if (process.env.KEEPARR_TEST_MODE !== '1') startReminderScheduler();
   startBackupScheduler();
+  startHousekeeping();
   cleanupStaleTakeoutUploads();
   server.listen(port, () => {
     console.log(`Keep API listening on http://127.0.0.1:${port}`);

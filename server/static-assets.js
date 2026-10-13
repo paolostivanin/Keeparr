@@ -2,11 +2,21 @@ const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
 
+// Defense in depth for note html: without 'unsafe-inline' for scripts, an injected event-handler attribute (<img onerror>)
+// cannot run even if sanitization were bypassed. Styles, images and connections stay open: notes show remote images
+// and link previews, and Angular writes inline styles.
+const SECURITY_HEADERS = {
+  'Content-Security-Policy': "script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin'
+};
+
 function mountStaticAssets(app, staticDir) {
   if (!fs.existsSync(staticDir)) return false;
 
   app.use(express.static(staticDir, {
     setHeaders(response, assetPath) {
+      response.set(SECURITY_HEADERS);
       const assetName = path.basename(assetPath);
       if (/-[a-z0-9_-]{8,}\.(?:js|css|woff2?|ttf|svg|png|jpe?g|webp)$/i.test(assetName)) {
         response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
@@ -24,6 +34,7 @@ function mountStaticAssets(app, staticDir) {
     if (request.path.startsWith('/api/') || path.extname(request.path)) {
       return response.status(404).json({ error: 'Not found.' });
     }
+    response.set(SECURITY_HEADERS);
     response.setHeader('Cache-Control', 'no-cache');
     response.sendFile(path.join(staticDir, 'index.html'));
   });

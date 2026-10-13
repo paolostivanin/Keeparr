@@ -3,6 +3,7 @@ import { CheckboxI, NoteAttachmentI, NoteI, NoteImageI } from 'src/app/interface
 import { AuthService } from 'src/app/services/auth.service';
 import { normalizeIndentLevel, normalizeIndentLevels } from 'src/app/utils/checkbox-indent';
 import { hasMeaningfulBody } from 'src/app/utils/keeparr-html';
+import { inertDiv } from 'src/app/utils/inert-html';
 
 export type NoteBodySegment = { type: 'html'; value: string } | { type: 'url'; value: string };
 
@@ -140,8 +141,7 @@ export class NoteCardPreviewComponent {
   }
 
   private htmlPlainText(value?: string | null) {
-    const element = document.createElement('div');
-    element.innerHTML = String(value || '');
+    const element = inertDiv(String(value || ''));
     return (element.textContent || element.innerText || '').replace(/\s+/g, ' ').trim();
   }
 

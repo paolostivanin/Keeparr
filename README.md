@@ -80,6 +80,7 @@ Set environment variables in `docker-compose.yml` (commented examples are includ
 | `KEEPARR_TRUST_PROXY` | Reverse proxies in front of Keeparr: a hop count (default 1), or a list of proxy addresses/subnets. Use 0 when the port is reachable directly, so clients cannot spoof their address and bypass the login rate limit. |
 | `KEEPARR_CORS_ALLOW_ALL` / `KEEPARR_CORS_ORIGINS` | CORS for remote clients. See [deployment](docs/deployment.md#vpn-tailscale-wireguard-and-multiple-domains). |
 | `KEEPARR_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_NAME`, `_SCOPES` | Optional OIDC single sign-on. See [oidc.md](docs/oidc.md). |
+| `KEEPARR_SETUP_TOKEN` | Optional secret required on the first-administrator form, until the first account exists. |
 | `KEEPARR_ALLOW_RESTORE` | Temporarily enables restore from backup during setup. |
 | `KEEPARR_TAKEOUT_UPLOAD_MAX` / `KEEPARR_TAKEOUT_UPLOAD_MAX_BYTES` | Google Takeout ZIP upload cap. Defaults to `5GB`. |
 | `KEEPARR_LINK_PREVIEW_SCREENSHOTS` | Set to `0` to stop using a third-party screenshot service for link previews. |

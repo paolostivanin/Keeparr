@@ -32,7 +32,7 @@ test('2FA can only be disabled with a current code or a backup code', { timeout:
 
     const enable = async () => {
       const { secret } = (await call('/auth/2fa/generate', { token })).body;
-      const enabled = await call('/auth/2fa/enable', { token, method: 'POST', body: { secret, token: generateSync({ secret }) } });
+      const enabled = await call('/auth/2fa/enable', { token, method: 'POST', body: { secret, token: generateSync({ secret }), currentPassword: 'two-factor-pass-1' } });
       assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
       return { secret, backupCodes: enabled.body.backupCodes };
     };

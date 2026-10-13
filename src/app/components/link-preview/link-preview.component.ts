@@ -73,9 +73,7 @@ export class LinkPreviewComponent implements AfterViewInit, OnDestroy {
   proxyUrl(url: string | null | undefined) {
     if (!url) return '';
     if (url.startsWith('data:')) return url;
-    const token = this.auth.token;
-    const tokenPart = token ? `&token=${encodeURIComponent(token)}` : '';
-    return `${environment.apiUrl}/proxy-image?url=${encodeURIComponent(url)}${tokenPart}`;
+    return this.auth.withMediaTicket(`${environment.apiUrl}/proxy-image?url=${encodeURIComponent(url)}`);
   }
 
   private resetPreview() {

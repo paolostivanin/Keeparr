@@ -3,6 +3,8 @@ services:
     image: ghcr.io/paolostivanin/keeparr:latest
     container_name: keeparr-app
     ports:
+      # Behind a reverse proxy on the same host, publish on loopback only so nobody can bypass the proxy
+      # (and the login rate limit's client-address handling): "127.0.0.1:6767:6767".
       - "6767:6767"
     environment:
       - NODE_ENV=production
@@ -35,6 +37,10 @@ services:
       # - KEEPARR_OIDC_SCOPES=openid profile email
       # Users first need a local Keeparr account, then connect their provider
       # account from Settings. OIDC does not create or email-match accounts.
+
+      # Require this token on the first-administrator form, so that nobody who reaches a fresh instance
+      # before you can claim it. Only used while no user exists.
+      # - KEEPARR_SETUP_TOKEN=change-me
 
       # Allow restoring a SQLite backup via /api/setup/restore. This should really only be enabled when you actually need it
       # (lost access to account/forgotten password/failed TOTP, etc.), 

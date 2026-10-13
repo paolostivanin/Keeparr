@@ -192,7 +192,7 @@
         <p class="section-desc">
 
 
-          Configure Keeparr to automatically snapshot your database. Backups are saved to: <code class="path-code">{{absolutePath}}</code>
+          Configure Keeparr to automatically back up your database, images and attachments into a single archive.
         </p>
 
         <div class="backup-controls scheduled-controls">
@@ -209,6 +209,12 @@
           </div>
 
           @if (backupSchedule !== 'none') {
+            <div class="backup-config">
+              <label>
+                <span>Keep newest automated backups</span>
+                <input type="number" min="1" max="60" step="1" [(ngModel)]="backupKeepCount" (change)="saveBackupKeepCount()">
+              </label>
+            </div>
             <div class="backup-config time-picker-container">
               <label>
                 <span>Schedule settings</span>
@@ -235,7 +241,7 @@
     <div class="settings-group">
       <h2 class="group-title color-orange">
         <span class="material-symbols-outlined">backup</span>
-        Manual database backup
+        Manual backup
       </h2>
 
       <section class="settings-section backup-section">
@@ -245,7 +251,7 @@
         <p class="section-desc">
 
 
-          Trigger an immediate manual backup of the entire database.
+          Trigger an immediate manual backup of the database, images and attachments.
         </p>
 
         <div class="backup-controls manual-controls">
@@ -264,6 +270,9 @@
         @if (backupFiles.length > 0) {
           <div class="backup-list">
             <h3>Recent backups</h3>
+            @if (backupTotalSize > 0) {
+              <div class="last-backup-hint">Total size: {{formatSize(backupTotalSize)}}</div>
+            }
             @for (file of backupFiles; track file.filename) {
               <div class="backup-row">
                 <div class="file-info">

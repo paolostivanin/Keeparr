@@ -1,3 +1,4 @@
+import { inertDiv } from '../utils/inert-html';
 import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
@@ -68,6 +69,94 @@ export class AuthService {
     this.applyTheme(this.currentUser?.theme || 'light');
     window.addEventListener('online', this.retryPendingTheme);
     if (this.currentUser && localStorage.getItem(this.pendingThemeKey)) this.retryPendingTheme();
+    if (this.token) void this.ensureMediaTicket();
+    document.addEventListener('error', this.retryImageWithTicket, true);
+  }
+
+  // Media tickets: short-lived read-only credentials for <img> URLs, since session tokens never go in URLs.
+  private mediaTicketValue = '';
+  private mediaTicketExpiresAt = 0;
+  private mediaTicketRequest: Promise<string> | null = null;
+  private mediaTicketTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly mediaTicketRefreshLeadMs = 10 * 60 * 1000;
+  mediaTicket$ = new BehaviorSubject<string>('');
+
+  get mediaTicket() {
+    return this.mediaTicketValue;
+  }
+
+  async ensureMediaTicket(force = false): Promise<string> {
+    if (!this.token) return '';
+    if (!force && this.mediaTicketValue && Date.now() < this.mediaTicketExpiresAt - 60_000) return this.mediaTicketValue;
+    if (this.mediaTicketRequest) return this.mediaTicketRequest;
+    const sessionToken = this.token;
+    const request = (async () => {
+      try {
+        const result = await firstValueFrom(this.http.post<{ ticket: string, expiresAt: string }>(
+          `${this.apiUrl}/auth/media-ticket`, {}, { headers: this.authHeaders() }
+        ));
+        if (this.token !== sessionToken) return '';
+        const expiresAt = Date.parse(result.expiresAt);
+        this.mediaTicketValue = result.ticket;
+        this.mediaTicketExpiresAt = Number.isFinite(expiresAt) ? expiresAt : Date.now() + 2 * 60 * 60 * 1000;
+        this.mediaTicket$.next(result.ticket);
+        this.scheduleMediaTicketRefresh();
+        return result.ticket;
+      } catch {
+        return this.mediaTicketValue;
+      } finally {
+        this.mediaTicketRequest = null;
+      }
+    })();
+    this.mediaTicketRequest = request;
+    return request;
+  }
+
+  private scheduleMediaTicketRefresh() {
+    if (this.mediaTicketTimer) clearTimeout(this.mediaTicketTimer);
+    const delay = Math.max(30_000, this.mediaTicketExpiresAt - Date.now() - this.mediaTicketRefreshLeadMs);
+    this.mediaTicketTimer = setTimeout(() => { void this.ensureMediaTicket(true); }, delay);
+  }
+
+  private clearMediaTicket() {
+    if (this.mediaTicketTimer) clearTimeout(this.mediaTicketTimer);
+    this.mediaTicketTimer = undefined;
+    this.mediaTicketValue = '';
+    this.mediaTicketExpiresAt = 0;
+    this.mediaTicketRequest = null;
+    this.mediaTicket$.next('');
+  }
+
+  /** Appends the current media ticket to an API media URL (uses `&` when a query already exists). */
+  withMediaTicket(url: string) {
+    const ticket = this.mediaTicketValue;
+    if (!ticket) {
+      void this.ensureMediaTicket();
+      return url;
+    }
+    return `${url}${url.includes('?') ? '&' : '?'}ticket=${encodeURIComponent(ticket)}`;
+  }
+
+  // Images rendered before a ticket existed (or after it expired) fail once; re-point them at a fresh ticket.
+  private retryImageWithTicket = (event: Event) => {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement) || !this.token) return;
+    const src = img.getAttribute('src') || '';
+    if (!/\/(?:uploads\/images\/|proxy-image)/.test(src) || src.startsWith('blob:') || src.startsWith('data:')) return;
+    const previous = src.match(/[?&]ticket=([^&]+)/)?.[1] || '';
+    if (img.dataset['ticketRetry'] === previous) return;
+    img.dataset['ticketRetry'] = previous;
+    void this.ensureMediaTicket(!!previous).then(ticket => {
+      if (!ticket || encodeURIComponent(ticket) === previous || !img.isConnected) return;
+      const base = src.replace(/([?&])ticket=[^&]*&?/, '$1').replace(/[?&]$/, '');
+      img.setAttribute('src', `${base}${base.includes('?') ? '&' : '?'}ticket=${encodeURIComponent(ticket)}`);
+    });
+  };
+
+  /** Like authenticatedImageUrl but waits for a ticket first; for fetch()-based callers. */
+  async authenticatedImageUrlReady(value: string) {
+    await this.ensureMediaTicket();
+    return this.authenticatedImageUrl(value);
   }
 
   get currentUser() {
@@ -135,15 +224,13 @@ export class AuthService {
     if (offlineMap?.has(raw)) return raw;
     const canonical = this.canonicalImageUrl(value);
     if (!canonical.startsWith('/api/uploads/images/')) return canonical;
-    const token = this.token;
     const imageUrl = this.apiUrl.startsWith('http') ? `${this.apiUrl}${canonical.slice('/api'.length)}` : canonical;
-    if (!token) return imageUrl;
-    return `${imageUrl}?token=${encodeURIComponent(token)}`;
+    if (!this.token) return imageUrl;
+    return this.withMediaTicket(imageUrl);
   }
 
   authenticatedImageHtml(html: string, options: { lazyPreviewImages?: boolean } = {}) {
-    const div = document.createElement('div');
-    div.innerHTML = html || '';
+    const div = inertDiv(html || '');
     div.querySelectorAll<HTMLImageElement>('img[src]').forEach(img => {
       img.setAttribute('src', this.authenticatedImageUrl(img.getAttribute('src') || img.src));
       if (options.lazyPreviewImages) {
@@ -155,8 +242,7 @@ export class AuthService {
   }
 
   canonicalImageHtml(html: string) {
-    const div = document.createElement('div');
-    div.innerHTML = html || '';
+    const div = inertDiv(html || '');
     div.querySelectorAll<HTMLImageElement>('img[src]').forEach(img => {
       img.setAttribute('src', this.canonicalImageUrl(img.getAttribute('src') || img.src));
     });
@@ -168,12 +254,18 @@ export class AuthService {
     return result.hasUsers;
   }
 
+  async setupTokenRequired() {
+    const result = await firstValueFrom(this.http.get<{ setupTokenRequired?: boolean }>(`${this.apiUrl}/setup/status`));
+    return result.setupTokenRequired === true;
+  }
+
   async listUsers() {
     return await firstValueFrom(this.http.get<UserI[]>(`${this.apiUrl}/users`, { headers: this.authHeaders() }));
   }
 
-  async createInitialAdmin(username: string, displayName: string, password: string, totpSecret?: string, totpToken?: string) {
+  async createInitialAdmin(username: string, displayName: string, password: string, totpSecret?: string, totpToken?: string, setupToken?: string) {
     const payload: any = { username, displayName, password };
+    if (setupToken) payload.setupToken = setupToken;
     if (totpSecret && totpToken) {
       payload.totpSecret = totpSecret;
       payload.totpToken = totpToken;
@@ -201,6 +293,7 @@ export class AuthService {
     }));
     localStorage.removeItem(this.sessionKey);
     localStorage.removeItem(this.pendingThemeKey);
+    this.clearMediaTicket();
     this.currentUser$.next(null);
     this.applyTheme('light');
   }
@@ -214,8 +307,10 @@ export class AuthService {
     return await firstValueFrom(this.http.get<{ secret: string, qrCodeUrl: string }>(`${this.apiUrl}/auth/2fa/generate`, { headers: this.authHeaders() }));
   }
 
-  async enable2fa(secret: string, token: string) {
-    return await firstValueFrom(this.http.post<{ success: boolean, backupCodes: string[] }>(`${this.apiUrl}/auth/2fa/enable`, { secret, token }, { headers: this.authHeaders() }));
+  async enable2fa(secret: string, token: string, currentPassword: string, currentToken?: string) {
+    const body: Record<string, string> = { secret, token, currentPassword };
+    if (currentToken) body['currentToken'] = currentToken;
+    return await firstValueFrom(this.http.post<{ success: boolean, backupCodes: string[] }>(`${this.apiUrl}/auth/2fa/enable`, body, { headers: this.authHeaders() }));
   }
 
   /** Needs a current authenticator code or a backup code; a session alone cannot remove the second factor. */
@@ -300,8 +395,10 @@ export class AuthService {
       demoNotesCreatedAt: result.user.demoNotesCreatedAt ?? null
     };
     localStorage.setItem(this.sessionKey, JSON.stringify(session));
+    this.clearMediaTicket();
     this.currentUser$.next(session);
     this.applyTheme(session.theme);
+    void this.ensureMediaTicket();
   }
 
   private nativeOidcReturnUrl() {
@@ -470,6 +567,7 @@ export class AuthService {
     }
     localStorage.removeItem(this.sessionKey);
     localStorage.removeItem(this.pendingThemeKey);
+    this.clearMediaTicket();
     this.currentUser$.next(null);
     this.applyTheme('light');
   }
@@ -532,8 +630,9 @@ export class AuthService {
       backupTime: string, 
       lastAutomatedAt: string | null, 
       lastManualAt: string | null, 
-      files: any[], 
-      absolutePath: string 
+      keepCount?: number,
+      totalSize?: number,
+      files: any[]
     }>(
       `${this.apiUrl}/admin/backup/status`,
       { headers: this.authHeaders() }
@@ -541,10 +640,10 @@ export class AuthService {
   }
 
 
-  async saveBackupSchedule(schedule: string, backupTime?: string) {
-    return await firstValueFrom(this.http.post<{ success: boolean, schedule: string, backupTime: string }>(
+  async saveBackupSchedule(schedule: string, backupTime?: string, keepCount?: number) {
+    return await firstValueFrom(this.http.post<{ success: boolean, schedule: string, backupTime: string, keepCount?: number }>(
       `${this.apiUrl}/admin/backup/schedule`,
-      { schedule, backupTime },
+      { schedule, backupTime, keepCount },
       { headers: this.authHeaders() }
     ));
   }
@@ -571,8 +670,20 @@ export class AuthService {
   }
 
 
-  getBackupDownloadUrl(filename: string) {
-    return `${this.apiUrl}/admin/backup/download/${encodeURIComponent(filename)}?token=${encodeURIComponent(this.token)}`;
+  /** Downloads a backup with the Authorization header (session tokens are not accepted in URLs). */
+  async downloadBackup(filename: string) {
+    const blob = await firstValueFrom(this.http.get(
+      `${this.apiUrl}/admin/backup/download/${encodeURIComponent(filename)}`,
+      { headers: this.authHeaders(), responseType: 'blob' }
+    ));
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
 
 

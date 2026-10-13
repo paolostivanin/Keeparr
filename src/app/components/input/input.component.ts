@@ -31,6 +31,7 @@ import { decorateLinks, extractUrlsFromHtml, stripEditorChrome } from 'src/app/u
 import { noteBgImagePath, noteColorToHex, noteSurfaceVars } from 'src/app/utils/note-color';
 import { hasMeaningfulBody, titleHtml, titleText } from 'src/app/utils/keeparr-html';
 import { environment } from 'src/environments/environment';
+import { inertDiv } from 'src/app/utils/inert-html';
 import {
   EditorSessionPersister, EditorSessionTracker, NEW_NOTE_SESSION_KEY, applyEditorDraft, dirtyEditorFields, emptyEditorDraft,
   type EditorDraft, type EditorSessionRecord
@@ -1272,8 +1273,7 @@ export class InputComponent implements OnInit {
   }
 
   private notePlainText(value?: string | null) {
-    const div = document.createElement('div')
-    div.innerHTML = value || ''
+    const div = inertDiv(value || '')
     return (div.textContent || div.innerText || '').replace(/\s+/g, ' ').trim()
   }
 

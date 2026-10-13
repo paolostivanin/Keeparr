@@ -285,8 +285,18 @@
                 <span>Authenticator Code</span>
                 <input name="totpToken" [(ngModel)]="totpToken" autocomplete="one-time-code" type="text" inputmode="numeric" pattern="[0-9]{6}" required>
               </label>
+              <label>
+                <span>Current Password</span>
+                <input name="totpCurrentPassword" [(ngModel)]="totpCurrentPassword" autocomplete="current-password" type="password" required>
+              </label>
+              @if (totpEnabled) {
+                <label>
+                  <span>Current Authenticator or Backup Code</span>
+                  <input name="totpCurrentToken" [(ngModel)]="totpCurrentToken" autocomplete="one-time-code" type="text" required>
+                </label>
+              }
               <div class="actions" style="display: flex; gap: 8px; width: 100%;">
-                <button type="button" [disabled]="!totpToken || isSaving2fa" (click)="save2fa()" style="flex: 1;">
+                <button type="button" [disabled]="!totpToken || !totpCurrentPassword || (totpEnabled && !totpCurrentToken) || isSaving2fa" (click)="save2fa()" style="flex: 1;">
                   {{isSaving2fa ? 'Verifying...' : 'Verify and Enable'}}
                 </button>
                 <button type="button" class="btn-secondary" (click)="qrCodeUrl = ''" style="flex: 1;">Cancel</button>

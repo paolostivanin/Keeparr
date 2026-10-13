@@ -1,5 +1,6 @@
 import { NoteI } from '../interfaces/notes';
 import type { ReminderI } from '../interfaces/reminder';
+import { inertDiv } from './inert-html'
 
 /**
  * The single owner of which notes a view shows and in what order: view
@@ -406,7 +407,7 @@ export class NoteQuery {
     } else {
       let div = NoteQuery.normalizeEl
       if (!div) {
-        div = document.createElement('div')
+        div = inertDiv('')
         NoteQuery.normalizeEl = div
       }
       div.innerHTML = raw

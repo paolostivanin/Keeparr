@@ -119,6 +119,11 @@ async function startProvider() {
   };
 }
 
+// The browser that starts an SSO sign-in carries its binding cookie to the callback.
+function bindingCookie(startResponse) {
+  return String(startResponse.headers.get('set-cookie') || '').split(';')[0];
+}
+
 async function completeProviderRedirect(startUrl) {
   const providerResponse = await fetch(startUrl, { redirect: 'manual' });
   assert.equal(providerResponse.status, 302);
@@ -174,16 +179,23 @@ test('OIDC accounts can be explicitly linked, signed in, and safely disconnected
 
   const ssoStart = await fetch(`${origin}/api/auth/oidc/start`, { redirect: 'manual' });
   const ssoCallback = await completeProviderRedirect(ssoStart.headers.get('location'));
-  const ssoResult = await fetch(ssoCallback, { redirect: 'manual' });
+  const ssoResult = await fetch(ssoCallback, { redirect: 'manual', headers: { cookie: bindingCookie(ssoStart) } });
   const loginCode = new URL(ssoResult.headers.get('location'), origin).searchParams.get('oidc_code');
   const ssoLogin = await json(`${origin}/api/auth/oidc/exchange`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: loginCode })
   });
   assert.equal(ssoLogin.user.id, admin.user.id);
 
+  // A callback replayed in a browser that never started the flow is refused.
+  const strangerStart = await fetch(`${origin}/api/auth/oidc/start`, { redirect: 'manual' });
+  assert.match(strangerStart.headers.get('set-cookie') || '', /keeparr_oidc=.*HttpOnly/);
+  const strangerCallback = await completeProviderRedirect(strangerStart.headers.get('location'));
+  const strangerResult = await fetch(strangerCallback, { redirect: 'manual' });
+  assert.equal(new URL(strangerResult.headers.get('location'), origin).searchParams.get('oidc_error'), 'expired');
+
   const nativeSsoStart = await fetch(`${origin}/api/auth/oidc/start?return_url=${encodeURIComponent('keeparr://auth/oidc')}`, { redirect: 'manual' });
   const nativeSsoCallback = await completeProviderRedirect(nativeSsoStart.headers.get('location'));
-  const nativeSsoResult = await fetch(nativeSsoCallback, { redirect: 'manual' });
+  const nativeSsoResult = await fetch(nativeSsoCallback, { redirect: 'manual', headers: { cookie: bindingCookie(nativeSsoStart) } });
   const nativeRedirect = new URL(nativeSsoResult.headers.get('location'));
   assert.equal(`${nativeRedirect.protocol}//${nativeRedirect.hostname}${nativeRedirect.pathname}`, 'keeparr://auth/oidc');
   assert.match(nativeRedirect.searchParams.get('oidc_code'), /^keeparr_login_/);
@@ -205,7 +217,7 @@ test('OIDC accounts can be explicitly linked, signed in, and safely disconnected
   provider.setIdentity({ sub: 'new-subject', email: 'new@example.test', name: 'New User' });
   const unlinkedStart = await fetch(`${origin}/api/auth/oidc/start`, { redirect: 'manual' });
   const unlinkedCallback = await completeProviderRedirect(unlinkedStart.headers.get('location'));
-  const unlinkedResult = await fetch(unlinkedCallback, { redirect: 'manual' });
+  const unlinkedResult = await fetch(unlinkedCallback, { redirect: 'manual', headers: { cookie: bindingCookie(unlinkedStart) } });
   const unlinkedRedirect = new URL(unlinkedResult.headers.get('location'), origin);
   assert.equal(unlinkedRedirect.searchParams.get('oidc_error'), 'no_account', 'matching email must not link or create an account');
 
@@ -222,7 +234,7 @@ test('OIDC accounts can be explicitly linked, signed in, and safely disconnected
 
   const secondSsoStart = await fetch(`${origin}/api/auth/oidc/start`, { redirect: 'manual' });
   const secondSsoCallback = await completeProviderRedirect(secondSsoStart.headers.get('location'));
-  const secondSsoResult = await fetch(secondSsoCallback, { redirect: 'manual' });
+  const secondSsoResult = await fetch(secondSsoCallback, { redirect: 'manual', headers: { cookie: bindingCookie(secondSsoStart) } });
   const secondLoginCode = new URL(secondSsoResult.headers.get('location'), origin).searchParams.get('oidc_code');
   const secondSsoLogin = await json(`${origin}/api/auth/oidc/exchange`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: secondLoginCode })

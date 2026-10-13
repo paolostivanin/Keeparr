@@ -12,6 +12,7 @@ import { NoteI } from '../interfaces/notes';
 import { UserPreferencesService } from './user-preferences.service';
 import { planNoteOrder } from '../utils/note-order';
 import { nextRepeatDueAt } from '../utils/reminder-recurrence';
+import { inertDiv } from 'src/app/utils/inert-html';
 
 type ReminderCreateData = {
   noteId?: number;
@@ -581,8 +582,7 @@ export class ReminderService {
 
   private plainText(value: string) {
     if (typeof document !== 'undefined') {
-      const div = document.createElement('div');
-      div.innerHTML = value;
+      const div = inertDiv(value);
       return (div.textContent || '').replace(/\s+/g, ' ').trim();
     }
     return String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();

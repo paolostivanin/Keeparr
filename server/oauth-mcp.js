@@ -140,6 +140,9 @@ async function initOAuthTables({ run, all }) {
   if (!oidcFlowColumns.some(column => column.name === 'returnUrl')) {
     await run('ALTER TABLE oidc_flows ADD COLUMN returnUrl TEXT');
   }
+  if (!oidcFlowColumns.some(column => column.name === 'browserBinding')) {
+    await run('ALTER TABLE oidc_flows ADD COLUMN browserBinding TEXT');
+  }
   await run(`CREATE TABLE IF NOT EXISTS oidc_identities (
     issuer TEXT NOT NULL, subject TEXT NOT NULL, userId INTEGER NOT NULL,
     email TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
@@ -461,7 +464,7 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
     res.json({ enabled: settings.enabled, name: settings.name });
   });
 
-  async function createOidcAuthorizationUrl(req, { oauthRequest = '', linkUserId = null, returnUrl = '' } = {}) {
+  async function createOidcAuthorizationUrl(req, { oauthRequest = '', linkUserId = null, returnUrl = '', binding = '' } = {}) {
     const settings = oidcSettings();
     if (!settings.enabled) return null;
     const nativeReturnUrl = validOidcReturnUrl(returnUrl);
@@ -472,9 +475,9 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
     const challenge = await client.calculatePKCECodeChallenge(verifier);
     await run(
       `INSERT INTO oidc_flows
-       (stateHash, codeVerifier, nonce, oauthRequest, linkUserId, returnUrl, createdAt, expiresAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [sha256(state), verifier, nonce, oauthRequest, linkUserId, nativeReturnUrl || null, new Date().toISOString(), addSeconds(PENDING_TTL_SECONDS)]
+       (stateHash, codeVerifier, nonce, oauthRequest, linkUserId, returnUrl, browserBinding, createdAt, expiresAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [sha256(state), verifier, nonce, oauthRequest, linkUserId, nativeReturnUrl || null, binding ? sha256(binding) : null, new Date().toISOString(), addSeconds(PENDING_TTL_SECONDS)]
     );
     const redirectUri = `${baseUrlFor(req)}/api/auth/oidc/callback`;
     return client.buildAuthorizationUrl(config, {
@@ -487,12 +490,24 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
     }).toString();
   }
 
+  // A sign-in is tied to the browser that started it. Without this, an attacker could start a flow, sign in at the provider
+  // as themselves and hand the callback URL to someone else, who would then be signed into the attacker's account.
+  const OIDC_BINDING_COOKIE = 'keeparr_oidc';
+  function oidcBindingCookie(req) {
+    const match = new RegExp(`(?:^|;\\s*)${OIDC_BINDING_COOKIE}=([A-Za-z0-9]+)`).exec(String(req.headers.cookie || ''));
+    return match ? match[1] : '';
+  }
+
   app.get('/api/auth/oidc/start', asyncRoute(async (req, res) => {
+    const binding = crypto.randomBytes(24).toString('hex');
     const target = await createOidcAuthorizationUrl(req, {
       oauthRequest: String(req.query.oauth_request || ''),
-      returnUrl: String(req.query.return_url || '')
+      returnUrl: String(req.query.return_url || ''),
+      binding
     });
     if (!target) return res.status(404).json({ error: 'OIDC sign-in is not configured.' });
+    const secure = baseUrlFor(req).startsWith('https:') ? '; Secure' : '';
+    res.append('Set-Cookie', `${OIDC_BINDING_COOKIE}=${binding}; Path=/api/auth/oidc; Max-Age=${PENDING_TTL_SECONDS}; HttpOnly; SameSite=Lax${secure}`);
     res.redirect(target);
   }));
 
@@ -537,6 +552,11 @@ document.getElementById('approve').onclick=async()=>{const button=document.getEl
     const flow = await get('SELECT * FROM oidc_flows WHERE stateHash = ? AND expiresAt > ?', [sha256(state), new Date().toISOString()]);
     if (!flow) return res.redirect('/login?oidc_error=expired');
     await run('DELETE FROM oidc_flows WHERE stateHash = ?', [sha256(state)]);
+    if (flow.browserBinding) {
+      res.append('Set-Cookie', `${OIDC_BINDING_COOKIE}=; Path=/api/auth/oidc; Max-Age=0; HttpOnly; SameSite=Lax`);
+      const presented = oidcBindingCookie(req);
+      if (!presented || sha256(presented) !== flow.browserBinding) return res.redirect('/login?oidc_error=expired');
+    }
     const { client, config } = await oidcClient(settings);
     const currentUrl = new URL(`${baseUrlFor(req)}${req.originalUrl}`);
     const tokens = await client.authorizationCodeGrant(config, currentUrl, { pkceCodeVerifier: flow.codeVerifier, expectedState: state, expectedNonce: flow.nonce });

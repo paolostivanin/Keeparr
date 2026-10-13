@@ -60,6 +60,8 @@ export class SettingsComponent implements OnInit, OnDestroy {
   totpSecret = '';
   qrCodeUrl = '';
   totpToken = '';
+  totpCurrentPassword = '';
+  totpCurrentToken = '';
   backupCodes: string[] | null = null;
 
   // ── External access ────────────────────────────────────────────────────
@@ -571,7 +573,9 @@ export class SettingsComponent implements OnInit, OnDestroy {
     this.error = '';
     this.success = '';
     try {
-      const result = await this.authService.enable2fa(this.totpSecret, this.totpToken);
+      const result = await this.authService.enable2fa(this.totpSecret, this.totpToken, this.totpCurrentPassword, this.totpEnabled ? this.totpCurrentToken : undefined);
+      this.totpCurrentPassword = '';
+      this.totpCurrentToken = '';
       this.backupCodes = result.backupCodes;
       this.totpEnabled = true;
       this.hasBackupCodes = true;

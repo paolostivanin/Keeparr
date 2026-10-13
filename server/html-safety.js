@@ -13,7 +13,14 @@ const ACTIVE_TAGS = new Set(['script', 'iframe', 'frame', 'frameset', 'object', 
   'noscript', 'noembed', 'noframes', 'xmp', 'plaintext', 'textarea', 'title', 'listing']);
 const URL_ATTRIBUTES = new Set(['href', 'src', 'xlink:href', 'action', 'formaction', 'data', 'poster', 'background']);
 
+// htmlparser2 and browsers read these differently (a CDATA section or a bogus comment ends at the first `>` in a browser),
+// so markup declarations and processing instructions are never trusted as inert: they are sanitized away.
+const AMBIGUOUS_MARKUP = /<[!?]|<\/[^a-zA-Z\s>]/;
+// Attributes only the editor's own link-preview slots use; their values are html the client later parses.
+const HTML_CARRYING_DATA = /^data-(?:original-html|html)$/;
+
 function hasActiveContent(html) {
+  if (AMBIGUOUS_MARKUP.test(String(html || ''))) return true;
   let active = false;
   const parser = new Parser({
     onopentag(name, attributes) {
@@ -21,7 +28,7 @@ function hasActiveContent(html) {
       for (const [attribute, raw] of Object.entries(attributes)) {
         const key = attribute.toLowerCase();
         const value = String(raw || '').replace(/[\u0000-\u0020\u007f]+/g, '').toLowerCase();
-        if (/^on[a-z]+$/.test(key) || key === 'srcdoc') active = true;
+        if (/^on[a-z]+$/.test(key) || key === 'srcdoc' || HTML_CARRYING_DATA.test(key)) active = true;
         const safeRasterData = name.toLowerCase() === 'img' && key === 'src'
           && /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(String(raw || ''));
         if (URL_ATTRIBUTES.has(key) && /^(?:javascript|vbscript|data):?/.test(value) && !safeRasterData) active = true;
@@ -38,7 +45,7 @@ function hasActiveContent(html) {
 const SANITIZE_OPTIONS = {
   allowedTags: sanitizeHtml.defaults.allowedTags.concat(['img', 'font']),
   allowedAttributes: {
-    '*': ['class', 'style', 'dir', 'contenteditable', 'data-*', 'aria-*', 'title'],
+    '*': ['class', 'style', 'dir', 'contenteditable', 'data-url', 'data-hydrated', 'data-original-is-text', 'aria-*', 'title'],
     a: ['href', 'name', 'target', 'rel'],
     img: ['src', 'alt', 'width', 'height'],
     font: ['color', 'face', 'size']

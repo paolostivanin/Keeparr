@@ -723,6 +723,7 @@ export class OfflineSyncService {
         if (match[1]) urls.add(match[1]);
       }
     }
+    await this.auth.ensureMediaTicket();
     await Promise.all([...urls]
       .filter(url => !url.startsWith('data:') && !url.startsWith('blob:'))
       .map(url => this.store.cacheMedia(

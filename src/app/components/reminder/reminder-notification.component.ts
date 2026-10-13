@@ -2,6 +2,7 @@ import { Component, ElementRef, OnDestroy, OnInit, ViewChild } from '@angular/co
 import { Subscription } from 'rxjs';
 import { ReminderFiredPayload } from 'src/app/interfaces/reminder';
 import { ReminderService } from 'src/app/services/reminder.service';
+import { inertDiv } from 'src/app/utils/inert-html';
 
 @Component({
   selector: 'app-reminder-notification',
@@ -103,8 +104,7 @@ export class ReminderNotificationComponent implements OnInit, OnDestroy {
   }
 
   private cleanText(value: string | null) {
-    const div = document.createElement('div');
-    div.innerHTML = value || '';
+    const div = inertDiv(value || '');
     return (div.textContent || div.innerText || '').trim();
   }
 

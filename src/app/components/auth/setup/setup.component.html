@@ -31,6 +31,13 @@
       <p class="helper">Create the first administrator account for this local workspace.</p>
 
       <form (ngSubmit)="submit()" #setupForm="ngForm" class="auth-form">
+        @if (setupTokenRequired) {
+          <label>
+            <span>Setup token</span>
+            <input name="setupToken" [(ngModel)]="setupToken" autocomplete="off" required>
+            <small class="hint">The KEEPARR_SETUP_TOKEN value set on the server</small>
+          </label>
+        }
         <label>
           <span>Username</span>
           <input name="username" [ngModel]="username" (ngModelChange)="onUsernameChange($event)" autocomplete="username" minlength="3" required autofocus>
@@ -93,15 +100,15 @@
           <input type="checkbox" name="isRestoringFromBackup" [(ngModel)]="isRestoringFromBackup" (change)="error = ''">
           <span>
             <strong>Restore from backup</strong>
-            <small>Already have a Keeparr backup? Upload your .sqlite file to restore all accounts, notes, and settings instantly.</small>
+            <small>Already have a Keeparr backup? Upload your .zip or .sqlite file to restore all accounts, notes, and settings instantly.</small>
           </span>
         </label>
 
         @if (isRestoringFromBackup) {
           <div class="restore-upload">
-            <input type="file" #backupFileInput (change)="onBackupFileSelected($event)" accept=".sqlite" style="display: none;">
+            <input type="file" #backupFileInput (change)="onBackupFileSelected($event)" accept=".zip,.sqlite" style="display: none;">
             <button type="button" class="btn-secondary" (click)="backupFileInput.click()">
-              {{selectedBackupFile ? selectedBackupFile.name : 'Select .sqlite file'}}
+              {{selectedBackupFile ? selectedBackupFile.name : 'Select backup file (.zip or .sqlite)'}}
             </button>
             @if (selectedBackupFile) {
               <button type="button" class="btn-primary" (click)="submitRestore()" [disabled]="isRestoring">
