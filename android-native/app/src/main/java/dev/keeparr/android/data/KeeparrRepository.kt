@@ -986,8 +986,9 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
         val note = note(id) ?: return@withLock
         if (note.locked) return@withLock
         val raw = note.raw.copyJson()
-        val item = raw.optJSONArray("checkBoxes")?.objects()?.find { it.optLong("id") == itemId } ?: return@withLock
-        item.put("done", !item.optBoolean("done"))
+        val rows = ChecklistModel.rows(raw.optJSONArray("checkBoxes"))
+        val toggled = ChecklistModel.toggleDone(rows, itemId) ?: return@withLock
+        raw.put("checkBoxes", ChecklistModel.toJson(toggled))
         saveLocked(Note(raw), synchronize = true, profile = settings.profile)
     }
 

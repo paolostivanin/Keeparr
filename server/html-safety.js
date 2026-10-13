@@ -5,13 +5,28 @@
 // Clean values are returned untouched, byte for byte: re-serializing every body would rewrite <br> and entities, which the
 // clients compare and round-trip exactly. Only a value that contains active content goes through the sanitizer.
 const sanitizeHtml = require('sanitize-html');
+const { Parser } = require('htmlparser2');
 
-const ACTIVE_TAG = /<\s*\/?\s*(?:script|iframe|frame|frameset|object|embed|applet|meta|base|link|form|svg|math|style)\b/i;
-const EVENT_ATTRIBUTE = /<[^>]*[\s"'/]on[a-z]+\s*=/i;
-const SCRIPT_URL = /<[^>]*[\s"'/](?:href|src|xlink:href|action|formaction|data|srcdoc|poster|background)\s*=\s*["']?[\s\u0000-\u001f]*(?:javascript|vbscript|data\s*:\s*text\/html)/i;
+const ACTIVE_TAGS = new Set(['script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'meta', 'base', 'link', 'form', 'svg', 'math', 'style']);
+const URL_ATTRIBUTES = new Set(['href', 'src', 'xlink:href', 'action', 'formaction', 'data', 'poster', 'background']);
 
 function hasActiveContent(html) {
-  return ACTIVE_TAG.test(html) || EVENT_ATTRIBUTE.test(html) || SCRIPT_URL.test(html);
+  let active = false;
+  const parser = new Parser({
+    onopentag(name, attributes) {
+      if (ACTIVE_TAGS.has(name.toLowerCase())) active = true;
+      for (const [attribute, raw] of Object.entries(attributes)) {
+        const key = attribute.toLowerCase();
+        const value = String(raw || '').replace(/[\u0000-\u0020\u007f]+/g, '').toLowerCase();
+        if (/^on[a-z]+$/.test(key) || key === 'srcdoc') active = true;
+        if (URL_ATTRIBUTES.has(key) && /^(?:javascript|vbscript|data:text\/html):?/.test(value)) active = true;
+        if (key === 'style' && /(?:url\s*\(|expression\s*\(|@import)/i.test(String(raw))) active = true;
+      }
+    }
+  }, { decodeEntities: true, lowerCaseTags: true, lowerCaseAttributeNames: true });
+  parser.write(String(html || ''));
+  parser.end();
+  return active;
 }
 
 // What the editor itself produces (blocks, lists, inline formatting, links, inline images and their wrappers).

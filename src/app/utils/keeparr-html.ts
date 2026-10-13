@@ -91,10 +91,14 @@ function sanitizeNode(node: Node, output: Node) {
       continue;
     }
     const copy = document.createElement(tag.toLowerCase());
-    for (const name of ROW_ATTRIBUTES[tag] ?? []) {
-      const value = element.getAttribute(name);
-      if (value === null) continue;
-      if (name === 'href' && !SAFE_URL.test(value.replace(/[\u0000- ]/g, ''))) continue;
+    const allowed = new Set(ROW_ATTRIBUTES[tag] ?? []);
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value;
+      // Safe extension attributes must survive a view/save without being edited.
+      if (!allowed.has(name) && !name.startsWith('data-') && !name.startsWith('aria-') && name !== 'title' && name !== 'dir') continue;
+      if (/^on/i.test(name) || name === 'srcdoc') continue;
+      if (['href', 'src', 'xlink:href', 'action', 'formaction'].includes(name) && !SAFE_URL.test(value.replace(/[\u0000- ]/g, ''))) continue;
       if (name === 'style') {
         const style = safeStyle(value);
         if (style) copy.setAttribute('style', style);

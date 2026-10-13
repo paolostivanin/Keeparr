@@ -1202,7 +1202,9 @@ export class InputComponent implements OnInit {
   }
 
   private pushCboxHistorySnapshot() {
-    this.cboxHistory.push(this.currentCheckBoxesForSave(false))
+    // Structural handlers sync the DOM before editing. Once the model changes,
+    // reading the DOM here would capture the previous render and lose the edit.
+    this.cboxHistory.push(this.normalizeCheckBoxes(this.checkBoxes))
   }
 
   private shouldUseCboxHistory(command: 'undo' | 'redo') {
@@ -1994,6 +1996,8 @@ export class InputComponent implements OnInit {
 
   private focusCboxInputElement(el: Element | null) {
     if (!(el instanceof HTMLElement)) return
+    const id = Number(el.dataset['cboxId'])
+    if (Number.isFinite(id)) (this.explicitCboxFocusIds ??= new Set<number>()).add(id)
     el.focus()
     const sel = window.getSelection()
     sel?.selectAllChildren(el)
@@ -2008,6 +2012,7 @@ export class InputComponent implements OnInit {
 
   /** A mouse press focuses the row itself and the browser puts the caret at the click; focus handling must leave it there. */
   private cboxPointerFocus = false
+  private explicitCboxFocusIds?: Set<number>
 
   cboxInputMouseDown() {
     this.cboxPointerFocus = true
@@ -2020,6 +2025,7 @@ export class InputComponent implements OnInit {
     const focusedId = Number(el.dataset['cboxId'])
     this.activeCboxSuggestionRowId = Number.isFinite(focusedId) ? focusedId : undefined
     this.rememberTextHistoryTarget(el)
+    if (this.explicitCboxFocusIds?.delete(focusedId)) return
     if (this.cboxPointerFocus) return
     setTimeout(() => {
       const id = Number(el.dataset['cboxId'])
@@ -2142,7 +2148,8 @@ export class InputComponent implements OnInit {
     if (!this.checkBoxes.some(candidate => candidate.id === id)) return
     if (el) this.cboxSuggestionDraftValues.set(id, el.innerHTML)
     this.dismissedCboxSuggestionIds.delete(id)
-    this.cboxHistory.textInput()
+    this.syncCboxDomIntoModel()
+    this.cboxHistory.textInput(this.checkBoxes)
     this.queueCoEditAutosave()
   }
 
@@ -2338,6 +2345,7 @@ export class InputComponent implements OnInit {
     if (previousId === undefined) return
     const target = document.querySelector<HTMLElement>(`[data-cbox-id="${previousId}"]`)
     if (!target) return
+    (this.explicitCboxFocusIds ??= new Set<number>()).add(previousId)
     target.focus()
     this.placeCaretAtTextOffset(target, junction)
   }

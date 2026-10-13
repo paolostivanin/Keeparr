@@ -34,6 +34,7 @@ class RichEditorState(val mode: HtmlMode, val key: String) {
     private var originalCanonical = ""
     private var emitted = ""
     internal var seenExternal = Long.MIN_VALUE
+    internal var splitGeneration = 0L
     internal var onHtml: (String) -> Unit = {}
     internal var onEvent: (() -> Unit)? = null
 
@@ -180,9 +181,12 @@ fun RichTextField(
             view.onEmbedTap = onEmbedTap
             view.onImageContent = onImageContent
             view.controller.onSplit = { left, rest, caret ->
-                // The view still shows the typed line break and this runs inside its text watcher, so the reset to the left
-                // part and the split of the row wait until the change is complete.
+                // Publish only the structural result, never the temporary row
+                // containing a newline. Newer IME/paste changes supersede queued splits.
+                view.deferNextDocumentChange = true
+                val generation = ++state.splitGeneration
                 view.post {
+                    if (generation != state.splitGeneration) return@post
                     state.reset(left, keepSelection = false)
                     onSplit?.invoke(left, rest, caret)
                 }

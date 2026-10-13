@@ -200,10 +200,10 @@ export function noteSurfaceVars(bgColor: string, bgImage: string): Record<string
   return {
     '--note-bg': light,
     '--note-bg-dark': dark,
-    '--note-fg': noteTextColor(light, false),
-    '--note-fg-dark': noteTextColor(dark, true),
-    '--note-link': noteLinkColor(light, false),
-    '--note-link-dark': noteLinkColor(dark, true),
+    '--note-fg': hasImage ? noteTextColor('', false) : noteTextColor(light, false),
+    '--note-fg-dark': hasImage ? noteTextColor('', true) : noteTextColor(dark, true),
+    '--note-link': hasImage ? noteLinkColor('', false) : noteLinkColor(light, false),
+    '--note-link-dark': hasImage ? noteLinkColor('', true) : noteLinkColor(dark, true),
     '--note-bg-image': hasImage ? cssUrl(path) : 'none',
     '--note-bg-image-dark': hasImage ? cssUrl(darkNoteBgImagePath(path)) : 'none',
   };

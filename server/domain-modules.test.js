@@ -19,6 +19,8 @@ test('note text helpers strip markup, tolerate bad JSON and bound previews', () 
 
 test('plainText decodes numeric character references', () => {
   assert.equal(plainText('<div>Caff&#232; &#xE8; &#x1F600; &#0; &#xD800; &#99999999;</div>'), 'Caffè è \u{1F600} &#0; &#xD800; &#99999999;');
+  assert.equal(plainText('&amp;#232;'), '&#232;', 'escaped literal references are decoded only once');
+  assert.equal(plainText('&amp;lt;tag&amp;gt;'), '&lt;tag&gt;');
 });
 
 test('accented searches also match numeric character references', async () => {
@@ -120,8 +122,10 @@ test('note HTML with active content is neutralized and clean HTML is left byte f
 
   const hostile = {
     '<p>a</p><img src=x onerror=alert(1)>': ['onerror'],
+    '<img alt=">" src=x onerror="alert(1)">': ['onerror'],
     '<p>x</p><script>steal()</script>': ['<script', 'steal'],
     '<a href="javascript:steal()">click</a>': ['javascript'],
+    '<a href="java&#x73;cript:steal()">click</a>': ['javascript'],
     '<a href="  JaVaScRiPt:steal()">click</a>': ['script:'],
     '<iframe src="https://evil.test"></iframe>text': ['iframe'],
     '<svg onload=alert(1)><circle/></svg>': ['onload', '<svg'],

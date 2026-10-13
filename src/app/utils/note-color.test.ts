@@ -125,6 +125,8 @@ test('noteSurfaceVars exposes light and dark variables', () => {
   // An image picked after a color keeps the color underneath.
   const both = noteSurfaceVars('#fff8b8', 'url(/assets/images/backgrounds/groceries.svg)');
   assert.deepEqual([both['--note-bg'], both['--note-bg-dark'], both['--note-fg'], both['--note-fg-dark']], ['#fff8b8', '#7c4a03', '#202124', '#e8eaed']);
+  const darkStoredSwatch = noteSurfaceVars('#5b2121', 'url(/assets/images/backgrounds/groceries.svg)');
+  assert.equal(darkStoredSwatch['--note-fg'], '#202124', 'foreground follows the pale illustration, not the hidden stored swatch');
 });
 
 test('fixture noteColors matches the palette and the reference code', () => {

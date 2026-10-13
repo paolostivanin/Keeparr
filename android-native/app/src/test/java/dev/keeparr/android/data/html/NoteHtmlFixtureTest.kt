@@ -103,4 +103,9 @@ class NoteHtmlFixtureTest {
         assertNotNull(NoteHtml.parse("<h1>x</h1>"))
         assertTrue(NoteHtml.displayText("<div>a</div><table><tbody><tr><td>x</td></tr></tbody></table><div>b</div>") == "a\nb")
     }
+
+    @Test fun malformedOversizedCssColorsDoNotCrashTheCodec() {
+        val html = "<span style=\"color:rgb(999999999999999999999,0,0)\">x</span>"
+        assertEquals(html, NoteHtml.canonical(html))
+    }
 }

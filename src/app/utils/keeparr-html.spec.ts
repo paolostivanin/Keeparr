@@ -65,7 +65,7 @@ describe('sanitizeRowHtml', () => {
     ]) expect(sanitizeRowHtml(html)).withContext(html).toBe(html);
   });
 
-  it('drops scripts, handlers, unsafe links and unknown markup but keeps the text', () => {
+  it('drops scripts, handlers, unsafe links and unknown block markup but keeps the text', () => {
     expect(sanitizeRowHtml('a<script>alert(1)</script>b')).toBe('ab');
     expect(sanitizeRowHtml('<b onclick="x()" class="c">bold</b>')).toBe('<b>bold</b>');
     expect(sanitizeRowHtml('<a href="javascript:alert(1)">x</a>')).toBe('<a>x</a>');
@@ -74,6 +74,7 @@ describe('sanitizeRowHtml', () => {
     expect(sanitizeRowHtml('<div>one</div><p>two</p>')).toBe('onetwo');
     expect(sanitizeRowHtml('<iframe src="https://x.test"></iframe>y')).toBe('y');
     expect(sanitizeRowHtml('<span style="background: url(https://x.test/a.png); color: blue">x</span>')).toBe('<span style="color: blue;">x</span>');
+    expect(sanitizeRowHtml('<span data-future="keep" aria-label="value">x</span>')).toBe('<span data-future="keep" aria-label="value">x</span>');
     expect(sanitizeRowHtml('<a href="https://e.test" target="_blank">x</a>')).toBe('<a href="https://e.test" target="_blank" rel="noopener">x</a>');
   });
 

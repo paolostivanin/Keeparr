@@ -27,6 +27,7 @@ export function normalizeChecklist(checkBoxes: CheckboxI[] = []): CheckboxI[] {
     else id = nextAvailableId();
     usedIds.add(id);
     return {
+      ...item,
       id,
       done: !!item.done,
       data: item.data || '',
@@ -183,7 +184,10 @@ export class ChecklistHistory {
     return true;
   }
 
-  textInput() {
+  textInput(items?: CheckboxI[]) {
+    // Text lives in the row DOM between structural edits. Fold the latest value
+    // into this checkpoint so structural undo preserves typing that came first.
+    if (items && this.index >= 0) this.snapshots[this.index] = normalizeChecklist(items);
     this.lastTextInputAt = this.now();
     this.redoMode = false;
   }

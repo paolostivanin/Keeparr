@@ -232,10 +232,22 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         if (!InlineImages.isInlineImage(staged)) {
             draftViewModel.flushAndQueueSync(); app.repository.attach(Note(draftViewModel.draft.value), staged)
         } else {
-            val outcome = InlineImages.place(staged, { Media(app).uploadInline(it) }) {
-                draftViewModel.flushAndQueueSync(); app.repository.attach(Note(draftViewModel.draft.value), staged)
+            // Upload ownership outlives this composable, so rotation or closing
+            // the editor cannot cancel the staged-file upload midway.
+            app.scope.launch {
+                try {
+                    val outcome = InlineImages.place(staged, { Media(app).uploadInline(it) }) {
+                        draftViewModel.flushAndQueueSync()
+                        app.repository.attach(Note(draftViewModel.draft.value), staged)
+                    }
+                    withContext(Dispatchers.Main.immediate) {
+                        if (outcome is InlineImages.Outcome.Inline) insertInline(outcome.html)
+                        draftViewModel.flushAndQueueSync()
+                    }
+                } catch (error: Exception) {
+                    withContext(Dispatchers.Main.immediate) { onError(error.message ?: "Image upload failed") }
+                }
             }
-            if (outcome is InlineImages.Outcome.Inline) insertInline(outcome.html)
         }
     }
     LaunchedEffect(draftViewModel) { draftViewModel.errors.collect(onError) }
@@ -418,8 +430,9 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                 } })
             if (titleText.isNotBlank()) HorizontalDivider(color = foreground.copy(alpha = .12f))
             val editorColors = EditorColors(foreground.toArgb(), LocalNoteLinkColor.current)
-            val images = (metadataNote.raw.optJSONArray("images")?.objects().orEmpty() + note.raw.optJSONArray("images")?.objects().orEmpty())
-                .distinctBy { it.text("dataUrl").ifBlank { it.text("id") } }
+            // Mutations must be based on the draft. A metadata-first union here
+            // can resurrect a just-removed image during the next placement edit.
+            val images = note.raw.optJSONArray("images")?.objects().orEmpty()
             fun updateImages(next: List<JSONObject>) = change("images") { it.put("images", ChecklistModel.toJson(next)) }
             @Composable fun ImagesAt(placement: String) {
                 images.filter { it.text("placement", "top") == placement }.forEach { image ->

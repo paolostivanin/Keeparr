@@ -47,6 +47,7 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
     private var snapshot: RichTextController.Snapshot? = null
     private var insertedStart = 0
     private var insertedCount = 0
+    internal var deferNextDocumentChange = false
     private var touchDownX = 0f
     private var touchDownY = 0f
 
@@ -69,6 +70,7 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
             suppress++
             try { controller.afterChange(editable, captured, insertedCount, if (pastedLines) EditCause.Paste else EditCause.Typed) }
             finally { suppress-- }
+            if (deferNextDocumentChange) { deferNextDocumentChange = false; return }
             documentChanged()
         }
     }
@@ -81,13 +83,18 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
         setOnReceiveContentListener(arrayOf("text/*", "image/*")) { _, payload ->
             val clip: ClipData = payload.clip
             val description = clip.description
+            val text = StringBuilder()
             for (i in 0 until clip.itemCount) {
                 val item = clip.getItemAt(i)
                 val uri = item.uri
                 val mime = if (i < description.mimeTypeCount) description.getMimeType(i) else description.getMimeType(0)
                 if (uri != null && item.text == null && mime.startsWith("image/")) onImageContent?.invoke(uri, mime)
-                else insertPlain(item.coerceToText(context))
+                else {
+                    if (text.isNotEmpty()) text.append('\n')
+                    text.append(item.coerceToText(context))
+                }
             }
+            if (text.isNotEmpty()) insertPlain(text)
             null
         }
         setOnKeyListener { _, keyCode, event ->

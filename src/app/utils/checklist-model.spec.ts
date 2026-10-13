@@ -17,6 +17,11 @@ describe('normalizeChecklist', () => {
     expect(result[2].data).toBe('');
   });
 
+  it('preserves fields added by a newer checklist client', () => {
+    expect(normalizeChecklist([{ ...row(1), futureFlag: { retained: true } } as any])[0] as any)
+      .toEqual({ ...row(1), futureFlag: { retained: true } });
+  });
+
   it('does not mutate its input', () => {
     const input = [row(1)];
     normalizeChecklist(input)[0].done = true;
@@ -88,6 +93,23 @@ describe('ChecklistHistory', () => {
     expect(h.shouldHandle('redo')).toBeFalse();
     h.push([row(1), row(2), row(3)]);
     expect(h.shouldHandle('undo')).toBeTrue();
+  });
+
+  it('keeps text typed before a structural operation in the undo checkpoint', () => {
+    const h = history();
+    h.reset([row(1, 0, false, 'milk')]);
+    h.textInput([row(1, 0, false, 'milkshake')]);
+    h.push([row(1, 0, false, 'milkshake'), row(2, 0, false, '')]);
+    expect(h.step('undo')).toEqual([row(1, 0, false, 'milkshake')]);
+    expect(h.step('redo')).toEqual([row(1, 0, false, 'milkshake'), row(2, 0, false, '')]);
+  });
+
+  it('records the merged model rather than a stale pre-render row value', () => {
+    const h = history();
+    h.reset([row(1, 0, false, 'Milk'), row(2, 0, false, 'shake')]);
+    h.push([row(1, 0, false, 'Milkshake')]);
+    expect(h.step('undo')).toEqual([row(1, 0, false, 'Milk'), row(2, 0, false, 'shake')]);
+    expect(h.step('redo')).toEqual([row(1, 0, false, 'Milkshake')]);
   });
 
   it('returns copies so callers cannot corrupt stored snapshots', () => {

@@ -229,14 +229,14 @@ internal class WidgetColors(private val app: KeeparrApplication) {
     fun resource(@androidx.annotation.ColorRes id: Int) = WidgetColor(lightResources.getColor(id), darkResources.getColor(id))
 
     /** The card background for a note's stored color, or the widget's default card when it has none. */
-    fun card(stored: String): WidgetColor = NotePalette.parse(stored)?.let {
+    fun card(stored: String): WidgetColor = NotePalette.parseStored(stored)?.let {
         WidgetColor(NotePalette.display(it, false), NotePalette.display(it, true))
     } ?: resource(R.color.widget_note_card)
 
     /** The text color drawn on [card] for the same stored color. */
     fun text(stored: String): WidgetColor {
         val card = card(stored)
-        return if (NotePalette.parse(stored) == null) resource(R.color.widget_text)
+        return if (NotePalette.parseStored(stored) == null) resource(R.color.widget_text)
         else WidgetColor(NotePalette.textColor(card.light), NotePalette.textColor(card.dark))
     }
 }

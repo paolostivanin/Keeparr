@@ -1914,7 +1914,7 @@ async function smartCreateNote(userId, action, options = {}) {
     if (label.created) options.createdLabelIds?.add(label.id);
   }
   const checkBoxes = isTodo
-    ? (action.items || []).map((item, index) => ({ id: Date.now() + index, data: item, done: false }))
+    ? (action.items || []).map((item, index) => ({ id: Date.now() + index, data: escapeHtml(item), done: false }))
     : [];
   const result = await run(
     `INSERT INTO notes
@@ -1922,8 +1922,8 @@ async function smartCreateNote(userId, action, options = {}) {
 	     VALUES (?, ?, ?, ?, '', ?, '[]', ?, ?, '', 0, 0, NULL, ?, ?, ?, ?, 0)`,
 	    [
 	      userId,
-	      action.title || '',
-	      isTodo ? (action.text || '') : (action.text || ''),
+          escapeHtml(action.title || ''),
+          escapeHtml(action.text || ''),
 	      String(action.bgColor || ''),
 	      JSON.stringify(checkBoxes),
       isTodo ? 1 : 0,
@@ -1958,7 +1958,7 @@ async function smartAddChecklistItems(userId, noteId, items) {
   const base = Date.now();
   const next = [
     ...current,
-    ...items.map((item, index) => ({ id: base + index, data: item, done: false }))
+    ...items.map((item, index) => ({ id: base + index, data: escapeHtml(item), done: false }))
   ];
   await run('UPDATE notes SET checkBoxes = ?, isCbox = 1, updatedAt = ?, lastEditorUserId = ? WHERE id = ?', [
     JSON.stringify(next),
@@ -4501,7 +4501,7 @@ app.get('/api/uploads/images/:filename', requireAuthOrQueryToken, asyncRoute(asy
   if (!filename) return res.status(400).send('Invalid image filename.');
 
   const image = await get(
-    `SELECT ni.*
+    `SELECT ni.*, n.locked
      FROM note_images ni
      LEFT JOIN notes n ON n.id = ni.noteId
      LEFT JOIN note_collaborators nc ON nc.noteId = n.id AND nc.userId = ?
@@ -4515,6 +4515,9 @@ app.get('/api/uploads/images/:filename', requireAuthOrQueryToken, asyncRoute(asy
     [req.user.id, filename, req.user.id, req.user.id]
   );
   if (!image) return res.status(404).send('Image not found.');
+  if (req.mcpToken && image.locked && image.noteId && !await mcpNoteIsUnlocked(req, image.noteId)) {
+    return res.status(423).json({ error: 'Unlock this note before reading its images through MCP.' });
+  }
 
   const filePath = path.join(uploadDir, filename);
   if (!fs.existsSync(filePath)) return res.status(404).send('Image file not found.');
@@ -4612,7 +4615,7 @@ app.post('/api/notes/:noteId/attachments', requireAuth, uploadAttachment.single(
 app.get('/api/attachments/:attachmentId', requireAuth, asyncRoute(async (req, res) => {
   const attachmentId = Number(req.params.attachmentId);
   const attachment = await get(
-    `SELECT na.*, n.ownerUserId FROM note_attachments na
+    `SELECT na.*, n.ownerUserId, n.locked FROM note_attachments na
      JOIN notes n ON n.id = na.noteId
      LEFT JOIN note_collaborators nc ON nc.noteId = n.id AND nc.userId = ?
      WHERE na.id = ? AND (n.ownerUserId = ? OR nc.userId IS NOT NULL)`,
@@ -4620,6 +4623,9 @@ app.get('/api/attachments/:attachmentId', requireAuth, asyncRoute(async (req, re
   );
 
   if (!attachment) return res.status(404).json({ error: 'Attachment not found.' });
+  if (req.mcpToken && attachment.locked && !await mcpNoteIsUnlocked(req, attachment.noteId)) {
+    return res.status(423).json({ error: 'Unlock this note before reading its attachments through MCP.' });
+  }
 
   const filePath = attachmentPath(attachment.storedFilename);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found.' });
@@ -5893,7 +5899,7 @@ app.get('/api/notes', requireAuth, asyncRoute(async (req, res) => {
     }
   }
 
-  res.json(rows.map(row => {
+  const notes = await Promise.all(rows.map(async row => {
     const owner = userMap.get(row.ownerUserId);
     if (owner && owner.id !== me) {
       row.ownerAvatarDataUrl = owner.avatarDataUrl || '';
@@ -5925,8 +5931,11 @@ app.get('/api/notes', requireAuth, asyncRoute(async (req, res) => {
       ...c,
       online: realtimeClients.has(c.id)
     }));
-    return note;
+    if (!req.mcpToken) return note;
+    const includeLockedContent = !note.locked || await mcpNoteIsUnlocked(req, note.id);
+    return mcpNoteResponse(note, includeLockedContent);
   }));
+  res.json(notes);
 }));
 
 app.get('/api/notes/search', requireAuth, asyncRoute(async (req, res) => {
@@ -6157,25 +6166,15 @@ app.put('/api/notes/:id/collaborators', requireAuth, asyncRoute(async (req, res)
     }
   }
   await moveNoteToTopForUsers(noteId, newlyAddedUserIds);
-  // Track removed collaborators so they can be re-added via the rejoin endpoint
-  // (the snackbar undo flow). Without a grant, rejoin would let any user attach
-  // themselves to any note id.
-  const grantedAt = new Date().toISOString();
-  for (const row of previousCollaborators) {
-    if (!nextSet.has(row.userId)) {
-      await run(
-        'INSERT OR REPLACE INTO note_collaborator_rejoin_grants (noteId, userId, grantedAt) VALUES (?, ?, ?)',
-        [noteId, row.userId, grantedAt]
-      );
-    }
-  }
-
   const collaborators = await getCollaboratorsForNote(noteId);
   const nextRecipients = await getNoteRecipientIds(noteId);
   const removedUserIds = previousCollaborators
     .map(row => Number(row.userId))
     .filter(userId => userId && !nextSet.has(userId));
   if (removedUserIds.length) {
+    // Owner-initiated removal is a revocation. Only a collaborator's own
+    // unshare flow grants the temporary undo/rejoin capability.
+    await run(`DELETE FROM note_collaborator_rejoin_grants WHERE noteId = ? AND userId IN (${removedUserIds.map(() => '?').join(',')})`, [noteId, ...removedUserIds]);
     const revokedStamp = serverLwwStamp();
     await recordNoteSyncChange(noteId, 'delete', removedUserIds, {
       syncId: note.syncId,
@@ -8164,7 +8163,7 @@ app.post('/api/import/google-takeout', requireAuth, googleTakeoutUpload, asyncRo
           if (note.annotations?.length) {
             const links = note.annotations
               .filter(a => a.url)
-              .map(a => `<a href="${a.url}" target="_blank" rel="noopener">${a.title || a.url}</a>`)
+              .map(a => neutralizeActiveHtml(`<a href="${escapeHtml(a.url)}" target="_blank" rel="noopener">${escapeHtml(a.title || a.url)}</a>`))
               .join('<br>');
             if (links) noteBody = noteBody ? `${noteBody}<br>${links}` : links;
           }

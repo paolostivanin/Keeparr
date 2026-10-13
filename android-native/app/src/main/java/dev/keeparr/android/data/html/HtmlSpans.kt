@@ -160,8 +160,8 @@ class InlineTagSpan(val tag: String, val attrs: List<HtmlAttr>, val order: Int) 
                 else Typeface.create(base, weight, italic || base.isItalic)
         }
         when (tag) {
-            "sub" -> { paint.textSize = paint.textSize * 0.8f; paint.baselineShift -= (paint.textSize * 0.2f).toInt() }
-            "sup" -> { paint.textSize = paint.textSize * 0.8f; paint.baselineShift += (paint.textSize * 0.4f).toInt() }
+            "sub" -> { paint.textSize = paint.textSize * 0.8f; paint.baselineShift += (paint.textSize * 0.2f).toInt() }
+            "sup" -> { paint.textSize = paint.textSize * 0.8f; paint.baselineShift -= (paint.textSize * 0.4f).toInt() }
             "small" -> paint.textSize = paint.textSize * 0.85f
             "big" -> paint.textSize = paint.textSize * 1.2f
         }
@@ -196,7 +196,10 @@ class InlineTagSpan(val tag: String, val attrs: List<HtmlAttr>, val order: Int) 
             }
             val match = Regex("rgba?\\(\\s*(\\d+)[ ,]+(\\d+)[ ,]+(\\d+)").find(text) ?: return null
             val (r, g, b) = match.destructured
-            return (0xFF shl 24) or (r.toInt().coerceIn(0, 255) shl 16) or (g.toInt().coerceIn(0, 255) shl 8) or b.toInt().coerceIn(0, 255)
+            val red = r.toIntOrNull()?.coerceIn(0, 255) ?: return null
+            val green = g.toIntOrNull()?.coerceIn(0, 255) ?: return null
+            val blue = b.toIntOrNull()?.coerceIn(0, 255) ?: return null
+            return (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
         }
 
         /** Removes one CSS property from a style string; null when nothing else is left. */
