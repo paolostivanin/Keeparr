@@ -163,4 +163,4 @@ internal fun applyNightMode(context: Context, mode: ThemeMode) {
     context.getSystemService(UiModeManager::class.java)?.setApplicationNightMode(nightModeFor(mode))
 }
 
-private tailrec fun Context.findActivity(): Activity? = this as? Activity ?: (this as? ContextWrapper)?.baseContext?.findActivity()
+private fun Context.findActivity(): Activity? = this as? Activity ?: (this as? ContextWrapper)?.baseContext?.findActivity()

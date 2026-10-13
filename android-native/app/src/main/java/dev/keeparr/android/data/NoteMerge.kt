@@ -29,7 +29,7 @@ object NoteMerge {
         else -> value
     }
 
-    private fun scalar(note: JSONObject, field: String): String = if (note.isNull(field)) "" else note.opt(field).toString()
+    private fun scalar(note: JSONObject, field: String): String = if (note.isNull(field)) "" else note.optString(field)
     private fun flag(note: JSONObject, field: String): String = (note.opt(field) as? Boolean ?: (note.optBoolean(field))).toString()
 
     /** Representation-independent value used only to compare fields. */

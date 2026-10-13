@@ -5,14 +5,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.FormatIndentDecrease
+import androidx.compose.material.icons.automirrored.outlined.FormatIndentIncrease
+import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
 import androidx.compose.material.icons.automirrored.outlined.Redo
 import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.FormatBold
 import androidx.compose.material.icons.outlined.FormatClear
-import androidx.compose.material.icons.outlined.FormatIndentDecrease
-import androidx.compose.material.icons.outlined.FormatIndentIncrease
 import androidx.compose.material.icons.outlined.FormatItalic
-import androidx.compose.material.icons.outlined.FormatListBulleted
 import androidx.compose.material.icons.outlined.FormatUnderlined
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,9 +46,9 @@ fun FormatToolbar(focus: RichEditorFocus, canUndo: Boolean, canRedo: Boolean, on
         TextCommand("H1", "Heading 1", "h1" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.H1) }
         TextCommand("H2", "Heading 2", "h2" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.H2) }
         TextCommand("Aa", "Normal text", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Normal) }
-        IconCommand(Icons.Outlined.FormatListBulleted, "Bulleted list", "bullet" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.Bullet) }
-        IconCommand(Icons.Outlined.FormatIndentIncrease, "Indent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Indent) }
-        IconCommand(Icons.Outlined.FormatIndentDecrease, "Outdent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Outdent) }
+        IconCommand(Icons.AutoMirrored.Outlined.FormatListBulleted, "Bulleted list", "bullet" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.Bullet) }
+        IconCommand(Icons.AutoMirrored.Outlined.FormatIndentIncrease, "Indent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Indent) }
+        IconCommand(Icons.AutoMirrored.Outlined.FormatIndentDecrease, "Outdent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Outdent) }
         IconCommand(Icons.Outlined.FormatBold, "Bold", "b" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Bold) }
         IconCommand(Icons.Outlined.FormatItalic, "Italic", "i" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Italic) }
         IconCommand(Icons.Outlined.FormatUnderlined, "Underline", "u" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Underline) }
