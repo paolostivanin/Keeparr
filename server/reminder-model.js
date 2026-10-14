@@ -165,4 +165,16 @@ function reminderResponse(reminder, notesById = new Map()) {
   };
 }
 
-module.exports = { firstDefined, normalizeLocationTrigger, normalizeRepeatRule, normalizeReminderDueAt, reminderScheduleDefinition, reminderScheduleDefinitionChanged, reminderScheduleChanged, parseRepeatRule, normalizeReminderPayload, reminderResponse };
+// Joins and filters that limit a reminder query to reminders whose note the user can still see.
+const visibleReminderJoin = 'LEFT JOIN notes reminder_notes ON reminder_notes.id = reminders.noteId';
+const visibleReminderWhere = `(reminders.noteId IS NULL OR EXISTS (
+  SELECT 1 FROM notes reminder_access_note
+  WHERE reminder_access_note.id = reminders.noteId
+    AND reminder_access_note.archived = 0 AND reminder_access_note.trashed = 0
+    AND (reminder_access_note.ownerUserId = reminders.userId OR EXISTS (
+      SELECT 1 FROM note_collaborators reminder_access
+      WHERE reminder_access.noteId = reminders.noteId AND reminder_access.userId = reminders.userId
+    ))
+))`;
+
+module.exports = { visibleReminderJoin, visibleReminderWhere, firstDefined, normalizeLocationTrigger, normalizeRepeatRule, normalizeReminderDueAt, reminderScheduleDefinition, reminderScheduleDefinitionChanged, reminderScheduleChanged, parseRepeatRule, normalizeReminderPayload, reminderResponse };

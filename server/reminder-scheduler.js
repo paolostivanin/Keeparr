@@ -2,14 +2,13 @@
 // The reminder helpers stay with the reminder routes and are passed in.
 const { get, all, withDatabaseTransaction } = require('./db');
 const { nextRepeatDueAt } = require('./reminder-recurrence');
-const { parseRepeatRule } = require('./reminder-model');
+const { parseRepeatRule, visibleReminderJoin, visibleReminderWhere } = require('./reminder-model');
 const { serverLwwStamp } = require('./sync-protocol');
 const { broadcastRealtime } = require('./realtime');
 const { sendReminderPush } = require('./push');
 
 function createReminderScheduler({
-  visibleReminderJoin, visibleReminderWhere, enrichReminderResponses, reminderIsVisibleToUser, persistReminderOccurrence,
-  floatReminderNoteToTop, recordReminderSyncChange
+  enrichReminderResponses, reminderIsVisibleToUser, persistReminderOccurrence, floatReminderNoteToTop, recordReminderSyncChange
 }) {
   async function processDueReminders(nowDate = new Date()) {
       try {

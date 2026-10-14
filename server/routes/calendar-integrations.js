@@ -2,9 +2,10 @@
 const { run, get, all } = require('../db');
 const { asyncRoute, requireAuth, randomHex } = require('../auth');
 const { pushReminderToCaldav, testCaldavConnection } = require('../calendar');
+const { visibleReminderJoin, visibleReminderWhere } = require('../reminder-model');
 const { oauthStates, exchangeGoogleCode, getValidGoogleToken, gcalCreateAndStore } = require('../google-calendar');
 
-function mountCalendarIntegrationRoutes(app, { visibleReminderJoin, visibleReminderWhere, enrichReminderResponses }) {
+function mountCalendarIntegrationRoutes(app, { enrichReminderResponses }) {
   app.get('/api/caldav/settings', requireAuth, asyncRoute(async (req, res) => {
     const s = await get('SELECT * FROM caldav_settings WHERE userId = ?', [req.user.id]);
     if (!s) return res.json(null);
