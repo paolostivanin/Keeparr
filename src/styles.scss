@@ -102,6 +102,11 @@ body.keeparr-smart-capture-open {
   to { opacity: 0; scale: 0.97; }
 }
 
+// Shows an element that was hidden until something else was ready; used with a delay as a failsafe.
+@keyframes motion-reveal {
+  to { visibility: visible; }
+}
+
 @keyframes motion-fade-in {
   from { opacity: 0; }
 }

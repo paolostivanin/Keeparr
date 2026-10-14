@@ -10,6 +10,7 @@ import { ReminderService } from './reminder.service';
 import { NotesStoreService } from './notes-store.service';
 import { createPopper, type Placement } from '@popperjs/core';
 import { environment } from 'src/environments/environment';
+import { markNoteCardsEntering, withLeavingNoteCards } from 'src/app/utils/note-card-motion';
 declare var Snackbar: any
 export type WidgetCreateType = 'plain' | 'checklist' | 'drawing'
 export type WidgetCreateRequest = { requestId: string; type: WidgetCreateType }
@@ -294,14 +295,16 @@ export class SharedService {
     const selected = this.note.all.filter(note => note.id && this.selectedNoteIds.value.includes(note.id))
     const me = this.auth.currentUser?.id
     let leftSharedCount = 0
-    for (const note of selected) {
-      if (note.ownerUserId && me && note.ownerUserId !== me) {
-        await this.Notes.delete(note.id!)
-        leftSharedCount++
-      } else {
-        await this.Notes.updateKey({ trashed: true, archived: false }, note.id!)
+    await withLeavingNoteCards(selected, { trashed: true, archived: false }, async () => {
+      for (const note of selected) {
+        if (note.ownerUserId && me && note.ownerUserId !== me) {
+          await this.Notes.delete(note.id!)
+          leftSharedCount++
+        } else {
+          await this.Notes.updateKey({ trashed: true, archived: false }, note.id!)
+        }
       }
-    }
+    })
     this.clearNoteSelection()
     if (leftSharedCount) {
       Snackbar.show({
@@ -319,7 +322,8 @@ export class SharedService {
   }
 
   async bulkArchiveSelected() {
-    await this.bulkUpdateSelected({ archived: true, trashed: false })
+    const selected = this.note.all.filter(note => note.id && this.selectedNoteIds.value.includes(note.id))
+    await withLeavingNoteCards(selected, { archived: true, trashed: false }, () => this.bulkUpdateSelected({ archived: true, trashed: false }))
     this.clearNoteSelection()
   }
 
@@ -616,6 +620,7 @@ export class SharedService {
         if (uObj['rejoin']) {
           this.Notes.rejoin(noteId, uObj['userId'] as number)
         } else {
+          markNoteCardsEntering(this.note.all.filter(note => note.id === noteId))
           this.note.id = noteId
           this.note.db.updateKey(obj)
         }

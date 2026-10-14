@@ -46,6 +46,7 @@ import { withPresence } from '../utils/note-presence';
 import { sameDisplayedNote } from '../utils/note-identity';
 import { RequestGate, StaleRequestError, type RequestTicket } from '../utils/request-gate';
 import { reconnectDelay } from '../utils/reconnect-backoff';
+import { markNoteCardsEntering } from '../utils/note-card-motion';
 
 const KeeparrDownloads = registerPlugin<KeeparrDownloadsPlugin>('KeeparrDownloads');
 
@@ -514,6 +515,7 @@ export class NotesService {
       sortOrder: noteObj.sortOrder ?? Date.now()
     };
     this.offlineStore.ensureNoteIdentity(pendingNote);
+    markNoteCardsEntering([pendingNote]);
     // An authenticated profile always has an offline partition. Persist the
     // note and replay intent there first, even while online, so creation and
     // editing share the same durable local-first close behavior.

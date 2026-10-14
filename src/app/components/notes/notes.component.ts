@@ -29,6 +29,7 @@ import { NoteListWindow, NoteListWindowModel } from './note-list-window';
 import { MasonryWindowResult, NoteMasonryWindowModel } from './note-masonry-window';
 import { inertDiv } from 'src/app/utils/inert-html';
 import { prefersReducedMotion } from 'src/app/utils/motion';
+import { clearNoteCardPageFilter, markNoteCardsEntering, setNoteCardPageFilter, takeNoteCardEntering, withLeavingNoteCards } from 'src/app/utils/note-card-motion';
 
 declare var Snackbar: any;
 type PluginListenerHandle = { remove: () => Promise<void> | void };
@@ -617,8 +618,20 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     })
 
     function brikcs(node: HTMLDivElement) {
+      // Bricks writes the first transform of a card it has not placed before while the transform transition is on, which
+      // glided the card in from the container's corner. Such cards land in place instead; the ones just created or brought
+      // back fade in (utils/note-card-motion.ts).
+      const unplaced = Array.from(node.querySelectorAll<HTMLElement>(':scope > .note-container:not([data-packed])'))
+      for (const card of unplaced) {
+        card.classList.add('no-glide')
+        if (takeNoteCardEntering(card.dataset['noteKey'])) {
+          card.classList.add('card-enter')
+          card.addEventListener('animationend', () => card.classList.remove('card-enter'), { once: true })
+        }
+      }
       const instance = Bricks({ container: node, packed: 'data-packed', sizes: sizes, position: false });
       instance.pack()
+      if (unplaced.length) requestAnimationFrame(() => unplaced.forEach(card => card.classList.remove('no-glide')))
     }
     //? we align the titles to the masonry width
     this.title.forEach(el => {
@@ -2065,10 +2078,13 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
           const ok = confirm(`This note belongs to ${ownerName}, so you can't delete it — only the owner can. Remove yourself from this shared note instead?`)
           if (!ok) return
           const userId = this.auth.currentUser?.id
-          this.notesService.delete(note.id!)
-          this.Shared.snackBar({ action: 'left shared note', opposite: 'rejoined' }, { rejoin: true, userId } as any, note.id!)
+          withLeavingNoteCards([note], null, () => {
+            const left = this.notesService.delete(note.id!)
+            this.Shared.snackBar({ action: 'left shared note', opposite: 'rejoined' }, { rejoin: true, userId } as any, note.id!)
+            return left
+          })
         } else {
-          this.Shared.note.db.trash()
+          withLeavingNoteCards([note], { trashed: true, archived: false }, () => this.Shared.note.db.trash())
         }
       },
       clone: () => {
@@ -2278,17 +2294,25 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   // ? archive page
 
+  /** Whether this page would still list the note: decides if an archive, trash or restore fades its card out. */
+  private noteStaysOnPage = (note: NoteI) =>
+    this.notesTools.transform([note], this.currentPageName, this.Shared.searchQuery, this.Shared.searchScope.value).length > 0
+
   toggleArchive(noteId: number, archived: boolean) {
-    this.Shared.note.id = noteId
-    archived = !archived
-    this.Shared.note.db.updateKey({ archived: archived, trashed: false })
-    let obj = archived ? { action: 'archived', opposite: 'unarchived' } : { action: 'unarchived', opposite: 'archived' }
-    this.Shared.snackBar(obj, { archived: !archived }, noteId)
+    const notes = this.Shared.note.all.filter(n => n.id === noteId)
+    return withLeavingNoteCards(notes, { archived: !archived, trashed: false }, () => {
+      this.Shared.note.id = noteId
+      archived = !archived
+      const saved = this.Shared.note.db.updateKey({ archived: archived, trashed: false })
+      let obj = archived ? { action: 'archived', opposite: 'unarchived' } : { action: 'unarchived', opposite: 'archived' }
+      this.Shared.snackBar(obj, { archived: !archived }, noteId)
+      return saved
+    })
   }
 
   // ? trash page
 
-  removeNote(note: NoteI) {
+  async removeNote(note: NoteI) {
     if (note.ownerUserId && note.ownerUserId !== this.auth.currentUser?.id) {
       this.Shared.snackBar({ action: 'Only the owner of this note can delete it forever.', opposite: '' }, {}, 0)
       return
@@ -2306,7 +2330,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
       }, 5000)
     }
     this.pendingPermanentDeletes.set(noteId, pending)
-    this.removePendingDeletedNoteFromView(noteId)
+    await withLeavingNoteCards([note], null, () => this.removePendingDeletedNoteFromView(noteId))
     Snackbar.show({
       pos: 'bottom-left',
       text: 'Note deleted',
@@ -2335,6 +2359,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   private restorePendingDeletedNoteToView(pending: { note: NoteI; allIndex: number; pinnedIndex: number; unpinnedIndex: number }) {
+    markNoteCardsEntering([pending.note])
     this.Shared.note.all = this.insertNoteAt(this.Shared.note.all, pending.note, pending.allIndex)
     this.masonrySignatureToken++
     this.cd.detectChanges()
@@ -2349,9 +2374,13 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   restoreNote(noteId: number) {
-    this.Shared.note.id = noteId
-    this.Shared.note.db.updateKey({ trashed: false, archived: false })
-    this.Shared.snackBar({ action: 'restored', opposite: 'trashed' }, { trashed: true }, noteId)
+    const notes = this.Shared.note.all.filter(n => n.id === noteId)
+    return withLeavingNoteCards(notes, { trashed: false, archived: false }, () => {
+      this.Shared.note.id = noteId
+      const saved = this.Shared.note.db.updateKey({ trashed: false, archived: false })
+      this.Shared.snackBar({ action: 'restored', opposite: 'trashed' }, { trashed: true }, noteId)
+      return saved
+    })
   }
   // ? reminder picker -----------------------------------------------
 
@@ -2978,6 +3007,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   ngOnInit(): void {
     this.syncCurrentPage(this.router.url)
+    setNoteCardPageFilter(this.noteStaysOnPage)
     this.zone.runOutsideAngular(() => {
       window.addEventListener('scroll', this.windowScrollHandler, { passive: true })
     })
@@ -3215,6 +3245,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   ngOnDestroy(): void {
     this.destroyed = true
+    clearNoteCardPageFilter(this.noteStaysOnPage)
     this.noteOpenRequest++
     window.removeEventListener('scroll', this.windowScrollHandler)
     document.removeEventListener('mousedown', this.mouseDownEvent)

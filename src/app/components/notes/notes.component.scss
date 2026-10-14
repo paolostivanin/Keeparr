@@ -180,6 +180,14 @@
   }
 }
 
+// Until Bricks places a card in the grid it sits at the container's corner, so keep it out of sight (buildMasonry). The
+// list view and the virtual grid position their cards themselves and never mark them packed. The animation is a failsafe:
+// whatever happens, a card shows after 400ms.
+:host ::ng-deep .notes-layout:not(.list-layout) .note-container:not([data-packed]):not(.virtual-grid-card) {
+  visibility: hidden;
+  animation: motion-reveal 1ms 400ms forwards;
+}
+
 :host ::ng-deep .notes-layout .note-container {
   width: var(--note-width);
   // Width changes must be immediate so masonry measures the final card size.
@@ -199,6 +207,25 @@
 
   .is-dragging & {
     transition: none !important;
+  }
+
+  // Set while Bricks writes a card's first position, so it lands in place instead of gliding there.
+  &.no-glide {
+    transition: none;
+  }
+
+  // A card the user just created or brought back (utils/note-card-motion.ts). The keyframe is global, in styles.scss.
+  &.card-enter {
+    animation: motion-enter var(--dur-enter) var(--ease-enter);
+  }
+
+  // Fading out ahead of an archive, trash or delete (utils/note-card-motion.ts) so the neighbours glide into the gap.
+  // The separate `scale` property, because Bricks owns the inline transform.
+  &.is-leaving {
+    opacity: 0;
+    scale: 0.96;
+    pointer-events: none;
+    transition: opacity var(--dur-exit) var(--ease-exit), scale var(--dur-exit) var(--ease-exit);
   }
 
   &.note-dragging {
