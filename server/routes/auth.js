@@ -1,15 +1,14 @@
 // Sign-in, two-factor setup and the short-lived tickets for page assets and the realtime socket.
 const qrcode = require('qrcode');
 const { run, get } = require('../db');
+const { realtimeClients } = require('../realtime');
 const {
   asyncRoute, loginLimiter, loginLockSeconds, recordLoginFailure, clearLoginFailures, checkTotpLock, recordTotpFailure,
   clearTotpFailures, verifySecondFactor, generateTotpSecret, verifyTotpToken, buildTotpKeyUri, issueMediaTicket,
   issueRealtimeTicket, REALTIME_TICKET_TTL_MS, requireAuth
 } = require('../auth');
 
-function mountAuthRoutes(app, {
-  normalizeUsername, hashPassword, createSession, generateBackupCodes, revokeUserCredentials, realtimeClients
-}) {
+function mountAuthRoutes(app, { normalizeUsername, hashPassword, createSession, generateBackupCodes, revokeUserCredentials }) {
   app.post('/api/auth/login', loginLimiter, asyncRoute(async (req, res) => {
     const username = normalizeUsername(req.body.username);
     const password = String(req.body.password || '');
