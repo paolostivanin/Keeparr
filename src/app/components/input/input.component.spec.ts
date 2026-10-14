@@ -989,6 +989,161 @@ describe('InputComponent checklist rows', () => {
     expect(editor.hydrateEditorLinkPreviews).toHaveBeenCalled();
     expect(editor.hydrateInlineImageButtons).toHaveBeenCalled();
   });
+
+  describe('Up and Down between rows', () => {
+    /** Rows in a monospace font, so a caret offset is also a horizontal position. */
+    function arrowEditor(rows: Array<{ id: number; data: string }>) {
+      const setup = rowsEditor(rows);
+      setup.container.style.cssText = 'font:16px monospace;width:300px';
+      const placeholder = document.createElement('div');
+      placeholder.contentEditable = 'true';
+      setup.container.append(placeholder);
+      setup.editor.cboxPh = { nativeElement: placeholder };
+      return { ...setup, placeholder };
+    }
+    const down = { key: 'ArrowDown', keyCode: 40 };
+    const up = { key: 'ArrowUp', keyCode: 38 };
+    const caretOffset = () => window.getSelection()!.anchorOffset;
+
+    it('Down moves to the row below at the same horizontal position, and Up moves back', () => {
+      const { rowEl, caret, press } = arrowEditor([{ id: 1, data: 'aaaaaa' }, { id: 2, data: 'bbbbbb' }]);
+      rowEl(1).focus();
+      caret(rowEl(1).firstChild!, 3);
+
+      const downEvent = press(1, down);
+
+      expect(downEvent.preventDefault).toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(2));
+      expect(window.getSelection()!.anchorNode).toBe(rowEl(2).firstChild);
+      expect(caretOffset()).toBe(3);
+
+      const upEvent = press(2, up);
+
+      expect(upEvent.preventDefault).toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(1));
+      expect(caretOffset()).toBe(3);
+    });
+
+    it('also moves when the caret sits between the row\'s children, as after focusing a row', () => {
+      const { rowEl, caret, press } = arrowEditor([{ id: 1, data: '<b>bold</b> plain' }, { id: 2, data: 'below' }, { id: 3, data: 'last' }]);
+      rowEl(1).focus();
+
+      caret(rowEl(1), 0);
+      expect(press(1, down).preventDefault).toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(2));
+
+      caret(rowEl(2), rowEl(2).childNodes.length);
+      expect(press(2, down).preventDefault).toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(3));
+
+      caret(rowEl(3), 0);
+      expect(press(3, up).preventDefault).toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(2));
+    });
+
+    it('lands at the end of a shorter row, and works through an empty one', () => {
+      const { rowEl, caret, press } = arrowEditor([{ id: 1, data: 'aaaaaa' }, { id: 2, data: '' }, { id: 3, data: 'cc' }]);
+      caret(rowEl(1).firstChild!, 5);
+
+      press(1, down);
+      expect(document.activeElement).toBe(rowEl(2));
+
+      press(2, down);
+      expect(document.activeElement).toBe(rowEl(3));
+      expect(caretOffset()).toBe(2);
+    });
+
+    it('goes through the "List item" placeholder in both directions', () => {
+      const { editor, rowEl, caret, key, placeholder, press } = arrowEditor([{ id: 1, data: 'one' }, { id: 2, data: 'two' }]);
+      caret(rowEl(2).firstChild!, 1);
+
+      press(2, down);
+      expect(document.activeElement).toBe(placeholder);
+
+      const event = key({ ...up, target: placeholder } as Partial<KeyboardEvent>);
+      editor.cboxPhKeyDown(event);
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(2));
+    });
+
+    it('goes from the placeholder on to the completed rows below it', () => {
+      const { editor, rowEl, container, key, placeholder } = arrowEditor([{ id: 1, data: 'open' }]);
+      const completed = document.createElement('div');
+      completed.contentEditable = 'true';
+      completed.dataset['cboxId'] = '9';
+      completed.textContent = 'done';
+      container.append(completed);
+      placeholder.focus();
+
+      editor.cboxPhKeyDown(key({ ...down, target: placeholder } as Partial<KeyboardEvent>));
+
+      expect(document.activeElement).toBe(completed);
+      expect(rowEl(1)).not.toBe(completed);
+    });
+
+    it('leaves the key alone at the first and last row', () => {
+      const { editor, rowEl, caret, press, placeholder } = arrowEditor([{ id: 1, data: 'one' }]);
+      editor.cboxPh = undefined;
+      placeholder.remove();
+      caret(rowEl(1).firstChild!, 1);
+
+      expect(press(1, up).preventDefault).not.toHaveBeenCalled();
+      expect(press(1, down).preventDefault).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(placeholder);
+    });
+
+    it('leaves the key alone with a modifier or a selection', () => {
+      const { rowEl, caret, press } = arrowEditor([{ id: 1, data: 'aaaa' }, { id: 2, data: 'bbbb' }]);
+      rowEl(1).focus();
+      caret(rowEl(1).firstChild!, 2);
+
+      expect(press(1, { ...down, shiftKey: true }).preventDefault).not.toHaveBeenCalled();
+      expect(press(1, { ...down, ctrlKey: true }).preventDefault).not.toHaveBeenCalled();
+      expect(press(1, { ...down, altKey: true }).preventDefault).not.toHaveBeenCalled();
+
+      const range = document.createRange();
+      range.setStart(rowEl(1).firstChild!, 1);
+      range.setEnd(rowEl(1).firstChild!, 3);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      expect(press(1, down).preventDefault).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(1));
+    });
+
+    it('keeps the caret moving inside a wrapped row and only crosses at its first or last line', () => {
+      const { rowEl, caret, press } = arrowEditor([{ id: 1, data: 'above' }, { id: 2, data: 'aaaa bbbb cccc dddd' }, { id: 3, data: 'below' }]);
+      rowEl(2).style.width = '5ch';
+      const text = rowEl(2).firstChild!;
+      rowEl(2).focus();
+
+      caret(text, 1);
+      expect(press(2, down).preventDefault).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(2));
+      expect(press(2, up).preventDefault).toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(1));
+
+      rowEl(2).focus();
+      caret(text, 18);
+      expect(press(2, up).preventDefault).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(2));
+      expect(press(2, down).preventDefault).toHaveBeenCalled();
+      expect(document.activeElement).toBe(rowEl(3));
+    });
+
+    it('sends Down to the completed-item suggestions first when they are offered', () => {
+      const { editor, rowEl, caret, press } = arrowEditor([{ id: 1, data: 'milk' }, { id: 2, data: 'next' }]);
+      editor.completedCboxSuggestions = () => [{ id: 7 }];
+      editor.focusFirstCboxSuggestion = jasmine.createSpy('focusFirstCboxSuggestion');
+      rowEl(1).focus();
+      caret(rowEl(1).firstChild!, 4);
+
+      const event = press(1, down);
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(editor.focusFirstCboxSuggestion).toHaveBeenCalledOnceWith(1);
+      expect(document.activeElement).toBe(rowEl(1));
+    });
+  });
 });
 
 describe('InputComponent title and formatting scope', () => {

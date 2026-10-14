@@ -1934,6 +1934,7 @@ export class InputComponent implements OnInit {
   cboxPhKeyDown($event: KeyboardEvent) {
     if ($event.isComposing || $event.keyCode === 229) return
     if (this.handleCboxHistoryKey($event)) return
+    if (this.moveCboxFocusVertically($event, $event.target as HTMLElement)) return
     // Rows are created from what was typed (input), never from the key: Ctrl+V, Enter and Space make nothing here.
     if ($event.key === 'Enter') $event.preventDefault()
   }
@@ -2335,6 +2336,7 @@ export class InputComponent implements OnInit {
       return
     }
     if (this.handleCboxHistoryKey($event)) return
+    if (this.moveCboxFocusVertically($event, target, suggestions.length > 0)) return
     if ($event.key === 'Enter') {
       $event.preventDefault()
       this.splitCboxRowAtCaret(id, target)
@@ -2344,6 +2346,119 @@ export class InputComponent implements OnInit {
       $event.preventDefault()
       this.backspaceAtRowStart(id, target)
     }
+  }
+
+  /**
+   * Up/Down at the first/last line of a row move the caret to the row above/below, at the same horizontal position,
+   * and through the "List item" placeholder into the completed rows. Anywhere else (a wrapped line inside the row,
+   * a selection, a modifier key, no neighbour) the key keeps its native behaviour. With matching completed items
+   * offered below the row, Down goes to them first.
+   */
+  private moveCboxFocusVertically(event: KeyboardEvent, from: HTMLElement, hasSuggestions = false): boolean {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return false
+    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false
+    const up = event.key === 'ArrowUp'
+    const caret = this.collapsedCaretPosition(from)
+    if (!caret || !(up ? caret.onFirstLine : caret.onLastLine)) return false
+    if (!up && hasSuggestions) {
+      event.preventDefault()
+      const draftId = Number(from.dataset['cboxId'])
+      if (Number.isFinite(draftId)) this.focusFirstCboxSuggestion(draftId)
+      return true
+    }
+    const target = this.neighbouringCboxRow(from, up)
+    if (!target) return false
+    event.preventDefault()
+    // Keep aiming for the column the first press started from while the caret has not been moved since.
+    const goal = this.cboxGoalColumn
+    const x = goal && goal.row === from && Math.abs(goal.caretLeft - caret.left) < 1 ? goal.x : caret.left
+    this.focusCboxRowAtColumn(target, x, up)
+    const landed = this.collapsedCaretPosition(target)
+    this.cboxGoalColumn = landed ? { row: target, x, caretLeft: landed.left } : undefined
+    return true
+  }
+
+  /** The horizontal position Up/Down aim for, kept across rows too short to hold it, as in a text field. */
+  private cboxGoalColumn?: { row: HTMLElement, x: number, caretLeft: number }
+
+  /** Where the caret is within a row, or null when there is a selection, the caret is elsewhere, or it cannot be measured. */
+  private collapsedCaretPosition(row: HTMLElement): { left: number, onFirstLine: boolean, onLastLine: boolean } | null {
+    const selection = window.getSelection()
+    if (!selection?.rangeCount || !selection.isCollapsed || !row.contains(selection.anchorNode)) return null
+    const lines = document.createRange()
+    lines.selectNodeContents(row)
+    const lineRects = Array.from(lines.getClientRects()).filter(rect => rect.height > 0)
+    // A row with nothing in it is one empty line, whose caret there is no rectangle for.
+    if (!lineRects.length) return row.textContent ? null : { left: row.getBoundingClientRect().left, onFirstLine: true, onLastLine: true }
+    const caret = this.caretRectOf(selection.getRangeAt(0))
+    if (!caret) return null
+    const firstTop = Math.min(...lineRects.map(rect => rect.top))
+    const lastBottom = Math.max(...lineRects.map(rect => rect.bottom))
+    const slack = caret.height * 0.5
+    return { left: caret.left, onFirstLine: caret.top - firstTop < slack, onLastLine: lastBottom - caret.bottom < slack }
+  }
+
+  /**
+   * A rectangle for a collapsed caret. One between a row's children, which is where focusing a row and selecting its
+   * contents leave it, has none of its own, so the text beside it is measured instead.
+   */
+  private caretRectOf(range: Range): { left: number, top: number, bottom: number, height: number } | undefined {
+    const own = Array.from(range.getClientRects()).find(rect => rect.height > 0)
+    if (own) return own
+    const container = range.startContainer
+    if (container.nodeType !== Node.ELEMENT_NODE) return undefined
+    const textOf = (node: Node) => {
+      const texts: Text[] = []
+      if (node.nodeType === Node.TEXT_NODE) texts.push(node as Text)
+      else for (const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); walker.nextNode();) texts.push(walker.currentNode as Text)
+      return texts.filter(text => text.length > 0)
+    }
+    const children = Array.from(container.childNodes)
+    let beside: { text: Text, atEnd: boolean } | undefined
+    for (let i = range.startOffset - 1; i >= 0 && !beside; i--) {
+      const text = textOf(children[i]).pop()
+      if (text) beside = { text, atEnd: true }
+    }
+    for (let i = range.startOffset; i < children.length && !beside; i++) {
+      const text = textOf(children[i])[0]
+      if (text) beside = { text, atEnd: false }
+    }
+    if (!beside) return undefined
+    const probe = document.createRange()
+    probe.setStart(beside.text, beside.atEnd ? beside.text.length - 1 : 0)
+    probe.setEnd(beside.text, beside.atEnd ? beside.text.length : 1)
+    const rect = Array.from(probe.getClientRects()).find(r => r.height > 0)
+    return rect && { left: beside.atEnd ? rect.right : rect.left, top: rect.top, bottom: rect.bottom, height: rect.height }
+  }
+
+  /** The editable row above or below, in page order: the rows of this editor plus its "List item" placeholder. */
+  private neighbouringCboxRow(from: HTMLElement, up: boolean): HTMLElement | undefined {
+    const container = this.noteContainer?.nativeElement
+    if (!container) return undefined
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-cbox-id]'))
+    const placeholder = this.cboxPh?.nativeElement
+    if (placeholder && container.contains(placeholder)) {
+      const before = rows.findIndex(row => placeholder.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING)
+      rows.splice(before < 0 ? rows.length : before, 0, placeholder)
+    }
+    return rows[rows.indexOf(from) + (up ? -1 : 1)]
+  }
+
+  /** Focuses the row with the caret at x on its last line (arriving from below) or first line (arriving from above). */
+  private focusCboxRowAtColumn(row: HTMLElement, x: number, onLastLine: boolean) {
+    const id = Number(row.dataset['cboxId'])
+    // The focus handler would otherwise move the caret to the end of the row.
+    if (Number.isFinite(id)) (this.explicitCboxFocusIds ??= new Set<number>()).add(id)
+    row.focus({ preventScroll: true })
+    row.scrollIntoView({ block: 'nearest' })
+    const lines = document.createRange()
+    lines.selectNodeContents(row)
+    const lineRects = Array.from(lines.getClientRects()).filter(rect => rect.height > 0)
+    const box = row.getBoundingClientRect()
+    const line = onLastLine
+      ? lineRects.reduce((last, rect) => rect.bottom > last.bottom ? rect : last, lineRects[0] ?? box)
+      : lineRects.reduce((first, rect) => rect.top < first.top ? rect : first, lineRects[0] ?? box)
+    this.placeCboxCaretAtPoint(row as HTMLDivElement, x, line.top + line.height / 2)
   }
 
   /** Enter: the row keeps the text before the caret, a new row after it gets the rest (formatting kept on both sides). */
