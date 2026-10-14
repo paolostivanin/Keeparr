@@ -1,5 +1,5 @@
 @if (isMobileOpen) {
-  <div class="sidebar-backdrop" (click)="collapseSideBar()"></div>
+  <div class="sidebar-backdrop" animate.enter="motion-fade-enter" animate.leave="motion-fade-leave" (click)="collapseSideBar()"></div>
 }
 <div sideBar class="main-sidebar" [class.native-phone-drawer]="nativePhoneDrawer">
   <div class="sidenav-top">

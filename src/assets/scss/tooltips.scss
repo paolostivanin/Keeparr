@@ -6,9 +6,26 @@
     box-shadow: 0 1px 2px 0 rgb(0 0 0 / 60%), 0 2px 6px 2px rgb(0 0 0 / 30%);
     border-radius: 4px;
     z-index: 999;
+    // Menus fade and grow in, and fade out before `display: none` lands. Popper (and the phone layout below) own
+    // `transform`, so the motion uses the separate `scale` property.
+    opacity: 0;
+    scale: 0.97;
+    pointer-events: none;
+    transition: opacity var(--dur-exit) var(--ease-exit), scale var(--dur-exit) var(--ease-exit),
+        display var(--dur-exit) allow-discrete;
 
     &[data-is-tooltip-open="true"] {
         display: block;
+        opacity: 1;
+        scale: 1;
+        pointer-events: auto;
+        transition-duration: var(--dur-enter);
+        transition-timing-function: var(--ease-enter);
+
+        @starting-style {
+            opacity: 0;
+            scale: 0.97;
+        }
     }
 
     @media (max-width: 599px), (max-height: 500px) and (orientation: landscape) {

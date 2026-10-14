@@ -369,7 +369,7 @@
     </div>
   }
   @if (showReminderTypeDialog && !getActiveReminder()) {
-    <div class="reminder-date-dialog reminder-choice-dialog" (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
+    <div class="reminder-date-dialog reminder-choice-dialog" animate.enter="motion-enter" (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
       role="dialog" aria-label="Set reminder">
       <h2 class="rd-choice-title">Set reminder</h2>
       <p class="rd-choice-subtitle">How should we remind you?</p>
@@ -399,7 +399,7 @@
     </div>
   }
   @if (showReminderDateDialog && !getActiveReminder()) {
-    <div class="reminder-date-dialog" (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
+    <div class="reminder-date-dialog" animate.enter="motion-enter" (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
       role="dialog" aria-label="Set reminder date">
       <div class="rd-title">
         Set reminder
@@ -469,7 +469,7 @@
   <input #customTimeInp type="text" class="timepicker-ui-input rp-hidden-time" autocomplete="off" readonly [(ngModel)]="customTime"
     aria-hidden="true" tabindex="-1">
   @if (showReminderLocationDialog && !getActiveReminder() && keeparrPlugins.supportsNativeLocationReminders) {
-    <div class="reminder-date-dialog reminder-place-dialog" (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
+    <div class="reminder-date-dialog reminder-place-dialog" animate.enter="motion-enter" (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
       role="dialog" aria-label="Set location reminder">
       <div class="rd-place-header">
         <button type="button" class="rd-place-back" aria-label="Back"
@@ -669,7 +669,7 @@
     </div>
   }
   @if (showAndroidBackgroundLocationEducation) {
-    <div class="reminder-date-dialog android-location-education"
+    <div class="reminder-date-dialog android-location-education" animate.enter="motion-enter"
       (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
       role="dialog" aria-label="Allow location reminders">
       <div class="android-location-education__icon">

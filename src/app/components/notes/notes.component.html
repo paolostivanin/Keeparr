@@ -53,9 +53,9 @@
      each note via translate3d, which creates a containing block for
      position:fixed descendants and traps any popover rendered inside). -->
 @if (activePickerNote && (!getDisplayedReminderForNote(activePickerNote.id!) || reschedulingPastReminderNoteId === activePickerNote.id)) {
-  <div class="reminder-date-dialog__backdrop" aria-hidden="true"
+  <div class="reminder-date-dialog__backdrop" aria-hidden="true" animate.enter="motion-fade-enter"
     (click)="cancelPendingNoteDate()"></div>
-  <div class="reminder-date-dialog reminder-date-dialog--note"
+  <div class="reminder-date-dialog reminder-date-dialog--note" animate.enter="motion-enter"
     (mousedown)="$event.stopPropagation()" (click)="$event.stopPropagation()"
     role="dialog" aria-label="Set reminder date">
     <div class="rd-title">Set reminder</div>

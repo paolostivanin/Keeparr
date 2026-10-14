@@ -787,7 +787,20 @@ app-note-card-actions {
   top: 0;
   width: 100%;
   height: 100%;
-  background-color: rgb(32, 33, 36, 0.85);
+  --modal-scrim: rgb(32, 33, 36, 0.85);
+  background-color: var(--modal-scrim);
+  // The scrim fades in when the editor opens and out while it closes (`.closing`, set by closeModal). The modal
+  // runs its own card-to-editor animation, so only the background color moves here.
+  transition: background-color var(--dur-slow) var(--ease-standard);
+
+  @starting-style {
+    background-color: transparent;
+  }
+
+  &.closing {
+    background-color: transparent;
+  }
+
   // Allow the backdrop to scroll when the editor content is taller than the
   // viewport (typical for merged hybrid notes with images + body + checklist).
   // The .modal itself caps its height so the contents scroll inside it; if
@@ -983,7 +996,7 @@ app-note-card-actions {
   }
 
   .modal-container {
-    background-color: rgb(32 33 36 / 58%);
+    --modal-scrim: rgb(32 33 36 / 58%);
   }
 
   .note-container {

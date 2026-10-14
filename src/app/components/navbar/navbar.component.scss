@@ -315,7 +315,6 @@
             right: 0;
             top: 40px;
             z-index: 1000;
-            animation: dropdownFade 0.2s ease-out;
 
             @media (max-width: 599px) {
               // Use viewport units + transform-free chain so iOS Safari
@@ -431,11 +430,6 @@
               text-align: center;
             }
           }
-        }
-
-        @keyframes dropdownFade {
-          from { opacity: 0; transform: translateY(-10px); }
-          to { opacity: 1; transform: translateY(0); }
         }
 
         .active-filters {

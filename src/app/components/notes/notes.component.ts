@@ -1091,6 +1091,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     document.removeEventListener('mousedown', this.mouseDownEvent)
     const duration = this.modalAnimationDuration()
     this.prepareModalCloseAnimation()
+    if (duration) this.modalContainer?.nativeElement.classList.add('closing')
     if (this.clickedNoteEl) {
       setTimeout(() => {
         this.clickedNoteEl?.classList.remove('hide')
@@ -1098,6 +1099,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     }
     setTimeout(() => {
       this.setEditorOpen(false)
+      this.modalContainer?.nativeElement.classList.remove('closing')
       this.openImagePickerOnModal = false
       this.editorLoading = false
       this.editorLoadError = ''

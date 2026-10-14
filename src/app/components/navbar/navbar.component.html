@@ -65,7 +65,7 @@
                 <span class="chevron">▾</span>
               </button>
               @if (isFiltersOpen) {
-                <div class="filters-dropdown" (click)="$event.stopPropagation()">
+                <div class="filters-dropdown" animate.enter="motion-enter" animate.leave="motion-leave" (click)="$event.stopPropagation()">
                   @if (isBinderRoute) {
                     <div class="dropdown-header">Search scope</div>
                     <div class="scope-row">
@@ -163,7 +163,7 @@
             }
           </div>
           @if (isProfileOpen) {
-            <div class="profile-menu" (click)="$event.stopPropagation()">
+            <div class="profile-menu" animate.enter="motion-enter" animate.leave="motion-leave" (click)="$event.stopPropagation()">
               <div class="profile-avatar-row">
                 <label class="profile-preview" aria-label="Change avatar">
                   <input #avatarFile type="file" accept="image/*" (change)="uploadAvatar($event)">
@@ -263,7 +263,7 @@
 </div>
 
 @if (isMergeDialogOpen) {
-  <app-merge-dialog
+  <app-merge-dialog animate.enter="motion-fade-enter" animate.leave="motion-fade-leave"
     [notes]="mergeDialogNotes"
     (confirm)="confirmMerge($event)"
     (cancel)="closeMergeDialog()">

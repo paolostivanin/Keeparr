@@ -634,13 +634,23 @@
   height: 100%;
   background-color: rgba(10, 10, 10, 40%);
   overflow: hidden;
+  // The label and binder dialogs fade and grow in when sidenav.component.ts sets display: block.
+  transition: opacity var(--dur-enter) var(--ease-enter);
+
+  @starting-style {
+    opacity: 0;
+  }
 
   .modal {
     position: absolute;
     transform: translate(-50%, -50%);
     left: 50%;
     top: 50%;
-    transition: all 0.4s;
+    transition: scale var(--dur-enter) var(--ease-enter);
+
+    @starting-style {
+      scale: 0.97;
+    }
     max-width: 300px;
     max-height: calc(100vh - 96px);
     width: 100%;
