@@ -42,6 +42,26 @@ cd android-native && ./gradlew testDebugUnitTest assembleDebug lintDebug
   `docs/sync-protocol.md` and `test-fixtures/native-contract.json` in step.
 - Architecture notes are in `docs/architecture.md`.
 
+## Releases
+
+The web app, API, Docker image and MCP server release together. The Android app releases on its own, so each has
+its own version and its own tag series:
+
+| Part | Version lives in | Tag | Publishes |
+| --- | --- | --- | --- |
+| Web, API, image, MCP | `package.json` | `vX.Y.Z` | Docker image via `release-image.yml` |
+| Android | `android-native/app/build.gradle.kts` | `android-vX.Y.Z` | APK attached to a GitHub release (manual) |
+
+- Bump with `node scripts/bump-version.mjs server X.Y.Z` or `node scripts/bump-version.mjs android X.Y.Z`. It edits
+  every file that carries the version, including the Android tests that pin it, and prints the tag command. Review
+  the diff and commit before tagging.
+- The Android version does not have to match the server version. Compatibility is the native-client protocol
+  (`nativeProtocolVersion` from `GET /api/client/capabilities`), not the app version. A change that raises it must
+  update `docs/sync-protocol.md`, `test-fixtures/native-contract.json` and the Android capability check together, and
+  both parts should be tagged on the same commit.
+- Create Android GitHub releases with `--latest=false`. The server's update check reads `releases/latest`, so an
+  Android release marked latest would make servers report the wrong newest version.
+
 ## Reporting security issues
 
 Please do not open a public issue for a vulnerability. Contact the maintainer
