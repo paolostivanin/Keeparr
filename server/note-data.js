@@ -269,22 +269,6 @@ function decodeNotesCursor(cursor) {
   }
 }
 
-function noteToParams(note) {
-  return [
-    String(note.noteTitle || ''),
-    String(note.noteBody || ''),
-    note.pinned ? 1 : 0,
-    String(note.bgColor || ''),
-    String(note.bgImage || ''),
-    JSON.stringify(note.checkBoxes || []),
-    JSON.stringify(note.images || []),
-    note.isCbox ? 1 : 0,
-    JSON.stringify(note.labels || []),
-    note.archived ? 1 : 0,
-    note.trashed ? 1 : 0
-  ];
-}
-
 function nextTrashedAt(previous, next) {
   if (!next.trashed) return null;
   return previous?.trashed ? (previous.trashedAt || new Date().toISOString()) : new Date().toISOString();
