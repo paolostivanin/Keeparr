@@ -35,9 +35,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.IOException
 import java.net.Socket
-import java.net.UnknownHostException
-import java.net.SocketTimeoutException
 import java.security.KeyStore
 import java.security.Principal
 import java.security.PrivateKey
@@ -91,6 +90,10 @@ interface ConnectionProfile {
     var token: String
     var headers: String
     var message: String
+    /** When the last sync completed, in epoch milliseconds; 0 when none has since this account was signed in. */
+    val lastSyncedAt: Long get() = 0L
+    /** A sync completed: the saved problem no longer applies. */
+    fun recordSyncSuccess(at: Long) { message = "" }
     var themeMode: ThemeMode
     fun snapshot() = ConnectionSnapshot(origin, aliasFor(origin), aliasRevisionFor(origin), headersFor(origin), userId, token)
 }
@@ -141,6 +144,7 @@ class ConnectionSettings(
     @Volatile private var userIdValue = 0L
     @Volatile private var tokenValue = ""
     @Volatile private var messageValue = ""
+    @Volatile private var lastSyncedAtValue = 0L
     @Volatile private var themeModeValue = ThemeMode.System
     private val snapshotLock = Any()
     @Volatile private var activeSnapshot = ConnectionSnapshot("", "", 0, "", 0, "")
@@ -153,6 +157,7 @@ class ConnectionSettings(
     private val userIdPreference = longPreferencesKey("userId")
     private val tokenPreference = stringPreferencesKey("token")
     private val messagePreference = stringPreferencesKey("message")
+    private val lastSyncedAtPreference = longPreferencesKey("lastSyncedAt")
     private val themeModePreference = stringPreferencesKey("themeMode")
     // The pre-ThemeMode on/off switch; only read, so an explicit earlier choice carries over.
     private val legacyDarkModePreference = booleanPreferencesKey("darkMode")
@@ -174,6 +179,7 @@ class ConnectionSettings(
             userIdValue = stored[userIdPreference] ?: 0
             tokenValue = decrypt(stored[tokenPreference] ?: "")
             messageValue = stored[messagePreference] ?: ""
+            lastSyncedAtValue = stored[lastSyncedAtPreference] ?: 0
             themeModeValue = ThemeMode.entries.firstOrNull { it.name == stored[themeModePreference] }
                 ?: stored[legacyDarkModePreference]?.let { if (it) ThemeMode.Dark else ThemeMode.Light } ?: ThemeMode.System
             aliases.clear()
@@ -231,6 +237,7 @@ class ConnectionSettings(
                 values[tokenPreference] = encrypt(token)
                 values[headersPreference(origin)] = encrypt(headers)
                 values[messagePreference] = ""
+                values[lastSyncedAtPreference] = 0
             }
             cache = updated
             _writeError.value = null
@@ -240,6 +247,7 @@ class ConnectionSettings(
                 userIdValue = userId
                 tokenValue = token
                 messageValue = ""
+                lastSyncedAtValue = 0
                 refreshSnapshotLocked()
             }
             _ready.value = true
@@ -293,6 +301,12 @@ class ConnectionSettings(
     }
     override var headers: String get() = headersFor(origin); set(value) = setHeadersFor(origin, value)
     override var message: String get() = messageValue; set(value) { messageValue = value; update { this[messagePreference] = value } }
+    override val lastSyncedAt: Long get() = lastSyncedAtValue
+    override fun recordSyncSuccess(at: Long) {
+        messageValue = ""
+        lastSyncedAtValue = at
+        update { this[messagePreference] = ""; this[lastSyncedAtPreference] = at }
+    }
     override var themeMode: ThemeMode get() = themeModeValue; set(value) { themeModeValue = value; update { this[themeModePreference] = value.name } }
     override fun snapshot() = activeSnapshot
 
@@ -396,12 +410,7 @@ class KeeparrApi(private val context: Context, private val settings: ConnectionP
                     text.trimStart().startsWith("<html", ignoreCase = true)
                 if (contentType.contains("text/html", ignoreCase = true) || startsWithHtml) {
                     Log.e("KeeparrApi", "Expected JSON for $path, received HTML (HTTP ${response.code}, content-type=$contentType).")
-                    val message = when (response.code) {
-                        401 -> "Your Keeparr session expired or the gateway requires sign-in. Check API routing, then authenticate again."
-                        403 -> "The server or gateway denied this API request. Check its /api routing and access policy."
-                        else -> "Keeparr's API returned HTML for $path (HTTP ${response.code}); this path is not reaching the Keeparr backend. Deploy the native protocol update and route /api requests through the gateway."
-                    }
-                    throw ApiException(if (response.code in 400..499) response.code else 502, message)
+                    throw htmlGatewayFailure(response.code, path)
                 }
                 if (!response.isSuccessful) throw ApiException(response.code, when {
                     response.code == 401 -> "Your Keeparr session expired. Sign in again."
@@ -412,9 +421,7 @@ class KeeparrApi(private val context: Context, private val settings: ConnectionP
                 text
             }
         } catch (error: ApiException) { throw error }
-        catch (_: SSLException) { throw ApiException(-1, "Secure connection failed. Check the server certificate and the selected client certificate.") }
-        catch (_: UnknownHostException) { throw ApiException(-1, "Server address could not be found. Check the URL and your network connection.") }
-        catch (_: SocketTimeoutException) { throw ApiException(-1, "The server did not respond in time. Check your network and try again.") }
+        catch (error: IOException) { throw transportFailure(error) }
     }
     override suspend fun login(origin: String, username: String, password: String, totp: String, gatewayHeaders: String): JSONObject {
         val address = parseOrigin(origin)

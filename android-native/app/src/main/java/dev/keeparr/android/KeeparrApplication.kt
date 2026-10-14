@@ -17,7 +17,10 @@ class KeeparrApplication : Application() {
     lateinit var reminders: ReminderController
     var refreshWidgets: (Context) -> Unit = { NotesWidget.refresh(it) }
     var refreshWidgetScope: (Context, EffectScope) -> Unit = { context, scope -> NotesWidget.refresh(context, scope) }
+    var refreshWidgetStatus: (Context) -> Unit = { NotesWidget.refreshStatus(it) }
     var enqueueSync: (Context) -> Unit = SyncWorker::enqueue
+    var scheduleSync: (Context) -> Unit = SyncWorker::schedule
+    var refreshNow: (Context) -> Unit = SyncWorker::refreshNow
     private var recovery: Job? = null
     /** Set when the visible activity is being recreated, so the next start does not repeat foreground work. */
     @Volatile var recreatingForConfiguration = false

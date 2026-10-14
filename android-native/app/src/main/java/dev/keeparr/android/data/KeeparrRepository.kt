@@ -17,19 +17,14 @@ import org.json.JSONObject
 import java.util.UUID
 
 class KeeparrRepository(private val app: KeeparrApplication, val database: KeeparrDatabase,
-    val settings: ConnectionProfile, val api: NativeApi, private val mediaUploader: MediaUploadPort = Media(app)) {
+    val settings: ConnectionProfile, val api: NativeApi, private val mediaUploader: MediaUploadPort = Media(app),
+    private val clock: () -> Long = System::currentTimeMillis) {
     private data class DecodedNote(val payload: String, val note: Note)
 
     val store = database.store()
     val status = MutableStateFlow(settings.message.takeIf { it.isNotBlank() }?.let { "Saved on device · $it" } ?: "Saved on device")
-    val connectionState = MutableStateFlow<ConnectionState>(when {
-        settings.message.contains("session expired", true) -> ConnectionState.SessionExpired(settings.message)
-        settings.message.contains("access denied", true) -> ConnectionState.GatewayDenied(settings.message)
-        settings.message.contains("certificate", true) -> ConnectionState.CertificateAttention(settings.message)
-        settings.message.contains("protocol", true) -> ConnectionState.Incompatible(settings.message)
-        settings.token.isBlank() -> ConnectionState.Configured
-        else -> ConnectionState.Authenticated
-    })
+    val connectionState = MutableStateFlow<ConnectionState>(connectionStateForMessage(settings.message)
+        ?: if (settings.token.isBlank()) ConnectionState.Configured else ConnectionState.Authenticated)
     val editors = MutableStateFlow<Map<Long, List<String>>>(emptyMap())
     private val _acceptedNoteSnapshots = MutableSharedFlow<ProfiledNoteSnapshot>(extraBufferCapacity = 16)
     val acceptedNoteSnapshots = _acceptedNoteSnapshots.asSharedFlow()
@@ -53,14 +48,8 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
     fun restoreConnectionState() {
         val message = settings.message
         status.value = message.takeIf { it.isNotBlank() }?.let { "Saved on device · $it" } ?: "Saved on device"
-        connectionState.value = when {
-            message.contains("session expired", true) -> ConnectionState.SessionExpired(message)
-            message.contains("access denied", true) -> ConnectionState.GatewayDenied(message)
-            message.contains("certificate", true) -> ConnectionState.CertificateAttention(message)
-            message.contains("protocol", true) -> ConnectionState.Incompatible(message)
-            settings.token.isBlank() -> ConnectionState.Configured
-            else -> ConnectionState.Authenticated
-        }
+        connectionState.value = connectionStateForMessage(message)
+            ?: if (settings.token.isBlank()) ConnectionState.Configured else ConnectionState.Authenticated
     }
 
     fun notes(): Flow<List<Note>> {
@@ -378,6 +367,7 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
         connectionState.value = ConnectionState.Authenticated
         settings.message = ""
         status.value = "Saved on device · waiting to sync"
+        app.refreshWidgetStatus(app)
     }
 
     /** Runs only the effects [scope] depends on; the default is the full recovery reconciliation. */
@@ -393,6 +383,7 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
         // Side effects owed to what this run changed; acknowledged note writes change no rendered widget content.
         var effect = EffectScope()
         val acceptedThisSync = mutableSetOf<String>()
+        val statusBeforeSync = status.value
         try {
             status.value = "Syncing…"
             database.withTransaction {
@@ -593,23 +584,26 @@ class KeeparrRepository(private val app: KeeparrApplication, val database: Keepa
             val hasConflicts = store.pending(profile).any { it.conflict != null }
             status.value = if (hasConflicts) "An edit needs your attention" else "Synced"
             connectionState.value = ConnectionState.Authenticated
-            if (settings.profile == profile) settings.message = ""
+            if (settings.profile == profile) settings.recordSyncSuccess(clock())
+        } catch (cancelled: CancellationException) {
+            // The system stopping a run (network dropped, job stopped) says nothing about the server.
+            status.value = statusBeforeSync
+            throw cancelled
         } catch (error: Exception) {
             if (settings.profile == profile) {
                 val message = error.message ?: "Connection unavailable"
                 settings.message = message
                 status.value = "Saved on device · ${settings.message}"
-                connectionState.value = when {
-                    error is ApiException && error.code == 401 -> ConnectionState.SessionExpired(message)
-                    error is ApiException && error.code == 403 -> ConnectionState.GatewayDenied(message)
-                    error is ApiException && error.code == 404 || message.contains("protocol", true) -> ConnectionState.Incompatible(message)
-                    message.contains("certificate", true) || message.contains("TLS", true) || message.contains("secure connection", true) -> ConnectionState.CertificateAttention(message)
-                    else -> ConnectionState.Offline(message)
-                }
+                connectionState.value = connectionStateFor(error)
             }
             throw error
         } finally {
-            if (!effect.isEmpty) reconcile(effect)
+            // Changes already written to Room are owed their widget and alarm effects even when the run was cancelled.
+            withContext(NonCancellable) {
+                if (!effect.isEmpty) reconcile(effect)
+                // A run that changed nothing still may have cleared or set the problem the widget shows.
+                if (settings.profile == profile) app.refreshWidgetStatus(app)
+            }
         }
     }
 

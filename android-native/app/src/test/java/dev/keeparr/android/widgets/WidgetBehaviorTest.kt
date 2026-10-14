@@ -80,7 +80,10 @@ class WidgetBehaviorTest {
         app.reminders = NoReminders()
         app.refreshWidgets = {}
         app.refreshWidgetScope = { _, _ -> }
+        app.refreshWidgetStatus = {}
         app.enqueueSync = {}
+        app.scheduleSync = {}
+        app.refreshNow = {}
         repository = KeeparrRepository(app, app.database, profile, Offline())
         app.repository = repository
         app.getSharedPreferences("widgets", Context.MODE_PRIVATE).edit().clear().commit()
@@ -373,5 +376,53 @@ class WidgetBehaviorTest {
             assertFalse("$a vs $b", intents[a].filterEquals(intents[b]))
         assertTrue(quickCreateIntent(app, 5, true).getBooleanExtra("createChecklist", false))
         assertFalse(quickCreateIntent(app, 5, true).getBooleanExtra("createNote", true))
+    }
+
+    private fun statusView(pill: Pill?) = RemoteViews(app.packageName, AppR.layout.notes_widget)
+        .also { NotesWidget.applyPill(app, it, pill) }.apply(app, FrameLayout(app)).findViewById<TextView>(AppR.id.widget_status)
+
+    @Test fun theStatusPillShowsItsShortTextAndDescribesTheFullSentence() {
+        val pill = Pill("Offline · 06:12", "Keeparr could not sync since 06:12. Tap to try again.", PillAction.REFRESH)
+
+        val shown = statusView(pill)
+        assertEquals(android.view.View.VISIBLE, shown.visibility)
+        assertEquals("Offline · 06:12", shown.text.toString())
+        assertEquals(pill.description, shown.contentDescription.toString())
+        assertEquals("no problem, no pill", android.view.View.GONE, statusView(null).visibility)
+    }
+
+    @Test fun theRefreshPillBroadcastsToTheWidgetAndTheOtherPillOpensTheApp() {
+        val refresh = shadowOf(NotesWidget.pillClick(app, PillAction.REFRESH))
+        assertTrue(refresh.isBroadcastIntent)
+        assertEquals(NotesWidget.REFRESH, refresh.savedIntent.action)
+        assertEquals(NotesWidget::class.java.name, refresh.savedIntent.component!!.className)
+
+        val open = shadowOf(NotesWidget.pillClick(app, PillAction.OPEN_APP))
+        assertTrue(open.isActivityIntent)
+        assertEquals(MainActivity::class.java.name, open.savedIntent.component!!.className)
+        assertFalse("tapping the pill is not creating a note", open.savedIntent.getBooleanExtra("createNote", false))
+    }
+
+    @Test fun theRefreshBroadcastStartsAnImmediateSyncForASignedInUser() {
+        val ran = java.util.concurrent.CountDownLatch(1)
+        app.refreshNow = { ran.countDown() }
+
+        NotesWidget().onReceive(app, Intent(app, NotesWidget::class.java).setAction(NotesWidget.REFRESH))
+
+        assertTrue(ran.await(5, java.util.concurrent.TimeUnit.SECONDS))
+    }
+
+    @Test fun addingOrUpdatingAWidgetSyncsSoItCatchesUpAfterABootOrAnUpdate() {
+        val queued = java.util.concurrent.CountDownLatch(1)
+        val scheduled = java.util.concurrent.CountDownLatch(1)
+        app.enqueueSync = { queued.countDown() }
+        app.scheduleSync = { scheduled.countDown() }
+        val widget = NotesWidget()
+
+        widget.onEnabled(app)
+        widget.onUpdate(app, android.appwidget.AppWidgetManager.getInstance(app), IntArray(0))
+
+        assertTrue(scheduled.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        assertTrue(queued.await(5, java.util.concurrent.TimeUnit.SECONDS))
     }
 }

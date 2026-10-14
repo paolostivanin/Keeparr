@@ -11,6 +11,7 @@ import dev.keeparr.android.reminders.ReminderAlarmScheduler
 import dev.keeparr.android.reminders.ReminderNotificationSink
 import dev.keeparr.android.reminders.ReminderScheduler
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -59,6 +60,7 @@ class KeeparrRepositoryTest {
         app.database = Room.inMemoryDatabaseBuilder(app, KeeparrDatabase::class.java).allowMainThreadQueries().build()
         app.reminders = FakeReminderController()
         app.refreshWidgets = {}
+        app.refreshWidgetStatus = {}
         app.enqueueSync = {}
         repository = KeeparrRepository(app, app.database, profile, FakeNativeApi())
         app.repository = repository
@@ -400,6 +402,88 @@ class KeeparrRepositoryTest {
 
         assertEquals(0, widgetRefreshes)
         assertEquals(0, reminderController.reconcileCalls)
+    }
+
+    private fun idleApi() = FakeNativeApi().apply {
+        callHandler = { path, _, _ ->
+            when {
+                path.startsWith("/api/sync/changes?") -> JSONObject().put("changes", JSONArray())
+                    .put("cursor", 12).put("hasMore", false).toString()
+                path == "/api/native/reminders/occurrences" -> "[]"
+                else -> error("Unexpected request $path")
+            }
+        }
+    }
+
+    @Test fun aSuccessfulSyncRecordsWhenItFinishedAndClearsTheSavedProblem() = runBlocking {
+        profile.token = "test-session"
+        profile.message = "The server did not respond in time. Check your network and try again."
+        repository.store.cursor(SyncState(profile.profile, 12))
+        repository = KeeparrRepository(app, app.database, profile, idleApi(), clock = { 5_000L })
+        app.repository = repository
+
+        repository.sync()
+
+        assertEquals(5_000L, profile.lastSyncedAt)
+        assertEquals("", profile.message)
+    }
+
+    @Test fun aFailedSyncSavesTheProblemAndKeepsWhenTheLastGoodSyncWas() = runBlocking {
+        profile.token = "test-session"
+        profile.lastSyncedAt = 7L
+        repository.store.cursor(SyncState(profile.profile, 12))
+        repository = KeeparrRepository(app, app.database, profile, FakeNativeApi().apply {
+            callHandler = { _, _, _ -> throw ApiException(-1, UNREACHABLE_MESSAGE) }
+        })
+        app.repository = repository
+
+        assertTrue(runCatching { repository.sync() }.isFailure)
+
+        assertEquals(7L, profile.lastSyncedAt)
+        assertEquals(UNREACHABLE_MESSAGE, profile.message)
+        assertTrue(repository.connectionState.value is ConnectionState.Offline)
+    }
+
+    @Test fun aCancelledSyncSaysNothingAboutTheConnection() = runBlocking {
+        profile.token = "test-session"
+        repository.store.cursor(SyncState(profile.profile, 12))
+        repository = KeeparrRepository(app, app.database, profile, FakeNativeApi().apply {
+            callHandler = { _, _, _ -> throw CancellationException("Job was cancelled") }
+        })
+        app.repository = repository
+        val before = repository.status.value
+
+        assertTrue(runCatching { repository.sync() }.exceptionOrNull() is CancellationException)
+
+        assertEquals("", profile.message)
+        assertEquals(before, repository.status.value)
+        assertEquals(ConnectionState.Authenticated, repository.connectionState.value)
+    }
+
+    @Test fun theWidgetStatusIsRedrawnAfterEverySyncThatRanButNotRowsOrAlarms() = runBlocking {
+        profile.token = "test-session"
+        repository.store.cursor(SyncState(profile.profile, 12))
+        val failing = FakeNativeApi().apply { callHandler = { _, _, _ -> throw ApiException(-1, UNREACHABLE_MESSAGE) } }
+        var statusRedraws = 0
+        var rowRedraws = 0
+        app.refreshWidgetStatus = { statusRedraws++ }
+        app.refreshWidgets = { rowRedraws++ }
+        repository = KeeparrRepository(app, app.database, profile, idleApi())
+        app.repository = repository
+
+        repository.sync()
+        assertEquals("a run that changed nothing can still have cleared the problem", 1, statusRedraws)
+
+        repository = KeeparrRepository(app, app.database, profile, failing)
+        app.repository = repository
+        assertTrue(runCatching { repository.sync() }.isFailure)
+        assertEquals(2, statusRedraws)
+
+        profile.token = ""
+        repository.sync()
+        assertEquals("a sync that never started has nothing to report", 2, statusRedraws)
+        assertEquals(0, rowRedraws)
+        assertEquals(0, (app.reminders as FakeReminderController).reconcileCalls)
     }
 
     @Test fun anEditorFromThePreviousAccountCannotQueueItsDraftUnderTheNewProfile() = runBlocking {
@@ -1728,6 +1812,8 @@ class KeeparrRepositoryTest {
             get() = headersFor(origin)
             set(value) = setHeadersFor(origin, value)
         override var message = ""
+        override var lastSyncedAt = 0L
+        override fun recordSyncSuccess(at: Long) { message = ""; lastSyncedAt = at }
         override var themeMode = ThemeMode.System
     }
 
