@@ -32,6 +32,7 @@ import { noteBgImagePath, noteColorToHex, noteSurfaceVars } from 'src/app/utils/
 import { hasMeaningfulBody, titleHtml, titleText } from 'src/app/utils/keeparr-html';
 import { environment } from 'src/environments/environment';
 import { inertDiv } from 'src/app/utils/inert-html';
+import { prefersReducedMotion } from 'src/app/utils/motion';
 import {
   EditorSessionPersister, EditorSessionTracker, NEW_NOTE_SESSION_KEY, applyEditorDraft, dirtyEditorFields, emptyEditorDraft,
   type EditorDraft, type EditorSessionRecord
@@ -3810,6 +3811,7 @@ export class InputComponent implements OnInit {
 
   private animateCboxRows(previousRects: Map<number, DOMRect>, draggedId: number) {
     this.cd.detectChanges()
+    if (prefersReducedMotion()) return
     requestAnimationFrame(() => {
       document.querySelectorAll<HTMLElement>('[data-cbox-row-id]').forEach(row => {
         const id = Number(row.dataset['cboxRowId'])

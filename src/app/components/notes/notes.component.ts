@@ -28,6 +28,7 @@ import { NoteBodySegment, NotePreviewMeta } from './note-card-preview.component'
 import { NoteListWindow, NoteListWindowModel } from './note-list-window';
 import { MasonryWindowResult, NoteMasonryWindowModel } from './note-masonry-window';
 import { inertDiv } from 'src/app/utils/inert-html';
+import { prefersReducedMotion } from 'src/app/utils/motion';
 
 declare var Snackbar: any;
 type PluginListenerHandle = { remove: () => Promise<void> | void };
@@ -1186,7 +1187,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   private modalAnimationDuration() {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0
+    if (prefersReducedMotion()) return 0
     return shouldUseFullscreenNoteEditor() ? 160 : 200
   }
 
@@ -1646,12 +1647,9 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
     // Build a ghost: a clone that's position:fixed at the pickup rect.
     // The .touch-dragging-ghost class hard-disables transitions on the
-    // clone so finger-tracking is 1:1 (no bell-curve lag from the cloned
-    // .note-container's `transition: all 0.3s`). The pickup "pop"
-    // animation is driven by the Web Animations API on a wrapper element
-    // around the ghost — that way the pop animates scale + box-shadow
-    // independently while the wrapper's children (the actual ghost
-    // transform we write per touchmove) stay 1:1.
+    // clone so finger-tracking is 1:1 (no lag from the cloned
+    // .note-container's transform transition). The pickup "pop" is a
+    // box-shadow animation, see below.
     const ghost = target.cloneNode(true) as HTMLElement
     ghost.removeAttribute('data-note-id')
     ghost.style.position = 'fixed'
@@ -1676,15 +1674,17 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     // ghost in place at the start of the drag. Animating box-shadow
     // gives us the visual "lift" feel without conflicting; combined with
     // the haptic vibration above, the pickup reads as instantly tactile.
-    try {
-      ghost.animate(
-        [
-          { boxShadow: '0 0 0 rgba(0,0,0,0)' },
-          { boxShadow: '0 8px 24px rgba(0,0,0,0.35)' }
-        ],
-        { duration: 180, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)', fill: 'forwards' }
-      )
-    } catch { /* WAAPI not available — the inline box-shadow above still applies */ }
+    if (!prefersReducedMotion()) {
+      try {
+        ghost.animate(
+          [
+            { boxShadow: '0 0 0 rgba(0,0,0,0)' },
+            { boxShadow: '0 8px 24px rgba(0,0,0,0.35)' }
+          ],
+          { duration: 180, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)', fill: 'forwards' }
+        )
+      } catch { /* WAAPI not available — the inline box-shadow above still applies */ }
+    }
 
     // Tell iOS we own all touch interactions while drag is active — this
     // suppresses pan AND pinch-zoom system gestures inside the dragged
@@ -1973,6 +1973,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     // bricks.js uses inline `transform: translate3d(...)` for layout, so we use
     // `composite: 'add'` to layer our delta on top of its position rather than
     // replace it (which would snap cards to 0,0 mid-animation).
+    if (prefersReducedMotion()) return
     requestAnimationFrame(() => {
       document.querySelectorAll<HTMLElement>('[data-note-id]').forEach(el => {
         const id = Number(el.dataset['noteId'])

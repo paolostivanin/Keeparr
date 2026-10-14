@@ -42,9 +42,13 @@
   --elev-3: 0 1px 2px rgb(0 0 0 / 60%), 0 2px 6px 2px rgb(0 0 0 / 30%);
 
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
   --dur-fast: 80ms;
   --dur-base: 120ms;
   --dur-slow: 200ms;
+  --dur-enter: 150ms;
+  --dur-exit: 100ms;
 }
 
 body.light-theme {
@@ -84,6 +88,57 @@ body.keeparr-smart-capture-open {
 @media (max-width: 599px) {
   :root {
     --note-width: calc(50vw - 20px);
+  }
+}
+
+// Enter and leave motion for overlays, used as `animate.enter="motion-enter" animate.leave="motion-leave"` on
+// @if blocks. Only opacity and the individual `scale` property move, so an element's own `transform` (popper,
+// centering) is left alone.
+@keyframes motion-enter {
+  from { opacity: 0; scale: 0.97; }
+}
+
+@keyframes motion-leave {
+  to { opacity: 0; scale: 0.97; }
+}
+
+@keyframes motion-fade-in {
+  from { opacity: 0; }
+}
+
+@keyframes motion-fade-out {
+  to { opacity: 0; }
+}
+
+.motion-enter {
+  animation: motion-enter var(--dur-enter) var(--ease-enter);
+}
+
+.motion-leave {
+  animation: motion-leave var(--dur-exit) var(--ease-exit) forwards;
+  pointer-events: none;
+}
+
+// For scrims and full-width bars, where a scale would read as a wobble.
+.motion-fade-enter {
+  animation: motion-fade-in var(--dur-enter) var(--ease-enter);
+}
+
+.motion-fade-leave {
+  animation: motion-fade-out var(--dur-exit) var(--ease-exit) forwards;
+  pointer-events: none;
+}
+
+// Less motion when the system asks for it. Durations collapse rather than disappear so animation and transition
+// events still fire. Rules that need a true `0s` (the editor modal) set `transition: none !important` themselves.
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -1768,17 +1823,12 @@ body.light-theme .reminder-chip:not(.reminder-chip--past):hover { background: co
   top: -9999px;
 }
 
-// Transparent date input overlaid on the alarm icon. iOS Safari only opens
-// the system date wheel for a real user tap on a real <input type="date">,
-// so we put one over the icon and let the browser handle the picker
-// natively. The icon glyph beneath stays visible because the input is
-// fully transparent.
 // Touch-drag ghost: a clone of `.note-container` appended to <body> while
 // the user is dragging a card with their finger. Lives outside Angular's
 // component view encapsulation, so component-scoped rules don't apply.
-// The cloned `.note-container` would otherwise carry `transition: all 0.3s`
-// which gets re-evaluated on every transform change and produces a
-// sluggish bell-curve drag. The pickup pop animation is run via the Web
+// The cloned `.note-container` would otherwise carry its transform
+// transition, which gets re-evaluated on every transform change and lags
+// behind the finger. The pickup pop animation is run via the Web
 // Animations API in JS so it composes with the inline transform without
 // fighting it.
 .touch-dragging-ghost,
@@ -1787,6 +1837,11 @@ body.light-theme .reminder-chip:not(.reminder-chip--past):hover { background: co
   animation: none !important;
 }
 
+// Transparent date input overlaid on the alarm icon. iOS Safari only opens
+// the system date wheel for a real user tap on a real <input type="date">,
+// so we put one over the icon and let the browser handle the picker
+// natively. The icon glyph beneath stays visible because the input is
+// fully transparent.
 .rp-overlay-date {
   position: absolute;
   inset: 0;
