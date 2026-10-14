@@ -64,11 +64,9 @@ function bumpAndroid(version, requestedCode) {
 
   replaceOnce(gradle, /versionCode = \d+/, `versionCode = ${code}`);
   replaceOnce(gradle, /versionName = "[^"]+"/, `versionName = "${version}"`);
-  replaceOnce(
-    'android-native/app/src/test/java/dev/keeparr/android/ReleaseConfigurationTest.kt',
-    /assertEquals\("[^"]+", info\.versionName\)/,
-    `assertEquals("${version}", info.versionName)`,
-  );
+  const releaseTest = 'android-native/app/src/test/java/dev/keeparr/android/ReleaseConfigurationTest.kt';
+  replaceOnce(releaseTest, /assertEquals\("[^"]+", info\.versionName\)/, `assertEquals("${version}", info.versionName)`);
+  replaceOnce(releaseTest, /assertEquals\(\d+L, info\.longVersionCode\)/, `assertEquals(${code}L, info.longVersionCode)`);
   const contractTest = 'android-native/app/src/test/java/dev/keeparr/android/data/NativeContractTest.kt';
   replaceOnce(contractTest, /assertEquals\("[^"]+", BuildConfig\.VERSION_NAME\)/, `assertEquals("${version}", BuildConfig.VERSION_NAME)`);
   replaceOnce(contractTest, /assertEquals\(\d+, BuildConfig\.VERSION_CODE\)/, `assertEquals(${code}, BuildConfig.VERSION_CODE)`);
