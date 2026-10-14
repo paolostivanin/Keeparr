@@ -321,7 +321,7 @@ function resetAuthStateAfterRestore() {
 
 module.exports = {
   randomHex, mcpTokenHash, generateTotpSecret, verifyTotpToken, buildTotpKeyUri,
-  asyncRoute, rateLimit, loginLimiter, registerLimiter, setupLimiter, oauthRegistrationLimiter,
+  asyncRoute, loginLimiter, registerLimiter, setupLimiter, oauthRegistrationLimiter,
   loginLockSeconds, recordLoginFailure, clearLoginFailures, checkTotpLock, recordTotpFailure, clearTotpFailures,
   verifySecondFactor, resolveSessionFromToken, issueMediaTicket, issueRealtimeTicket, redeemRealtimeTicket,
   REALTIME_TICKET_TTL_MS, requireAuth, requireAuthOrMediaTicket, requireAdmin, resetAuthStateAfterRestore

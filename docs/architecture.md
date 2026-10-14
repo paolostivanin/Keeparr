@@ -28,11 +28,16 @@ This document records the current authoritative state and write boundaries while
 
 | Responsibility | Owner | Authority / compatibility |
 | --- | --- | --- |
-| HTTP routes, SQLite access, and transaction boundaries | `server/server.js` | The shared SQLite database and post-commit effects remain centralized; preserve their transaction ordering during extraction. |
+| Server bootstrap | `server/server.js` | Composition root only: Express setup, CORS and JSON middleware, mounting every route module, then schema initialization and the schedulers. Route order matters where paths overlap, for example `/api/notes/search` before `/api/notes/:id`. |
+| SQLite access and transaction boundaries | `server/db.js`, `server/schema.js`, `server/init.js` | One queue serializes all access; transactions carry post-commit effects. A backup restore reopens the file through `openDatabase()`/`closeDatabase()`. Preserve transaction and `afterDatabaseCommit` ordering. |
+| Configuration, auth and realtime | `server/config.js`, `server/auth.js`, `server/routes/auth.js`, `server/realtime.js` | Environment and data directories, bearer/MCP/OAuth token resolution, tickets, lockouts, and the WebSocket channel. |
+| Notes | `server/note-data.js` (reads), `server/sync-changes.js` (change feed), `server/notes.js` (changes, trash purge), `server/labels.js`, `server/files.js`, `server/routes/notes.js`, `server/routes/labels.js`, `server/routes/uploads.js` | Layered so that imports only point downward; routes sit on top and are mounted from `server.js`. |
+| Reminders and integrations | `server/reminder-model.js`, `server/reminder-scheduler.js`, `server/routes/reminders.js`, `server/calendar.js`, `server/google-calendar.js`, `server/push.js`, `server/routes/calendar-integrations.js` | Reminder shapes and visibility SQL, the 15 second scheduler, CalDAV, Google Calendar and Web Push. |
+| Accounts, assistant and admin | `server/users.js`, `server/routes/users.js`, `server/ai.js`, `server/routes/ai.js`, `server/routes/admin.js`, `server/backup.js`, `server/housekeeping.js` | Users and sessions, smart actions, update status, backups and cleanup. |
 | Static entry point, hashed assets, and cache policy | `server/static-assets.js` | Mounted by the existing server bootstrap; entry points/workers revalidate while content-hashed assets are immutable and compressible. |
 | Client capability negotiation | `server/client-capabilities.js` | Advertises the native protocol and incremental mutation features as an independent route boundary. |
 | Native mutation route and response negotiation | `server/sync-routes.js` | The route preserves request-order results, snapshot compatibility, and high-water/cursor separation while injecting transaction-bound mutation operations from the server. |
-| Native operation semantics | `server/native-client.js` and sync mutation functions in `server/server.js` | Revision checks, operation receipts, LWW compatibility, resource change cursors, and negotiated incremental replies are covered by protocol tests. |
+| Native operation semantics | `server/native-client.js` and the sync mutation functions in `server/sync.js` | Revision checks, operation receipts, LWW compatibility, resource change cursors, and negotiated incremental replies are covered by protocol tests. |
 | Realtime/reminder domain helpers | `server/reminder-recurrence.js`, `server/oauth-mcp.js`, and server services | Existing extracted modules should remain the boundaries when adjacent routes are split. |
 
 ## Note content codec

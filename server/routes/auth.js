@@ -1,14 +1,18 @@
-// Sign-in, two-factor setup and the short-lived tickets for page assets and the realtime socket.
+// Sign-in, registration, two-factor setup and the short-lived tickets for page assets and the realtime socket.
 const qrcode = require('qrcode');
 const { run, get } = require('../db');
 const { realtimeClients } = require('../realtime');
 const {
-  asyncRoute, loginLimiter, loginLockSeconds, recordLoginFailure, clearLoginFailures, checkTotpLock, recordTotpFailure,
+  createSession, createUser, generateBackupCodes, hashPassword, normalizeUsername, revokeUserCredentials, validateEmail
+} = require('../users');
+const { getAppSetting } = require('../app-settings');
+const {
+  asyncRoute, registerLimiter, loginLimiter, loginLockSeconds, recordLoginFailure, clearLoginFailures, checkTotpLock, recordTotpFailure,
   clearTotpFailures, verifySecondFactor, generateTotpSecret, verifyTotpToken, buildTotpKeyUri, issueMediaTicket,
   issueRealtimeTicket, REALTIME_TICKET_TTL_MS, requireAuth
 } = require('../auth');
 
-function mountAuthRoutes(app, { normalizeUsername, hashPassword, createSession, generateBackupCodes, revokeUserCredentials }) {
+function mountAuthRoutes(app) {
   app.post('/api/auth/login', loginLimiter, asyncRoute(async (req, res) => {
     const username = normalizeUsername(req.body.username);
     const password = String(req.body.password || '');
@@ -147,6 +151,44 @@ function mountAuthRoutes(app, { normalizeUsername, hashPassword, createSession, 
       if (socket.sessionHash === req.tokenHash) { try { socket.close(1008, 'Signed out.'); } catch {} }
     }
     res.status(204).end();
+  }));
+
+  app.post('/api/auth/register', registerLimiter, asyncRoute(async (req, res) => {
+    const regEnabled = await getAppSetting('selfRegistrationEnabled', 'false');
+    if (regEnabled !== 'true') {
+      return res.status(403).json({ error: 'Self-registration is not enabled.' });
+    }
+
+    const { username, displayName, email, password } = req.body;
+    if (!email || !validateEmail(email)) {
+      return res.status(400).json({ error: 'A valid email address is required.' });
+    }
+
+    const requireApproval = await getAppSetting('requireApproval', 'true');
+    const needsApproval = requireApproval === 'true';
+
+    try {
+      const user = await createUser({
+        username,
+        displayName,
+        password,
+        email,
+        role: 'user',
+        enabled: !needsApproval
+      });
+      res.status(201).json({
+        success: true,
+        needsApproval,
+        message: needsApproval
+          ? 'Account created. An administrator must approve your account before you can sign in.'
+          : 'Account created successfully. You can now sign in.'
+      });
+    } catch (e) {
+      if (e.message && e.message.includes('UNIQUE constraint failed')) {
+        return res.status(409).json({ error: 'That username is already taken.' });
+      }
+      return res.status(e.status || 500).json({ error: e.message || 'Could not create account.' });
+    }
   }));
 }
 

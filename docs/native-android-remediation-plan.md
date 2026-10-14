@@ -23,10 +23,10 @@ Paths are repository-relative. Native paths in this table are relative to `andro
 | Area | Current files / entry points |
 | --- | --- |
 | Server schema/IDs | `server/native-client.js`: `initNativeClientSchema`, `occurrenceId` |
-| Server synchronization | `server/server.js`: `executeSyncMutation`, `applySyncNoteMutation`, `applySyncReminderMutation`, `syncSnapshotForUser`, `/api/sync/changes` |
-| Reminder visibility | `server/server.js`: `reminderNoteMap`, `reminderResponse`, `visibleReminderWhere`, `nativeOccurrencesForUser`, collaborator changes |
-| Reminder write/delivery paths | `server/server.js`: reminder CRUD/import, `smartSetReminder`, `startReminderScheduler`, calendar backfills, `sendReminderPush` |
-| Image lifecycle | `server/server.js`: `/api/uploads/images`, `syncNoteImagesForNote`, image deletion/backfill |
+| Server synchronization | `server/sync.js`: `executeSyncMutation`, `applySyncNoteMutation`, `applySyncReminderMutation`, `syncSnapshotForUser`, `/api/sync/changes` |
+| Reminder visibility | `server/sync-changes.js`: `reminderNoteMap`; `server/reminder-model.js`: `reminderResponse`, `visibleReminderWhere`; `server/sync.js`: `nativeOccurrencesForUser`, collaborator changes |
+| Reminder write/delivery paths | `server/routes/reminders.js`: reminder CRUD/import; `server/ai.js`: `smartSetReminder`; `server/reminder-scheduler.js`: `startReminderScheduler`; `server/routes/calendar-integrations.js`: calendar backfills; `server/push.js`: `sendReminderPush` |
+| Image lifecycle | `server/routes/uploads.js`: `/api/uploads/images`; `server/files.js`: `syncNoteImagesForNote`, image deletion/backfill |
 | Server recurrence | `server/reminder-recurrence.js`, `server/reminder-recurrence.test.js` |
 | Native local storage | `data/Database.kt`, exported schemas in `android-native/app/schemas/` |
 | Native sync/recovery | `data/KeeparrRepository.kt`, `data/SyncWorker.kt` |
@@ -115,7 +115,7 @@ All packages are initially pending. Update status with the relevant test command
 | WP11 | P2 | WP1, WP4, WP6, WP8, WP10 | UI/widget completion, accessibility and media cleanup | Complete for code/unit coverage; device/accessibility acceptance is in WP12 |
 | WP12 | P1 | All code packages | Integration, upgrade, device/gateway and release gates | Pending |
 
-A package may be split into focused patches, but its invariant must stay coherent across server/native changes. Avoid broad formatting rewrites of `server/server.js`.
+A package may be split into focused patches, but its invariant must stay coherent across server/native changes. Avoid broad formatting rewrites of the server modules.
 
 ### WP0 baseline captured on 2026-10-05
 

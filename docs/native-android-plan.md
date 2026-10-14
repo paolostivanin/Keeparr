@@ -31,7 +31,7 @@ Build initially in an independent Gradle project under `android-native/`, with a
 | Offline sync | `/api/sync/bootstrap`, `/api/sync/changes`, `/api/sync/mutations`; stable sync IDs and timestamp-based conflict stamps | Reuse protocol concepts and IDs, with a durable native outbox. |
 | Reminders | Reminder CRUD/sync, UTC due time, timezone, repeat rules, server scheduler, browser push | Keep schedules on the server and schedule Android delivery locally. |
 
-Source locations: [server](../server/server.js), [note model](../src/app/interfaces/notes.ts), [reminder model](../src/app/interfaces/reminder.ts), [web sync client](../src/app/services/offline-sync.service.ts), [web note client](../src/app/services/notes.service.ts).
+Source locations: [server](../server), [note model](../src/app/interfaces/notes.ts), [reminder model](../src/app/interfaces/reminder.ts), [web sync client](../src/app/services/offline-sync.service.ts), [web note client](../src/app/services/notes.service.ts).
 
 ## Server gaps to resolve
 

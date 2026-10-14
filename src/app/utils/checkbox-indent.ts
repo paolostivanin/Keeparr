@@ -1,7 +1,7 @@
 /**
  * Checklist rows can be nested up to MAX_INDENT_LEVEL levels deep. A row may
  * never be more than one level deeper than the row above it.
- * Keep in sync with MAX_CHECKBOX_INDENT_LEVEL in server/server.js.
+ * Keep in sync with MAX_CHECKBOX_INDENT_LEVEL in server/takeout-import.js.
  */
 export const MAX_INDENT_LEVEL = 3;
 

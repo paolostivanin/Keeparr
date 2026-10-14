@@ -11,6 +11,10 @@ const { plainText, escapeHtml } = require('./note-text');
 const { neutralizeActiveHtml } = require('./html-safety');
 const { serverLwwStamp } = require('./sync-protocol');
 const { broadcastRealtime } = require('./realtime');
+const { PRIVATE_IMAGE_PREFIX, SAFE_IMAGE_TYPES, syncNoteImagesForNote } = require('./files');
+const { findOrCreateLabelForUser } = require('./labels');
+const { noteExtraFields } = require('./note-data');
+const { recordNoteSyncChange } = require('./sync-changes');
 
 const KEEP_COLOR_MAP = {
   DEFAULT: '', WHITE: '', GRAY: '',
@@ -272,9 +276,7 @@ async function readZipEntries(filePath) {
   return entries;
 }
 
-function mountTakeoutImportRoutes(app, {
-  SAFE_IMAGE_TYPES, PRIVATE_IMAGE_PREFIX, findOrCreateLabelForUser, noteExtraFields, syncNoteImagesForNote, recordNoteSyncChange
-}) {
+function mountTakeoutImportRoutes(app) {
   app.post('/api/import/google-takeout', requireAuth, googleTakeoutUpload, asyncRoute(async (req, res) => {
     const tempPath = req.file?.path;
     try {
