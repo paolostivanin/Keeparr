@@ -23,11 +23,18 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 class NotesWidget : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
-        ids.forEach { render(context, it) }
-        // The system updates widgets after a boot, an unlock and an app update, which is a chance to catch up that nothing else gives.
+        // A widget this process already published keeps its frame and list as they are: the periodic update only asks it to stay
+        // current, and re-sending the frame could make the list jump. One it has not published (after a boot or an app update, or
+        // a new widget) has nothing on screen yet.
+        val (shown, blank) = ids.partition { it in rendered }
+        blank.forEach { render(context, it) }
+        if (shown.isNotEmpty()) refreshStatus(context)
+        // The system updates widgets after a boot and an app update, and every 30 minutes (soon after the phone wakes from Doze, if
+        // it was asleep): a chance to catch up that nothing else gives, and for the chip to notice that the notes have gone stale.
         val app = context.applicationContext as KeeparrApplication
         app.scope.launch { app.settings.awaitReady(); if (app.settings.token.isNotEmpty()) app.enqueueSync(app) }
     }
@@ -49,7 +56,7 @@ class NotesWidget : AppWidgetProvider() {
     }
     override fun onDeleted(context: Context, ids: IntArray) {
         val prefs = context.getSharedPreferences("widgets", Context.MODE_PRIVATE)
-        ids.forEach { prefs.edit().remove("filter_$it").remove("profile_$it").apply() }
+        ids.forEach { prefs.edit().remove("filter_$it").remove("profile_$it").apply(); rendered.remove(it) }
     }
     companion object {
         const val TOGGLE = "dev.keeparr.android.WIDGET_TOGGLE"
@@ -60,9 +67,13 @@ class NotesWidget : AppWidgetProvider() {
         // scoped refresh also draws the pill, on some or all widgets, so it puts this back to [notPublished]: the next redraw is
         // never skipped on the strength of something that is no longer on screen. Computing the pill and pushing it happen under
         // [drawLock], so the last draw always reflects the newest state.
-        private val notPublished = Pill("", "", PillAction.REFRESH)
-        @Volatile private var published: Pill? = notPublished
+        private val notPublished = Pill("", "", PillAction.REFRESH, PillIcon.SYNC)
+        @Volatile internal var published: Pill? = notPublished
+            private set
         private val drawLock = Any()
+        // The widgets whose frame this process has published, which the launcher keeps until the process (or the app) is gone.
+        private val rendered: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+        internal fun hasPublished(id: Int) = id in rendered
 
         /**
          * Publishes the widget frame (adapter binding, click templates, status). Rows are not part of it: the system pulls
@@ -87,6 +98,7 @@ class NotesWidget : AppWidgetProvider() {
                     applyPill(context, views, currentPill(context, app))
                     AppWidgetManager.getInstance(context).updateAppWidget(id, views)
                     published = notPublished
+                    rendered += id
                 }
             }
         }
@@ -117,11 +129,20 @@ class NotesWidget : AppWidgetProvider() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         }
 
+        internal fun pillIconResource(icon: PillIcon): Int = when (icon) {
+            PillIcon.SYNC -> R.drawable.ic_widget_sync
+            PillIcon.OFFLINE -> R.drawable.ic_widget_sync_problem
+            PillIcon.WARNING -> R.drawable.ic_widget_warning
+        }
+
+        /** The chip is the click target and carries the description, so a screen reader announces it once; the label is only its text. */
         internal fun applyPill(context: Context, views: RemoteViews, pill: Pill?) {
-            views.setViewVisibility(R.id.widget_status, if (pill == null) View.GONE else View.VISIBLE)
-            views.setTextViewText(R.id.widget_status, pill?.text.orEmpty())
-            views.setContentDescription(R.id.widget_status, pill?.description.orEmpty())
-            if (pill != null) views.setOnClickPendingIntent(R.id.widget_status, pillClick(context, pill.action))
+            views.setViewVisibility(R.id.widget_chip, if (pill == null) View.GONE else View.VISIBLE)
+            if (pill == null) return
+            views.setTextViewText(R.id.widget_status, pill.text)
+            views.setImageViewResource(R.id.widget_chip_icon, pillIconResource(pill.icon))
+            views.setContentDescription(R.id.widget_chip, pill.description)
+            views.setOnClickPendingIntent(R.id.widget_chip, pillClick(context, pill.action))
         }
 
         /** Redraws only the status pill of every widget; the list keeps its rows and scroll position. */
@@ -350,8 +371,9 @@ internal fun applyFrameColors(app: KeeparrApplication, views: RemoteViews, mode:
     if (mode == ThemeMode.System) return
     val colors = WidgetColors(app)
     views.tintList(R.id.widget_frame, "setBackgroundTintList", mode, colors.resource(R.color.widget_background))
-    views.tintList(R.id.widget_status, "setBackgroundTintList", mode, colors.resource(R.color.widget_card))
-    views.tint(R.id.widget_status, "setTextColor", mode, colors.resource(R.color.widget_text_status))
+    views.tintList(R.id.widget_chip, "setBackgroundTintList", mode, colors.resource(R.color.widget_chip))
+    views.tint(R.id.widget_status, "setTextColor", mode, colors.resource(R.color.widget_text_action))
+    views.tintList(R.id.widget_chip_icon, "setImageTintList", mode, colors.resource(R.color.widget_text_action))
     views.tintList(R.id.widget_add, "setBackgroundTintList", mode, colors.resource(R.color.widget_fab))
     views.tintList(R.id.widget_add, "setImageTintList", mode, colors.resource(R.color.widget_fab_icon))
 }

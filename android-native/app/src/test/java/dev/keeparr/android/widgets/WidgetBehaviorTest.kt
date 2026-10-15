@@ -88,6 +88,8 @@ class WidgetBehaviorTest {
         repository = KeeparrRepository(app, app.database, profile, Offline())
         app.repository = repository
         app.getSharedPreferences("widgets", Context.MODE_PRIVATE).edit().clear().commit()
+        // Robolectric hands out widget ids from 1 again in every test, and the widget remembers the ones it published for the whole run.
+        NotesWidget().onDeleted(app, intArrayOf(1, 2, 3, 4))
     }
 
     @After fun tearDown() {
@@ -308,13 +310,25 @@ class WidgetBehaviorTest {
             .findViewById<TextView>(AppR.id.checklist_item_row).currentTextColor)
     }
 
-    @Test fun aForcedModeAlsoColorsTheFrame() {
-        fun status(mode: ThemeMode): Int {
-            val views = RemoteViews(app.packageName, AppR.layout.notes_widget).also { applyFrameColors(app, it, mode) }
-            return views.apply(app, FrameLayout(app)).findViewById<TextView>(AppR.id.widget_status).currentTextColor
-        }
-        assertEquals(0xFFBDC1C6.toInt(), status(ThemeMode.Dark))
-        assertEquals(0xFF6C6250.toInt(), status(ThemeMode.Light))
+    /** The chip's label color, icon tint and background tint after the frame colors for [mode] were applied. */
+    private fun chipColors(mode: ThemeMode): Triple<Int, Int?, Int?> {
+        val views = RemoteViews(app.packageName, AppR.layout.notes_widget).also { applyFrameColors(app, it, mode) }
+        val frame = views.apply(app, FrameLayout(app))
+        return Triple(frame.findViewById<TextView>(AppR.id.widget_status).currentTextColor,
+            frame.findViewById<android.widget.ImageView>(AppR.id.widget_chip_icon).imageTintList?.defaultColor,
+            frame.findViewById<android.view.View>(AppR.id.widget_chip).backgroundTintList?.defaultColor)
+    }
+
+    @Test fun aForcedModeAlsoColorsTheStatusChip() {
+        assertEquals(Triple(0xFFE8EAED.toInt(), 0xFFE8EAED.toInt(), 0xFF5C4A12.toInt()), chipColors(ThemeMode.Dark))
+        assertEquals(Triple(0xFF3C3529.toInt(), 0xFF3C3529.toInt(), 0xFFFDE293.toInt()), chipColors(ThemeMode.Light))
+    }
+
+    @Test fun underSystemModeTheChipTakesItsColorsFromTheLayoutAndTheHostPicksTheVariant() {
+        val (text, icon, background) = chipColors(ThemeMode.System)
+        assertEquals(app.getColor(AppR.color.widget_text_action), text)
+        assertEquals(app.getColor(AppR.color.widget_text_action), icon)
+        assertNull("nothing forces the background, the drawable's own color is used", background)
     }
 
     @Test fun tapsToggleOnlyIdentifiableItemsOfUnlockedNotes() {
@@ -379,17 +393,69 @@ class WidgetBehaviorTest {
         assertFalse(quickCreateIntent(app, 5, true).getBooleanExtra("createNote", true))
     }
 
-    private fun statusView(pill: Pill?) = RemoteViews(app.packageName, AppR.layout.notes_widget)
-        .also { NotesWidget.applyPill(app, it, pill) }.apply(app, FrameLayout(app)).findViewById<TextView>(AppR.id.widget_status)
+    private fun statusChip(pill: Pill?) = RemoteViews(app.packageName, AppR.layout.notes_widget)
+        .also { NotesWidget.applyPill(app, it, pill) }.apply(app, FrameLayout(app)).findViewById<android.view.View>(AppR.id.widget_chip)
 
-    @Test fun theStatusPillShowsItsShortTextAndDescribesTheFullSentence() {
-        val pill = Pill("Offline · 06:12", "Keeparr could not sync since 06:12. Tap to try again.", PillAction.REFRESH)
+    @Test fun theStatusChipShowsItsShortTextAndDescribesTheFullSentenceAsOneClickTarget() {
+        val pill = Pill("Offline · 06:12", "Keeparr could not sync since 06:12. Tap to try again.", PillAction.REFRESH, PillIcon.OFFLINE)
 
-        val shown = statusView(pill)
+        val shown = statusChip(pill)
         assertEquals(android.view.View.VISIBLE, shown.visibility)
-        assertEquals("Offline · 06:12", shown.text.toString())
+        assertEquals("Offline · 06:12", shown.findViewById<TextView>(AppR.id.widget_status).text.toString())
         assertEquals(pill.description, shown.contentDescription.toString())
-        assertEquals("no problem, no pill", android.view.View.GONE, statusView(null).visibility)
+        assertTrue("the whole chip is the tap target", shown.hasOnClickListeners())
+        assertEquals("no problem, no chip", android.view.View.GONE, statusChip(null).visibility)
+    }
+
+    private fun until(what: String, condition: () -> Boolean) {
+        runBlocking { withTimeoutOrNull(5000) { while (!condition()) delay(10) } } ?: fail("timed out waiting until $what")
+    }
+
+    /** Creating a widget in Robolectric calls the provider's onUpdate, as the system does when one is placed; this waits for that frame. */
+    private fun placeWidget(): Int =
+        shadowOf(android.appwidget.AppWidgetManager.getInstance(app)).createWidget(NotesWidget::class.java, AppR.layout.notes_widget)
+            .also { id -> until("widget $id is published") { NotesWidget.hasPublished(id) } }
+
+    @Test fun aFullOrScopedDrawOfTheChipNeverHidesTheNextStatusRedraw() {
+        placeWidget()
+        profile.message = UNREACHABLE_MESSAGE // never synced and failing: the chip says "Offline"
+
+        NotesWidget.refreshStatus(app)
+        until("the status redraw drew the chip") { NotesWidget.published?.text == "Offline" }
+
+        // These draw the chip too and do not record it, so what the status redraw remembers is no longer what is on screen.
+        NotesWidget.refresh(app, EffectScope.FULL)
+        until("the scoped draw forgot it") { NotesWidget.published?.text != "Offline" }
+
+        NotesWidget.refreshStatus(app)
+        until("the next status redraw was not skipped") { NotesWidget.published?.text == "Offline" }
+    }
+
+    @Test fun theThirtyMinuteUpdateOnlyRedrawsTheChipOfAWidgetThisProcessAlreadyPublished() {
+        val manager = android.appwidget.AppWidgetManager.getInstance(app)
+        val known = placeWidget()
+        val unseen = placeWidget()
+        profile.message = UNREACHABLE_MESSAGE // never synced and failing: the chip says "Offline"
+        NotesWidget.refreshStatus(app)
+        until("the status redraw drew the chip") { NotesWidget.published?.text == "Offline" }
+
+        NotesWidget().onUpdate(app, manager, intArrayOf(known))
+        runBlocking { delay(300) }
+        assertEquals("its frame was not sent again, which would have forgotten the chip", "Offline", NotesWidget.published?.text)
+
+        NotesWidget().onDeleted(app, intArrayOf(unseen))
+        assertFalse("a deleted widget is forgotten", NotesWidget.hasPublished(unseen))
+        NotesWidget().onUpdate(app, manager, intArrayOf(unseen))
+        until("the widget is published again") { NotesWidget.hasPublished(unseen) }
+        assertNotEquals("a widget this process has not published gets its whole frame", "Offline", NotesWidget.published?.text)
+    }
+
+    @Test fun eachChipStateHasItsOwnIcon() {
+        val icons = PillIcon.entries.map { NotesWidget.pillIconResource(it) }
+        assertEquals(AppR.drawable.ic_widget_sync, NotesWidget.pillIconResource(PillIcon.SYNC))
+        assertEquals(AppR.drawable.ic_widget_sync_problem, NotesWidget.pillIconResource(PillIcon.OFFLINE))
+        assertEquals(AppR.drawable.ic_widget_warning, NotesWidget.pillIconResource(PillIcon.WARNING))
+        assertEquals(icons.size, icons.toSet().size)
     }
 
     @Test fun theRefreshPillBroadcastsToTheWidgetAndTheOtherPillOpensTheApp() {

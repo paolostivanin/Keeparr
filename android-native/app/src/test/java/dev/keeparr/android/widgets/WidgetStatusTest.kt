@@ -36,9 +36,28 @@ class WidgetStatusTest {
         }
     }
 
-    @Test fun noMessageMeansNoPill() {
+    @Test fun nothingSavedAndFreshOrNeverSyncedNotesMeanNoPill() {
         assertNull(pill(""))
-        assertNull(pill("   ", lastSyncedAt = 0))
+        assertNull("signed in a moment ago: the first sync is on its way", pill("   ", lastSyncedAt = 0))
+    }
+
+    @Test fun notesThatHaveGoneStaleAreFlaggedEvenWhenNothingFailed() {
+        assertNull(pill("", lastSyncedAt = now - 59 * 60 * 1000))
+        val shown = pill("", lastSyncedAt = now - hour)
+        assertEquals("Updated time@${now - hour}", shown?.text)
+        assertEquals("Keeparr last synced at time@${now - hour}. Tap to sync now.", shown?.description)
+        assertEquals(PillAction.REFRESH, shown?.action)
+        assertEquals("a long time later it still says when", "Updated time@${now - 20 * hour}", pill("", lastSyncedAt = now - 20 * hour)?.text)
+        assertNull("a time in the future counts as fresh", pill("", lastSyncedAt = now + 5 * hour))
+    }
+
+    @Test fun eachStateHasTheIconThatSaysWhatItIs() {
+        assertEquals(PillIcon.WARNING, pill("", signedIn = false)?.icon)
+        assertEquals(PillIcon.SYNC, pill("", refreshing = true)?.icon)
+        for (message in hard.keys) assertEquals(message, PillIcon.WARNING, pill(message)?.icon)
+        for (message in soft) assertEquals(message, PillIcon.OFFLINE, pill(message, lastSyncedAt = now - 2 * hour)?.icon)
+        assertEquals(PillIcon.OFFLINE, pill(UNREACHABLE_MESSAGE, lastSyncedAt = 0)?.icon)
+        assertEquals(PillIcon.SYNC, pill("", lastSyncedAt = now - 2 * hour)?.icon)
     }
 
     @Test fun problemsTheUserMustActOnShowAtOnceEvenRightAfterAGoodSync() {
@@ -93,8 +112,9 @@ class WidgetStatusTest {
 
     @Test fun everyPillTextFitsOneLineOfTheWidget() {
         val formatted = widgetPill(true, UNREACHABLE_MESSAGE, now - 3 * hour, now) { "Wed 12:34 PM" }
-        val all = hard.keys.map { pill(it) } + soft.map { pill(it, lastSyncedAt = now - 3 * hour) } + formatted + pill("", signedIn = false) +
-            pill("", refreshing = true)
+        val updated = widgetPill(true, "", now - 3 * hour, now) { "Wed 12:34 PM" }
+        val all = hard.keys.map { pill(it) } + soft.map { pill(it, lastSyncedAt = now - 3 * hour) } + formatted + updated +
+            pill("", signedIn = false) + pill("", refreshing = true) + pill("", lastSyncedAt = now - 3 * hour)
         all.filterNotNull().forEach { assertTrue(it.text, it.text.length <= 32) }
         all.filterNotNull().forEach { assertTrue(it.description, it.description.length <= 100) }
     }

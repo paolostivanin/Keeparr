@@ -11,6 +11,9 @@
     <color name="widget_fab_icon">#3C3529</color>
     <color name="widget_text">#202124</color>
     <color name="widget_text_secondary">#49463E</color>
-    <color name="widget_text_status">#6C6250</color>
+    <!-- The status chip is tonal, in the + button's yellow family, so it reads as a button; its text and icon use widget_text_action. -->
+    <color name="widget_chip">#FDE293</color>
+    <!-- Neutral, so it shows on the chip in both themes: a forced theme cannot recolor a ripple. -->
+    <color name="widget_chip_ripple">#33808080</color>
     <color name="widget_text_action">#3C3529</color>
 </resources>

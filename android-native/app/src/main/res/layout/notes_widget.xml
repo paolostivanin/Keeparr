@@ -5,11 +5,18 @@
     <ListView android:id="@+id/widget_list" android:layout_width="match_parent" android:layout_height="match_parent"
         android:divider="@android:color/transparent" android:dividerHeight="8dp" android:paddingBottom="8dp"
         android:clipToPadding="true" android:scrollbars="vertical" />
-    <TextView android:id="@+id/widget_status" android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:layout_gravity="bottom|start" android:layout_marginStart="8dp" android:layout_marginEnd="72dp" android:layout_marginBottom="16dp"
-        android:background="@drawable/widget_card" android:paddingHorizontal="8dp" android:paddingVertical="8dp"
-        android:textColor="@color/widget_text_status" android:textSize="11sp" android:maxLines="1" android:ellipsize="end"
-        android:visibility="gone" />
+    <!-- The status chip: a 48dp touch box around a 40dp pill, centered on the + button. The click, description and visibility
+         are on the container; the label keeps the id it had when it was the whole pill. -->
+    <LinearLayout android:id="@+id/widget_chip" android:layout_width="wrap_content" android:layout_height="48dp"
+        android:layout_gravity="bottom|start" android:layout_marginStart="8dp" android:layout_marginEnd="72dp" android:layout_marginBottom="12dp"
+        android:orientation="horizontal" android:gravity="center_vertical" android:paddingStart="12dp" android:paddingEnd="14dp"
+        android:background="@drawable/widget_chip" android:elevation="2dp" android:visibility="gone">
+        <ImageView android:id="@+id/widget_chip_icon" android:layout_width="18dp" android:layout_height="18dp"
+            android:src="@drawable/ic_widget_sync" android:tint="@color/widget_text_action" android:importantForAccessibility="no" />
+        <TextView android:id="@+id/widget_status" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="6dp" android:textColor="@color/widget_text_action" android:textSize="12sp" android:textStyle="bold"
+            android:maxLines="1" android:ellipsize="end" android:importantForAccessibility="no" />
+    </LinearLayout>
     <ImageView android:id="@+id/widget_add" android:layout_width="56dp" android:layout_height="56dp"
         android:layout_gravity="bottom|end" android:layout_marginEnd="8dp" android:layout_marginBottom="8dp"
         android:background="@drawable/widget_fab" android:padding="16dp" android:src="@drawable/ic_widget_add"

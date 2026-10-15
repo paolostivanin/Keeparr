@@ -8,6 +8,6 @@
     <color name="widget_fab_icon">#202124</color>
     <color name="widget_text">#E8EAED</color>
     <color name="widget_text_secondary">#BDC1C6</color>
-    <color name="widget_text_status">#BDC1C6</color>
+    <color name="widget_chip">#5C4A12</color>
     <color name="widget_text_action">#E8EAED</color>
 </resources>
