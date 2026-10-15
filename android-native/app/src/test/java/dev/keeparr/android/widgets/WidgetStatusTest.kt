@@ -11,8 +11,8 @@ class WidgetStatusTest {
     private val hour = 60L * 60 * 1000
     private val now = 100 * hour
 
-    private fun pill(message: String, lastSyncedAt: Long = now, signedIn: Boolean = true, at: Long = now) =
-        widgetPill(signedIn, message, lastSyncedAt, at) { "time@$it" }
+    private fun pill(message: String, lastSyncedAt: Long = now, signedIn: Boolean = true, at: Long = now, refreshing: Boolean = false) =
+        widgetPill(signedIn, message, lastSyncedAt, at, refreshing) { "time@$it" }
 
     private val hard = mapOf(
         "Your Keeparr session expired. Sign in again." to "Sign in again",
@@ -79,9 +79,23 @@ class WidgetStatusTest {
         }
     }
 
+    @Test fun aTapsSyncInProgressSaysSoWhateverElseIsSavedExceptBeingSignedOut() {
+        for (message in listOf("", UNREACHABLE_MESSAGE, hard.keys.first())) {
+            for (synced in listOf(0L, now, now - 5 * hour)) {
+                val shown = pill(message, lastSyncedAt = synced, refreshing = true)
+                assertEquals("Syncing…", shown?.text)
+                assertEquals(PillAction.REFRESH, shown?.action)
+            }
+        }
+        assertEquals("Open Keeparr to sign in", pill("", signedIn = false, refreshing = true)?.text)
+        assertNull("without a refresh the same state shows nothing", pill("", refreshing = false))
+    }
+
     @Test fun everyPillTextFitsOneLineOfTheWidget() {
         val formatted = widgetPill(true, UNREACHABLE_MESSAGE, now - 3 * hour, now) { "Wed 12:34 PM" }
-        val all = hard.keys.map { pill(it) } + soft.map { pill(it, lastSyncedAt = now - 3 * hour) } + formatted + pill("", signedIn = false)
+        val all = hard.keys.map { pill(it) } + soft.map { pill(it, lastSyncedAt = now - 3 * hour) } + formatted + pill("", signedIn = false) +
+            pill("", refreshing = true)
         all.filterNotNull().forEach { assertTrue(it.text, it.text.length <= 32) }
+        all.filterNotNull().forEach { assertTrue(it.description, it.description.length <= 100) }
     }
 }

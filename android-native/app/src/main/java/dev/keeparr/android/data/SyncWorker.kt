@@ -14,21 +14,20 @@ class SyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWork
         if (profile != null && profile != profileKey(app.settings.profile)) return Result.success()
         if (app.settings.token.isEmpty()) return Result.success()
         return try { app.repository.sync(); Result.success() } catch (cancelled: CancellationException) { throw cancelled } catch (error: Exception) {
-            syncResult(error, runAttemptCount, inputData.getBoolean(ONE_SHOT_KEY, false))
+            syncResult(error, runAttemptCount)
         }
     }
     companion object {
         private const val PROFILE_KEY = "profileKey"
-        private const val ONE_SHOT_KEY = "oneShot"
         private const val MAX_RETRIES = 4
 
         /**
          * A failed run retries on WorkManager's short early backoff and then hands over to the 15-minute periodic run, instead
-         * of sitting in a backoff that grows to hours. A run the user asked for is not retried: the widget already reports it.
+         * of sitting in a backoff that grows to hours.
          */
-        internal fun syncResult(error: Exception, runAttemptCount: Int, oneShot: Boolean): ListenableWorker.Result = when {
+        internal fun syncResult(error: Exception, runAttemptCount: Int): ListenableWorker.Result = when {
             error is ApiException && error.code in setOf(401, 403) -> ListenableWorker.Result.failure()
-            oneShot || runAttemptCount >= MAX_RETRIES -> ListenableWorker.Result.success()
+            runAttemptCount >= MAX_RETRIES -> ListenableWorker.Result.success()
             else -> ListenableWorker.Result.retry()
         }
         private val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
@@ -42,14 +41,6 @@ class SyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWork
             val key = profileKey(context)
             WorkManager.getInstance(context).enqueueUniqueWork("keeparr-sync-now-$key", ExistingWorkPolicy.APPEND_OR_REPLACE, oneTime(context))
         }
-        /** A sync the user asked for: it jumps the queue, runs once, and is not retried; the widget reports a failure. */
-        fun refreshNow(context: Context) {
-            val key = profileKey(context)
-            WorkManager.getInstance(context).enqueueUniqueWork("keeparr-sync-tap-$key", ExistingWorkPolicy.KEEP,
-                OneTimeWorkRequestBuilder<SyncWorker>().setConstraints(constraints)
-                    .setInputData(workDataOf(PROFILE_KEY to key, ONE_SHOT_KEY to true))
-                    .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST).build())
-        }
         fun schedule(context: Context) {
             val key = profileKey(context)
             WorkManager.getInstance(context).enqueueUniquePeriodicWork("keeparr-sync-periodic-$key", ExistingPeriodicWorkPolicy.KEEP,
@@ -60,7 +51,7 @@ class SyncWorker(context: Context, parameters: WorkerParameters) : CoroutineWork
         fun cancel(context: Context) {
             val key = profileKey(context)
             WorkManager.getInstance(context).cancelUniqueWork("keeparr-sync-now-$key")
-            WorkManager.getInstance(context).cancelUniqueWork("keeparr-sync-tap-$key")
+            WorkManager.getInstance(context).cancelUniqueWork("keeparr-sync-tap-$key") // what the widget tap enqueued in 2.3.1
             WorkManager.getInstance(context).cancelUniqueWork("keeparr-sync-periodic-$key")
             WorkManager.getInstance(context).cancelUniqueWork("keeparr-sync-now")
             WorkManager.getInstance(context).cancelUniqueWork("keeparr-sync-periodic")

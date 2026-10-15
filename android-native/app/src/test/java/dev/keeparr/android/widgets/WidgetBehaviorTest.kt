@@ -83,7 +83,8 @@ class WidgetBehaviorTest {
         app.refreshWidgetStatus = {}
         app.enqueueSync = {}
         app.scheduleSync = {}
-        app.refreshNow = {}
+        app.syncNow = {}
+        app.showToast = {}
         repository = KeeparrRepository(app, app.database, profile, Offline())
         app.repository = repository
         app.getSharedPreferences("widgets", Context.MODE_PRIVATE).edit().clear().commit()
@@ -396,6 +397,9 @@ class WidgetBehaviorTest {
         assertTrue(refresh.isBroadcastIntent)
         assertEquals(NotesWidget.REFRESH, refresh.savedIntent.action)
         assertEquals(NotesWidget::class.java.name, refresh.savedIntent.component!!.className)
+        assertTrue("a tap is someone waiting: not queued behind background broadcasts",
+            refresh.savedIntent.flags and Intent.FLAG_RECEIVER_FOREGROUND != 0)
+        assertEquals("not the data an older build made its flag-less PendingIntent with", "keeparrnative://widget/refresh/now", refresh.savedIntent.dataString)
 
         val open = shadowOf(NotesWidget.pillClick(app, PillAction.OPEN_APP))
         assertTrue(open.isActivityIntent)
@@ -403,9 +407,9 @@ class WidgetBehaviorTest {
         assertFalse("tapping the pill is not creating a note", open.savedIntent.getBooleanExtra("createNote", false))
     }
 
-    @Test fun theRefreshBroadcastStartsAnImmediateSyncForASignedInUser() {
+    @Test fun theRefreshBroadcastSyncsAtOnceForASignedInUser() {
         val ran = java.util.concurrent.CountDownLatch(1)
-        app.refreshNow = { ran.countDown() }
+        app.syncNow = { ran.countDown() }
 
         NotesWidget().onReceive(app, Intent(app, NotesWidget::class.java).setAction(NotesWidget.REFRESH))
 

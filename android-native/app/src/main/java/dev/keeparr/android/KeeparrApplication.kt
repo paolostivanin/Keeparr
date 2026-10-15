@@ -2,11 +2,15 @@ package dev.keeparr.android
 
 import android.app.Application
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import androidx.room.Room
 import dev.keeparr.android.data.*
 import dev.keeparr.android.reminders.ReminderController
 import dev.keeparr.android.reminders.ReminderScheduler
 import dev.keeparr.android.widgets.NotesWidget
+import dev.keeparr.android.widgets.WidgetRefresh
 import kotlinx.coroutines.*
 
 class KeeparrApplication : Application() {
@@ -20,7 +24,11 @@ class KeeparrApplication : Application() {
     var refreshWidgetStatus: (Context) -> Unit = { NotesWidget.refreshStatus(it) }
     var enqueueSync: (Context) -> Unit = SyncWorker::enqueue
     var scheduleSync: (Context) -> Unit = SyncWorker::schedule
-    var refreshNow: (Context) -> Unit = SyncWorker::refreshNow
+    /** The sync a tap on the widget status runs, here and now (see [WidgetRefresh]). */
+    var syncNow: suspend () -> Unit = { repository.sync() }
+    /** A Toast needs a Looper, which the threads that report results do not have, so it is posted to the main one. */
+    var showToast: (String) -> Unit = { text -> Handler(Looper.getMainLooper()).post { Toast.makeText(this, text, Toast.LENGTH_SHORT).show() } }
+    internal val widgetRefresh = WidgetRefresh()
     private var recovery: Job? = null
     /** Set when the visible activity is being recreated, so the next start does not repeat foreground work. */
     @Volatile var recreatingForConfiguration = false

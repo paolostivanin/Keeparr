@@ -6,15 +6,16 @@ import android.appwidget.AppWidgetProvider
 import android.content.*
 import android.graphics.Color
 import android.text.format.DateUtils
+import android.util.Log
 import dev.keeparr.android.data.html.NoteHtml
 import android.view.View
 import android.widget.RemoteViews
 import android.widget.RemoteViewsService
-import android.widget.Toast
 import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
 import dev.keeparr.android.R
 import dev.keeparr.android.data.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import androidx.core.net.toUri
@@ -37,10 +38,13 @@ class NotesWidget : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != REFRESH) return super.onReceive(context, intent)
         val app = context.applicationContext as KeeparrApplication
-        Toast.makeText(context, "Refreshing…", Toast.LENGTH_SHORT).show()
         val pending = goAsync()
         app.scope.launch {
-            try { app.settings.awaitReady(); if (app.settings.token.isNotEmpty()) app.refreshNow(app) } finally { pending?.finish() }
+            // The scope has no exception handler, so anything thrown here would take the process down.
+            try { app.widgetRefresh.run(app) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (problem: Exception) { Log.e("KeeparrWidget", "Refreshing from the widget failed.", problem) }
+            finally { pending?.finish() }
         }
     }
     override fun onDeleted(context: Context, ids: IntArray) {
@@ -52,10 +56,13 @@ class NotesWidget : AppWidgetProvider() {
         const val CREATE = "dev.keeparr.android.WIDGET_CREATE"
         const val REFRESH = "dev.keeparr.android.WIDGET_REFRESH"
 
-        // The pill [refreshStatus] last put on every widget, so an unchanged status is not redrawn after each sync. Only it writes
-        // this: a render or a scoped refresh reaches some widgets, and would hide a needed redraw from the others.
+        // The pill [refreshStatus] last put on every widget, so an unchanged status is not redrawn after each sync. A render or a
+        // scoped refresh also draws the pill, on some or all widgets, so it puts this back to [notPublished]: the next redraw is
+        // never skipped on the strength of something that is no longer on screen. Computing the pill and pushing it happen under
+        // [drawLock], so the last draw always reflects the newest state.
         private val notPublished = Pill("", "", PillAction.REFRESH)
         @Volatile private var published: Pill? = notPublished
+        private val drawLock = Any()
 
         /**
          * Publishes the widget frame (adapter binding, click templates, status). Rows are not part of it: the system pulls
@@ -75,16 +82,19 @@ class NotesWidget : AppWidgetProvider() {
                 views.setOnClickPendingIntent(R.id.widget_add, PendingIntent.getActivity(context, id,
                     Intent(context, MainActivity::class.java).setAction(CREATE).setData("keeparrnative://widget/add/$id".toUri())
                         .putExtra("createNote", true), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-                val pill = currentPill(context, app)
-                applyPill(context, views, pill)
                 applyFrameColors(app, views, app.settings.themeMode)
-                AppWidgetManager.getInstance(context).updateAppWidget(id, views)
+                synchronized(drawLock) {
+                    applyPill(context, views, currentPill(context, app))
+                    AppWidgetManager.getInstance(context).updateAppWidget(id, views)
+                    published = notPublished
+                }
             }
         }
 
         private fun currentPill(context: Context, app: KeeparrApplication): Pill? {
             val now = System.currentTimeMillis()
-            return widgetPill(app.settings.token.isNotEmpty(), app.settings.message, app.settings.lastSyncedAt, now) { formatSyncTime(context, it) }
+            return widgetPill(app.settings.token.isNotEmpty(), app.settings.message, app.settings.lastSyncedAt, now,
+                refreshing = app.widgetRefresh.active) { formatSyncTime(context, it) }
         }
 
         private fun formatSyncTime(context: Context, at: Long): String {
@@ -92,10 +102,15 @@ class NotesWidget : AppWidgetProvider() {
             return DateUtils.formatDateTime(context, at, DateUtils.FORMAT_SHOW_TIME or day)
         }
 
-        /** The same click targets for every widget, so the pill can be redrawn without knowing a widget id. */
+        /**
+         * The same click targets for every widget, so the pill can be redrawn without knowing a widget id. A tap is someone
+         * waiting, so its broadcast is a foreground one and is not queued behind background broadcasts. The data is new so that
+         * a PendingIntent made without the flag by an older build is not reused: FLAG_UPDATE_CURRENT only refreshes extras.
+         */
         internal fun pillClick(context: Context, action: PillAction): PendingIntent = when (action) {
             PillAction.REFRESH -> PendingIntent.getBroadcast(context, 0,
-                Intent(context, NotesWidget::class.java).setAction(REFRESH).setData("keeparrnative://widget/refresh".toUri()),
+                Intent(context, NotesWidget::class.java).setAction(REFRESH).setData("keeparrnative://widget/refresh/now".toUri())
+                    .addFlags(Intent.FLAG_RECEIVER_FOREGROUND),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             PillAction.OPEN_APP -> PendingIntent.getActivity(context, 0,
                 Intent(context, MainActivity::class.java).setData("keeparrnative://widget/open".toUri()),
@@ -117,11 +132,13 @@ class NotesWidget : AppWidgetProvider() {
             val app = context.applicationContext as KeeparrApplication
             app.scope.launch(Dispatchers.IO) {
                 app.settings.awaitReady()
-                val pill = currentPill(context, app)
-                if (pill == published) return@launch
-                val status = RemoteViews(context.packageName, R.layout.notes_widget).also { applyPill(context, it, pill) }
-                ids.forEach { manager.partiallyUpdateAppWidget(it, status) }
-                published = pill
+                synchronized(drawLock) {
+                    val pill = currentPill(context, app)
+                    if (pill == published) return@synchronized
+                    val status = RemoteViews(context.packageName, R.layout.notes_widget).also { applyPill(context, it, pill) }
+                    ids.forEach { manager.partiallyUpdateAppWidget(it, status) }
+                    published = pill
+                }
             }
         }
 
@@ -144,11 +161,14 @@ class NotesWidget : AppWidgetProvider() {
             val app = context.applicationContext as KeeparrApplication
             app.scope.launch(Dispatchers.IO) {
                 app.settings.awaitReady()
-                val pill = currentPill(context, app)
-                val status = RemoteViews(context.packageName, R.layout.notes_widget).also { applyPill(context, it, pill) }
-                affected.forEach {
-                    manager.partiallyUpdateAppWidget(it, status)
-                    manager.notifyAppWidgetViewDataChanged(it, R.id.widget_list)
+                synchronized(drawLock) {
+                    val pill = currentPill(context, app)
+                    val status = RemoteViews(context.packageName, R.layout.notes_widget).also { applyPill(context, it, pill) }
+                    affected.forEach {
+                        manager.partiallyUpdateAppWidget(it, status)
+                        manager.notifyAppWidgetViewDataChanged(it, R.id.widget_list)
+                    }
+                    published = notPublished
                 }
             }
         }

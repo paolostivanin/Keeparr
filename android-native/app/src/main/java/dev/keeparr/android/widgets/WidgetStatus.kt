@@ -15,10 +15,13 @@ internal const val OFFLINE_GRACE_MS = 60L * 60 * 1000
 /**
  * The pill reports what the user can act on. Signing in again, access and server-version problems show at once. Connection
  * trouble shows only once the notes have gone stale, with the time of the last sync, because overnight a phone is routinely
- * unreachable and the widget is fine. The saved message is only classified, never shown: its text is unbounded.
+ * unreachable and the widget is fine. The saved message is only classified, never shown: its text is unbounded. While a tap's
+ * sync is [refreshing] the pill says so, whatever else is saved.
  */
-internal fun widgetPill(signedIn: Boolean, message: String, lastSyncedAt: Long, now: Long, formatTime: (Long) -> String): Pill? {
+internal fun widgetPill(signedIn: Boolean, message: String, lastSyncedAt: Long, now: Long, refreshing: Boolean = false,
+    formatTime: (Long) -> String): Pill? {
     if (!signedIn) return Pill("Open Keeparr to sign in", "Open Keeparr to sign in", PillAction.OPEN_APP)
+    if (refreshing) return Pill("Syncing…", "Keeparr is syncing now.", PillAction.REFRESH)
     if (message.isBlank()) return null
     return when (connectionStateForMessage(message)) {
         is ConnectionState.SessionExpired ->

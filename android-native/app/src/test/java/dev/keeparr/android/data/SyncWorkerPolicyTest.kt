@@ -5,7 +5,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import java.io.IOException
 
 @RunWith(RobolectricTestRunner::class)
 class SyncWorkerPolicyTest {
@@ -13,23 +12,17 @@ class SyncWorkerPolicyTest {
 
     @Test fun anExpiredOrDeniedSessionIsNotRetried() {
         for (code in listOf(401, 403)) {
-            for (attempts in 0..6) assertEquals(Result.failure(), SyncWorker.syncResult(ApiException(code, "no"), attempts, oneShot = false))
-            assertEquals(Result.failure(), SyncWorker.syncResult(ApiException(code, "no"), 0, oneShot = true))
+            for (attempts in 0..6) assertEquals(Result.failure(), SyncWorker.syncResult(ApiException(code, "no"), attempts))
         }
     }
 
     @Test fun aFailureRetriesAFewTimesOnTheEarlyBackoffThenLeavesItToThePeriodicRun() {
-        for (attempts in 0..3) assertEquals("attempt $attempts", Result.retry(), SyncWorker.syncResult(offline, attempts, oneShot = false))
-        for (attempts in 4..8) assertEquals("attempt $attempts", Result.success(), SyncWorker.syncResult(offline, attempts, oneShot = false))
-    }
-
-    @Test fun aRunTheUserAskedForIsNeverRetried() {
-        assertEquals(Result.success(), SyncWorker.syncResult(offline, 0, oneShot = true))
-        assertEquals(Result.success(), SyncWorker.syncResult(IOException("reset"), 0, oneShot = true))
+        for (attempts in 0..3) assertEquals("attempt $attempts", Result.retry(), SyncWorker.syncResult(offline, attempts))
+        for (attempts in 4..8) assertEquals("attempt $attempts", Result.success(), SyncWorker.syncResult(offline, attempts))
     }
 
     @Test fun anyOtherErrorIsTreatedAsATransientFailure() {
-        assertEquals(Result.retry(), SyncWorker.syncResult(ApiException(503, "down"), 0, oneShot = false))
-        assertEquals(Result.retry(), SyncWorker.syncResult(IllegalStateException("boom"), 1, oneShot = false))
+        assertEquals(Result.retry(), SyncWorker.syncResult(ApiException(503, "down"), 0))
+        assertEquals(Result.retry(), SyncWorker.syncResult(IllegalStateException("boom"), 1))
     }
 }
