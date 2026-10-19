@@ -98,7 +98,7 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
     }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     val incoming by activity.incoming.collectAsStateWithLifecycle()
-    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { error = problem.message ?: "Could not complete this action" } } }
+    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (problem: Exception) { error = problem.message ?: "Could not complete this action" } } }
     KeeparrTheme(dark) {
         Surface(Modifier.fillMaxSize()) {
             if (!settingsReady) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -130,6 +130,7 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
                                 else listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
                             for (uri in uris) repo.attach(note, Media(app).stage(uri))
                         }
+                    } catch (cancelled: CancellationException) { throw cancelled
                     } catch (problem: Exception) { error = problem.message }
                     activity.incoming.value = null
                 }
@@ -273,7 +274,7 @@ private fun HomeScreen(app: KeeparrApplication, notes: List<Note>, reminders: Li
     val allSelectedTrashed = selectedNotes.isNotEmpty() && selectedNotes.all { it.trashed }
     fun selectNote(id: String) = home.select(id)
     fun toggleSelected(id: String) = home.toggle(id)
-    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
+    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
         ModalDrawerSheet(Modifier.verticalScroll(rememberScrollState()), drawerShape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)) {
             Text("Keeparr", Modifier.padding(24.dp), style = MaterialTheme.typography.headlineMedium)
@@ -458,7 +459,7 @@ private fun ReminderList(app: KeeparrApplication, reminders: List<JSONObject>, n
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         if (note != null) TextButton(onClick = { onOpenNote(note) }) { Text("Open note") }
-                        TextButton(onClick = { scope.launch { runCatching { app.repository.dismissReminder(reminder.text("syncId")) }.onFailure { onError(it.message ?: "Could not dismiss reminder") } } }) { Text("Dismiss") }
+                        TextButton(onClick = { scope.launch { runCatching { app.repository.dismissReminder(reminder.text("syncId")) }.onFailure { if (it !is CancellationException) onError(it.message ?: "Could not dismiss reminder") } } }) { Text("Dismiss") }
                         TextButton(onClick = { removing = reminder }) { Text("Delete") }
                     }
                 }
@@ -467,7 +468,7 @@ private fun ReminderList(app: KeeparrApplication, reminders: List<JSONObject>, n
     }
     removing?.let { reminder -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("Delete reminder?") },
         text = { Text("This removes the reminder from this account.") },
-        confirmButton = { TextButton(onClick = { scope.launch { runCatching { app.repository.deleteReminder(reminder.text("syncId")) }.onFailure { onError(it.message ?: "Could not delete reminder") }; removing = null } }) { Text("Delete") } },
+        confirmButton = { TextButton(onClick = { scope.launch { runCatching { app.repository.deleteReminder(reminder.text("syncId")) }.onFailure { if (it !is CancellationException) onError(it.message ?: "Could not delete reminder") }; removing = null } }) { Text("Delete") } },
         dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } }) }
 }
 

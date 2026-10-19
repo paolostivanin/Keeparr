@@ -107,7 +107,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         (it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId) }
     fun change(vararg touched: String, external: Boolean = false, structural: Boolean = false, block: (JSONObject) -> Unit) =
         draftViewModel.change(*touched, external = external, structural = structural, block = block)
-    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
+    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
     fun openNoteLink(rawUrl: String) {
         val value = rawUrl.trim()
         val scheme = android.net.Uri.parse(value).scheme?.lowercase()
@@ -300,6 +300,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
             if (!changed || inaccessible) return@LaunchedEffect
             if (changed && !inaccessible) {
                 try { draftViewModel.flushAndQueueSync() }
+                catch (cancelled: CancellationException) { throw cancelled }
                 catch (error: Exception) { onError(error.message ?: "Could not save changes") }
             }
         }
@@ -672,6 +673,7 @@ private fun ShareDialog(app: KeeparrApplication, note: Note, onClose: () -> Unit
     var loading by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
         try { users = app.repository.shareUsers().filter { it.optLong("id") != app.settings.userId } }
+        catch (cancelled: CancellationException) { throw cancelled }
         catch (problem: Exception) { onError(problem.message ?: "Connect to load collaborators") }
         finally { loading = false }
     }

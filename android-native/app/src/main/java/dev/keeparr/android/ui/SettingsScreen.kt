@@ -26,6 +26,7 @@ import dev.keeparr.android.BuildConfig
 import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
 import dev.keeparr.android.data.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -71,6 +72,7 @@ internal fun SettingsScreen(activity: MainActivity, app: KeeparrApplication, rem
                 activity.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                     .putExtra(Intent.EXTRA_SUBJECT, "Redacted Keeparr diagnostics").putExtra(Intent.EXTRA_STREAM, uri)
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Share diagnostics"))
+            } catch (cancelled: CancellationException) { throw cancelled
             } catch (problem: Exception) { onError(problem.message ?: "Could not create diagnostics") }
         }
     }
