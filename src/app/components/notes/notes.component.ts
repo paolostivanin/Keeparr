@@ -47,6 +47,13 @@ type KeeparrWidgetIntentsPlugin = {
 };
 type NoteBodyPreview = { segments: NoteBodySegment[]; urls: string[] }
 type NoteMeta = NotePreviewMeta
+type OverviewChecklistDeletion = {
+  note: Pick<NoteI, 'id' | 'syncId'>;
+  generation: number;
+  removed?: { item: CheckboxI; index: number; previousId?: number; nextId?: number };
+  ready: Promise<void>;
+  restoring?: Promise<void>;
+}
 type PullRefreshState = 'idle' | 'pulling' | 'ready' | 'refreshing'
 type CachedNoteListWindow = {
   source: NoteI[];
@@ -1084,6 +1091,20 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     }
   }
 
+  @HostListener('document:keydown', ['$event'])
+  onOverviewUndoKey(event: KeyboardEvent) {
+    if (event.key.toLowerCase() !== 'z' || !(event.ctrlKey || event.metaKey)
+      || event.altKey || event.shiftKey || event.repeat || event.isComposing || event.defaultPrevented) return
+    if (Capacitor.isNativePlatform() || this.editorOpen || this.modalClosing
+      || this.isTextEntryTarget(event.target) || this.isTextEntryTarget(document.activeElement)) return
+    const dialogs = document.querySelectorAll<HTMLElement>('[role="dialog"], dialog[open], [aria-modal="true"], [data-is-tooltip-open="true"]')
+    if (Array.from(dialogs).some(dialog => dialog.getClientRects().length > 0)) return
+    const deletion = this.overviewDeletions.at(-1)
+    if (!deletion) return
+    event.preventDefault()
+    return this.undoOverviewDeletion(deletion)
+  }
+
   private isDesktopKeyboardShortcutView() {
     if (Capacitor.isNativePlatform()) return false
     return window.matchMedia('(min-width: 768px) and (hover: hover) and (pointer: fine)').matches
@@ -1329,29 +1350,125 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     event.stopPropagation()
     event.preventDefault()
     if (this.ignoreSyntheticOverviewCheckboxMouse(event)) return
-    return this.serializeOverviewMutation(note, async latest => {
+    if (!note.id || this.destroyed) return
+    // Reserve the entry before loading/saving, so an immediate Ctrl+Z can wait for this deletion.
+    const deletion: OverviewChecklistDeletion = {
+      note: { id: note.id, syncId: note.syncId },
+      generation: this.overviewHistoryGeneration,
+      ready: Promise.resolve()
+    }
+    this.overviewDeletions.push(deletion)
+    if (this.overviewDeletions.length > 80) this.overviewDeletions.shift()
+    deletion.ready = this.serializeOverviewMutation(note, async latest => {
       const full = await this.completeNote(latest)
-      if (!full) return
-      const checkBoxes = (full.checkBoxes || []).filter(item => item.id !== cb.id).map(item => ({ ...item }))
+      if (!full || !this.overviewGenerationIsCurrent(deletion.generation)) {
+        this.forgetOverviewDeletion(deletion)
+        return
+      }
+      const items = full.checkBoxes || []
+      const index = items.findIndex(item => item.id === cb.id)
+      if (index < 0) {
+        this.forgetOverviewDeletion(deletion)
+        return
+      }
+      deletion.removed = {
+        item: structuredClone(items[index]), index,
+        previousId: items[index - 1]?.id, nextId: items[index + 1]?.id
+      }
+      const checkBoxes = items.filter(item => item.id !== cb.id).map(item => ({ ...item }))
       await this.notesService.updateKey({ checkBoxes }, full.id!)
+      if (!this.overviewGenerationIsCurrent(deletion.generation)) return
       this.scheduleBuildMasonry(true)
+      if (this.overviewDeletions.includes(deletion)) {
+        try {
+          Snackbar.show({
+            pos: 'bottom-left', text: 'Checklist item deleted', actionText: 'Undo', duration: 4200,
+            onActionClick: () => this.undoOverviewDeletion(deletion)
+          })
+        } catch {}
+      }
+    }).catch(() => {
+      this.forgetOverviewDeletion(deletion)
+      if (this.overviewGenerationIsCurrent(deletion.generation)) this.showMessage("Couldn't delete the checklist item. Please try again.")
     })
+    return deletion.ready
   }
 
-  private overviewMutations = new Map<number, Promise<void>>()
+  private overviewDeletions: OverviewChecklistDeletion[] = []
+  private overviewHistoryGeneration = 0
+  private overviewMutations = new Map<string | number, Promise<void>>()
+
+  private overviewGenerationIsCurrent(generation: number) {
+    return !this.destroyed && generation === this.overviewHistoryGeneration
+  }
+
+  private clearOverviewDeletionHistory() {
+    this.overviewHistoryGeneration++
+    this.overviewDeletions = []
+  }
+
+  private forgetOverviewDeletion(deletion: OverviewChecklistDeletion) {
+    this.overviewDeletions = this.overviewDeletions.filter(entry => entry !== deletion)
+  }
+
+  private undoOverviewDeletion(deletion: OverviewChecklistDeletion): Promise<void> {
+    if (deletion.restoring) return deletion.restoring
+    deletion.restoring = (async () => {
+      await deletion.ready
+      if (!this.overviewGenerationIsCurrent(deletion.generation) || !this.overviewDeletions.includes(deletion)) return
+      if (this.editorOpen || this.modalClosing) {
+        this.showMessage('Close the note before restoring this checklist item.')
+        return
+      }
+      await this.serializeOverviewMutation(deletion.note, async latest => {
+        const full = await this.completeNote(latest)
+        if (!full || !this.overviewGenerationIsCurrent(deletion.generation)) return
+        if (this.editorOpen || this.modalClosing) {
+          this.showMessage('Close the note before restoring this checklist item.')
+          return
+        }
+        if (!full.isCbox) throw new Error('The note is no longer a checklist.')
+        const removed = deletion.removed
+        if (!removed) return
+        const items = full.checkBoxes || []
+        // Another undo/sync may already have restored it. Never duplicate or overwrite that row.
+        if (!items.some(item => item.id === removed.item.id)) {
+          const nextIndex = items.findIndex(item => item.id === removed.nextId)
+          const previousIndex = items.findIndex(item => item.id === removed.previousId)
+          const index = nextIndex >= 0 ? nextIndex : previousIndex >= 0 ? previousIndex + 1 : Math.min(removed.index, items.length)
+          const checkBoxes = [...items]
+          checkBoxes.splice(index, 0, structuredClone(removed.item))
+          await this.notesService.updateKey({ checkBoxes }, full.id!)
+        }
+        if (!this.overviewGenerationIsCurrent(deletion.generation)) return
+        this.forgetOverviewDeletion(deletion)
+        this.scheduleBuildMasonry(true)
+        this.showMessage('Checklist item restored')
+      })
+    })().catch(() => {
+      if (this.overviewGenerationIsCurrent(deletion.generation)) this.showMessage("Couldn't restore the checklist item. Please try Undo again.")
+    }).finally(() => { deletion.restoring = undefined })
+    return deletion.restoring
+  }
 
   /** Card actions derive a complete array, so serialize them and reread the newest cached version per note. */
-  private serializeOverviewMutation(note: NoteI, mutation: (latest: NoteI) => Promise<void>) {
+  private serializeOverviewMutation(note: Pick<NoteI, 'id' | 'syncId'>, mutation: (latest: NoteI) => Promise<void>) {
     const id = note.id
     if (!id) return Promise.resolve()
-    const prior = this.overviewMutations.get(id) || Promise.resolve()
+    const key = note.syncId || id
+    const generation = this.overviewHistoryGeneration
+    const prior = this.overviewMutations.get(key) || Promise.resolve()
     const current = prior.catch(() => undefined).then(async () => {
-      const latest = this.notesService.notesList$.value?.find(candidate => candidate.id === id) || note
+      if (!this.overviewGenerationIsCurrent(generation)) return
+      const latest = this.notesService.notesList$.value?.find(candidate => note.syncId ? candidate.syncId === note.syncId : candidate.id === id)
+        || await this.notesService.get(id, { merge: false })
+      if (!this.overviewGenerationIsCurrent(generation)) return
+      if (!latest?.id || (note.syncId && latest.syncId !== note.syncId)) throw new Error('The note is no longer available.')
       await mutation(latest)
     }).finally(() => {
-      if (this.overviewMutations.get(id) === current) this.overviewMutations.delete(id)
+      if (this.overviewMutations.get(key) === current) this.overviewMutations.delete(key)
     })
-    this.overviewMutations.set(id, current)
+    this.overviewMutations.set(key, current)
     return current
   }
 
@@ -3015,6 +3132,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
     this.registerPullToRefresh()
     this.registerWidgetOpenHandlers()
     this.subscriptions.push(
+      this.auth.currentUser$.pipe(map(user => user?.id), distinctUntilChanged()).subscribe(() => this.clearOverviewDeletionHistory()),
       this.Shared.closeSideBar.subscribe(() => { setTimeout(() => { this.scheduleBuildMasonry(true) }, 200) }),
       this.Shared.closeModal.subscribe(x => { if (x) this.closeModal() }),
       this.Shared.saveNote.subscribe(x => {
@@ -3245,6 +3363,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
 
   ngOnDestroy(): void {
     this.destroyed = true
+    this.clearOverviewDeletionHistory()
     clearNoteCardPageFilter(this.noteStaysOnPage)
     this.noteOpenRequest++
     window.removeEventListener('scroll', this.windowScrollHandler)
