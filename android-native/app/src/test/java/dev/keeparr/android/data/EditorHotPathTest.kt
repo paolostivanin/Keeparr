@@ -251,4 +251,61 @@ class EditorHotPathTest {
         assertNull(EditorSnapshotPolicy.apply(local, Note(JSONObject().put("id", 5).put("syncId", "n").put("revision", 3).put("noteTitle", "old")), dirty = false))
         assertNotNull(EditorSnapshotPolicy.apply(local, Note(JSONObject().put("id", 5).put("syncId", "n").put("revision", 6).put("noteTitle", "newer")), dirty = false))
     }
+
+    @Test fun metadataRefreshAfterSavingPreservesUndoAndRedo() = runBlocking {
+        val (vm, _) = editor()
+        vm.change("noteBody") { it.put("noteBody", "typed") }
+        assertTrue("undo is available immediately", vm.canUndo.value)
+        vm.flushAndQueueSync()
+        val submitted = Note(vm.draft.value.copyJson())
+        vm.acceptServerSnapshot(Note(submitted.raw.copyJson().put("revision", 3)), submitted)
+        val resets = vm.externalEdits.value
+        vm.applyIncoming(Note(vm.draft.value.copyJson().put("updatedAt", "server time")))
+        assertTrue("a metadata echo must not discard undo", vm.canUndo.value)
+        assertEquals("metadata does not reset the field", resets, vm.externalEdits.value)
+        vm.undo()
+        assertEquals("", vm.draft.value.optString("noteBody"))
+        assertTrue(vm.canRedo.value)
+        val undone = Note(vm.draft.value.copyJson())
+        vm.acceptServerSnapshot(Note(undone.raw.copyJson().put("revision", 4)), undone)
+        vm.applyIncoming(Note(vm.draft.value.copyJson().put("updatedAt", "later server time")))
+        assertTrue("a metadata echo must not discard redo", vm.canRedo.value)
+        vm.redo()
+        assertEquals("typed", vm.draft.value.optString("noteBody"))
+        vm.awaitIdle()
+    }
+
+    @Test fun acceptedNormalizationKeepsHistoryAndItsSelection() = runBlocking {
+        val (vm, _) = editor()
+        vm.trackFocus { "body" to intArrayOf(3, 3) }
+        vm.change("noteBody") { it.put("noteBody", "<b>one</b>") }
+        val submitted = Note(vm.draft.value.copyJson())
+        val accepted = Note(submitted.raw.copyJson().put("noteBody", "<strong>one</strong>").put("revision", 3))
+        vm.acceptServerSnapshot(accepted, submitted)
+        // The database may still emit the submitted form with its newly assigned revision after the acknowledgement.
+        vm.applyIncoming(Note(submitted.raw.copyJson().put("revision", 3)))
+        assertEquals("a late cache echo cannot replace the acknowledged content", accepted.body, vm.draft.value.optString("noteBody"))
+        assertTrue(vm.canUndo.value)
+        vm.undo()
+        assertEquals("", vm.draft.value.optString("noteBody"))
+        vm.redo()
+        assertEquals(accepted.body, vm.draft.value.optString("noteBody"))
+        assertEquals("body", vm.restore.value!!.focusKey)
+        assertArrayEquals(intArrayOf(3, 3), vm.restore.value!!.selection)
+        vm.awaitIdle()
+    }
+
+    @Test fun genuinelyDifferentRemoteContentStartsANewHistoryBaseline() = runBlocking {
+        val (vm, _) = editor()
+        vm.change("noteBody") { it.put("noteBody", "local") }
+        val submitted = Note(vm.draft.value.copyJson())
+        vm.acceptServerSnapshot(Note(submitted.raw.copyJson().put("revision", 3)), submitted)
+        vm.applyIncoming(Note(vm.draft.value.copyJson().put("noteBody", "remote").put("revision", 4)))
+        assertFalse(vm.canUndo.value)
+        assertFalse(vm.canRedo.value)
+        vm.change("noteBody") { it.put("noteBody", "remote edited") }
+        vm.undo()
+        assertEquals("remote", vm.draft.value.optString("noteBody"))
+        vm.awaitIdle()
+    }
 }

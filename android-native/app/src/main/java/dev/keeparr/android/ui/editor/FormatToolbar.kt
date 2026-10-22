@@ -7,7 +7,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.FormatIndentDecrease
 import androidx.compose.material.icons.automirrored.outlined.FormatIndentIncrease
-import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
 import androidx.compose.material.icons.automirrored.outlined.Redo
 import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.FormatBold
@@ -46,7 +45,7 @@ fun FormatToolbar(focus: RichEditorFocus, canUndo: Boolean, canRedo: Boolean, on
         TextCommand("H1", "Heading 1", "h1" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.H1) }
         TextCommand("H2", "Heading 2", "h2" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.H2) }
         TextCommand("Aa", "Normal text", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Normal) }
-        IconCommand(Icons.AutoMirrored.Outlined.FormatListBulleted, "Bulleted list", "bullet" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.Bullet) }
+        TextCommand("•", "Bulleted list", "bullet" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.Bullet) }
         IconCommand(Icons.AutoMirrored.Outlined.FormatIndentIncrease, "Indent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Indent) }
         IconCommand(Icons.AutoMirrored.Outlined.FormatIndentDecrease, "Outdent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Outdent) }
         IconCommand(Icons.Outlined.FormatBold, "Bold", "b" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Bold) }

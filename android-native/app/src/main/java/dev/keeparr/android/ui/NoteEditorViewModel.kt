@@ -176,10 +176,17 @@ class NoteEditorViewModel(
             return
         }
         EditorSnapshotPolicy.apply(local, incoming, dirty = false)?.let {
+            val incomingEntry = entryOf(it.raw)
+            val contentChanged = !entryOf(local.raw).sameContent(incomingEntry)
+            // A late database emission can still contain our submitted HTML at the acknowledged revision. It must
+            // not replace the server's normalized content or clear its history; remote edits advance the revision.
+            if (contentChanged && incoming.revision <= serverBase.revision) return
             _draft.value = it.raw
             _draftGeneration.value += 1
-            _externalEdits.value += 1
-            history.reset(entryOf(it.raw)); updateHistoryFlags()
+            if (contentChanged) {
+                _externalEdits.value += 1
+                history.reset(incomingEntry); updateHistoryFlags()
+            }
             serverBase = incoming
             _incoming.value = null
             _dirty.value = !EditorSnapshotPolicy.sameEditableContent(Note(it.raw), serverBase)
@@ -195,9 +202,10 @@ class NoteEditorViewModel(
             else mergeAcknowledgedImages(_draft.value.copyJson().put("id", accepted.id).put("revision", accepted.revision), previousServerBase, accepted)
         serverBase = accepted
         // Typing is not interrupted unless the answer changed what the fields show.
-        if (!EditorSnapshotPolicy.sameEditableContent(Note(rebased), current)) {
+        val acceptedEntry = entryOf(rebased)
+        if (!acceptedEntry.sameContent(entryOf(current.raw))) {
             _externalEdits.value += 1
-            history.reset(entryOf(rebased)); updateHistoryFlags()
+            history.reconcileCurrent(acceptedEntry); updateHistoryFlags()
         }
         _draft.value = rebased
         _draftGeneration.value += 1

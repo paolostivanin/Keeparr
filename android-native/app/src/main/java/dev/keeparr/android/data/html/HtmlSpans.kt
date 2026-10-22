@@ -44,13 +44,21 @@ class BlockSpan(var info: BlockInfo, var markerOnly: Boolean = false) : LeadingM
 
     private fun margin(): Float = quoteDepth * quoteStep + (if (listDepth > 0) step * minOf(listDepth, MAX_LIST_LEVELS) else 0f)
 
-    override fun getLeadingMargin(first: Boolean): Int = if (markerOnly) 0 else margin().toInt()
+    /** Also used by the editor for a final empty paragraph, which Android's Layout skips. */
+    internal val contentInset: Int get() = margin().toInt()
+
+    override fun getLeadingMargin(first: Boolean): Int = if (markerOnly) 0 else contentInset
 
     override fun drawLeadingMargin(c: Canvas, p: Paint, x: Int, dir: Int, top: Int, baseline: Int, bottom: Int,
         text: CharSequence, start: Int, end: Int, first: Boolean, layout: Layout?) {
-        if (text !is Spanned) return
+        if (text !is Spanned || markerOnly) return
         val owns = text.getSpanStart(this) == start
-        if (quoteDepth > 0 && !markerOnly) {
+        drawDecoration(c, p, x, dir, top, baseline, bottom, owns && first)
+    }
+
+    internal fun drawDecoration(c: Canvas, p: Paint, x: Int, dir: Int, top: Int, baseline: Int, bottom: Int,
+        drawMarker: Boolean = true) {
+        if (quoteDepth > 0) {
             val saved = p.style; val color = p.color; val alpha = p.alpha
             p.style = Paint.Style.FILL; p.alpha = 90
             for (level in 0 until quoteDepth) {
@@ -61,7 +69,7 @@ class BlockSpan(var info: BlockInfo, var markerOnly: Boolean = false) : LeadingM
             p.style = saved; p.color = color; p.alpha = alpha
         }
         val glyph = marker ?: return
-        if (!owns || !first) return
+        if (!drawMarker) return
         val itemLeft = x + dir * (quoteDepth * quoteStep + step * (minOf(listDepth, MAX_LIST_LEVELS) - 1))
         val numbered = ordinal != null
         val offset = if (numbered) (step - 4 * density - p.measureText(glyph)).coerceAtLeast(0f) else 6 * density

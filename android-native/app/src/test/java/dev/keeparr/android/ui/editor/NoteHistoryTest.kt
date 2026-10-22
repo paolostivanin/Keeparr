@@ -67,4 +67,22 @@ class NoteHistoryTest {
         repeat(200) { clock += 5_000; history.record(entry("$it x")) }
         assertEquals(NoteHistory.LIMIT, history.size)
     }
+
+    @Test fun acknowledgingAnUndoneStateKeepsBothDirectionsAndTheCaret() {
+        val history = NoteHistory { clock }
+        history.reset(entry("initial"))
+        history.record(entry("<b>first</b>").copy(focusKey = "body", selection = intArrayOf(2, 4)), structural = true)
+        history.record(entry("second"), structural = true)
+        history.undo()
+        history.reconcileCurrent(entry("<strong>first</strong>"))
+        assertEquals(3, history.size)
+        assertTrue(history.canUndo)
+        assertTrue(history.canRedo)
+        assertEquals("second", history.redo()!!.body)
+        val reconciled = history.undo()!!
+        assertEquals("<strong>first</strong>", reconciled.body)
+        assertEquals("body", reconciled.focusKey)
+        org.junit.Assert.assertArrayEquals(intArrayOf(2, 4), reconciled.selection)
+        assertEquals("initial", history.undo()!!.body)
+    }
 }

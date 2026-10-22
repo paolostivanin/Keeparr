@@ -2,6 +2,7 @@ package dev.keeparr.android.ui.editor
 
 import android.content.ClipData
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.RectF
 import android.net.Uri
@@ -18,6 +19,8 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputConnectionWrapper
 import android.widget.EditText
 import dev.keeparr.android.data.html.Doc
+import dev.keeparr.android.data.html.BlockSpan
+import dev.keeparr.android.data.html.LineRange
 import dev.keeparr.android.data.html.EditCause
 import dev.keeparr.android.data.html.EmbedSpan
 import dev.keeparr.android.data.html.InlineTagSpan
@@ -131,6 +134,7 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
 
     private fun documentChanged() {
         applyEmbedWidth()
+        invalidate()
         onDocumentChanged?.invoke()
         reportCaret()
     }
@@ -167,6 +171,49 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
 
     // ---- selection, caret and embeds ----------------------------------------------------------------------------
 
+    private fun emptyFinalBlock(): BlockSpan? {
+        if (mode != HtmlMode.Body || (text.isNotEmpty() && text.last() != '\n')) return null
+        return Doc.spanAt(text, LineRange(length(), length()))?.takeIf { it.markerOnly && it.contentInset > 0 }
+    }
+
+    /**
+     * Layout deliberately ignores paragraph spans on a trailing empty line. Keep its zero-length block metadata
+     * out of the preceding paragraph's margins, and paint this line explicitly. The clipped second pass moves the
+     * platform's cursor (including its blink) and hint together; the document and IME offsets stay unchanged.
+     */
+    override fun onDraw(canvas: Canvas) {
+        val block = emptyFinalBlock()
+        val layout = layout
+        if (block == null || layout == null) { super.onDraw(canvas); return }
+        val line = layout.getLineForOffset(length())
+        val top = layout.getLineTop(line) + totalPaddingTop
+        val bottom = layout.getLineBottom(line) + totalPaddingTop
+        val direction = layout.getParagraphDirection(line)
+        val inset = direction * block.contentInset.toFloat()
+        val saved = canvas.save()
+        canvas.clipOutRect(scrollX.toFloat(), top.toFloat(), (scrollX + width).toFloat(), bottom.toFloat())
+        super.onDraw(canvas)
+        canvas.restoreToCount(saved)
+        val lastLine = canvas.save()
+        canvas.clipRect(scrollX.toFloat(), top.toFloat(), (scrollX + width).toFloat(), bottom.toFloat())
+        canvas.translate(inset, 0f)
+        super.onDraw(canvas)
+        canvas.restoreToCount(lastLine)
+        val color = paint.color
+        paint.color = currentTextColor
+        val x = totalPaddingLeft + if (direction > 0) 0 else layout.width
+        block.drawDecoration(canvas, paint, x, direction, top,
+            layout.getLineBaseline(line) + totalPaddingTop, bottom)
+        paint.color = color
+    }
+
+    private fun caretHorizontal(caret: Int): Int {
+        val layout = layout ?: return totalPaddingLeft
+        val extra = if (caret == length()) emptyFinalBlock()?.contentInset ?: 0 else 0
+        val direction = layout.getParagraphDirection(layout.getLineForOffset(caret))
+        return layout.getPrimaryHorizontal(caret).toInt() + totalPaddingLeft + direction * extra
+    }
+
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
         if (!constructed || selStart < 0 || selEnd < 0) return
@@ -181,7 +228,7 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
         val caret = selectionEnd
         if (caret < 0 || caret > length()) return
         val line = layout.getLineForOffset(caret)
-        val x = layout.getPrimaryHorizontal(caret).toInt() + totalPaddingLeft
+        val x = caretHorizontal(caret)
         callback(Rect(x, layout.getLineTop(line) + totalPaddingTop, x + 2, layout.getLineBottom(line) + totalPaddingTop))
     }
 
@@ -237,7 +284,7 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
         val layout = layout ?: return null
         val caret = selectionEnd.coerceIn(0, length())
         val line = layout.getLineForOffset(caret)
-        val x = layout.getPrimaryHorizontal(caret).toInt() + totalPaddingLeft
+        val x = caretHorizontal(caret)
         return Rect(x, layout.getLineTop(line) + totalPaddingTop, x + 2, layout.getLineBottom(line) + totalPaddingTop)
     }
 

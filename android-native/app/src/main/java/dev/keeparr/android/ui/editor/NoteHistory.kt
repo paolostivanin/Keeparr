@@ -10,7 +10,7 @@ package dev.keeparr.android.ui.editor
  * and adds the text history the browser provides there.
  */
 class NoteHistory(private val now: () -> Long = System::currentTimeMillis) {
-    class Entry(
+    data class Entry(
         val title: String, val body: String, val checklist: Boolean, val items: String,
         /** Rows' ids, states and levels: when this differs between two snapshots the change is structural. */
         val structure: String,
@@ -34,6 +34,15 @@ class NoteHistory(private val now: () -> Long = System::currentTimeMillis) {
 
     fun reset(initial: Entry) {
         entries.clear(); entries += initial; index = 0; lastAt = 0; lastStructural = true
+    }
+
+    /** Acknowledging our save may normalize content, but is not an edit or a new history baseline. */
+    fun reconcileCurrent(entry: Entry) {
+        if (index < 0) { reset(entry); return }
+        val current = entries[index]
+        if (!current.sameContent(entry)) {
+            entries[index] = entry.copy(focusKey = current.focusKey, selection = current.selection?.copyOf())
+        }
     }
 
     /** Records the state after a user change. Returns false when it equals the current one. */

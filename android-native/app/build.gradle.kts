@@ -79,4 +79,5 @@ dependencies {
     testImplementation("org.json:json:20240303")
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.sqlite:sqlite-framework:2.4.0")
+    testImplementation("androidx.compose.ui:ui-test-junit4:1.7.6")
 }
