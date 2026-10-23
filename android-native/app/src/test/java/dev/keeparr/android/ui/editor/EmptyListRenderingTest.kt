@@ -117,4 +117,36 @@ class EmptyListRenderingTest {
         view.setDocument(NoteHtml.parse(NoteHtml.serialize(view.text)), keepSelection = true)
         assertEmptyItemVisible(view)
     }
+
+    private fun band(bitmap: Bitmap, top: Int, rows: Int) =
+        IntArray(bitmap.width * rows).also { bitmap.getPixels(it, 0, bitmap.width, 0, top, bitmap.width, rows) }
+
+    @Test fun enterNeverRedrawsThePreviousItemShifted() {
+        for (html in listOf("<ul><li>first</li></ul>", "<ul><li>parent<ul><li>child</li></ul></li></ul>")) withField(html) { view ->
+            // The caret moves to the new line, and the platform's last line is a pixel taller: compare the glyph rows only.
+            view.isCursorVisible = false
+            val first = draw(view)
+            val line = view.layout.lineCount - 1
+            val top = view.layout.getLineTop(line) + view.totalPaddingTop
+            val rows = view.layout.getLineBottom(line) - view.layout.getLineTop(line) - 2
+            val before = band(first, top, rows)
+            assertTrue("the line has glyphs to compare", before.any { it != Color.WHITE })
+            view.onCreateInputConnection(EditorInfo())!!.commitText("\n", 1)
+            assertEquals(top, view.layout.getLineTop(line) + view.totalPaddingTop)
+            assertArrayEquals("the item above the new one must paint exactly as before: $html", before, band(draw(view), top, rows))
+        }
+    }
+
+    @Test fun theHintOfAnEmptyBulletSitsAfterItsMarker() = withField("") { view ->
+        view.hint = "Note"
+        view.setHintTextColor(Color.BLUE)
+        view.edit { view.controller.toggleBullet(it, 0, 0) }
+        val bitmap = draw(view)
+        val inset = (20 * view.resources.displayMetrics.density).toInt()
+        val top = view.layout.getLineTop(0) + view.totalPaddingTop
+        val bottom = view.layout.getLineBottom(0) + view.totalPaddingTop
+        fun blue(x: Int) = (top until bottom).any { y -> bitmap.getPixel(x, y) == Color.BLUE }
+        assertTrue("the hint is drawn", (inset until bitmap.width).any(::blue))
+        assertFalse("the hint must not overlap the bullet", (0 until inset).any(::blue))
+    }
 }

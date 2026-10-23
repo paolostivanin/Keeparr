@@ -175,9 +175,12 @@ fun RichTextField(
         modifier = modifier.bringIntoViewRequester(requester),
         update = { view ->
             state.view = view
-            view.textSize = textSizeSp
-            view.hint = hint
-            view.minLines = minLines
+            // These setters relayout (and reset the text's display lists) even for an unchanged value, and this block
+            // runs on every recomposition, which includes the one right after Enter.
+            val sizePx = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, textSizeSp, view.resources.displayMetrics)
+            if (view.textSize != sizePx) view.textSize = textSizeSp
+            if (view.hint?.toString() != hint) view.hint = hint
+            if (view.minLines != minLines) view.minLines = minLines
             view.applyNoteColors(colors.text, colors.link)
             view.onEmbedTap = onEmbedTap
             view.onLinkTap = onLinkTap

@@ -5,9 +5,12 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.DrawableWrapper
 import android.net.Uri
 import android.text.Editable
 import android.text.InputType
+import android.text.Layout
 import android.text.Selection
 import android.text.Spanned
 import android.text.TextWatcher
@@ -55,6 +58,7 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
     internal var deferNextDocumentChange = false
     private var touchDownX = 0f
     private var touchDownY = 0f
+    private val cursor = ShiftedCursor()
 
     private val watcher = object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
@@ -105,7 +109,18 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
         setOnKeyListener { _, keyCode, event ->
             keyCode == KeyEvent.KEYCODE_DEL && event.action == KeyEvent.ACTION_DOWN && !event.isShiftPressed && interceptBackspace()
         }
+        textCursorDrawable?.let { cursor.drawable = it; super.setTextCursorDrawable(cursor) }
         constructed = true
+    }
+
+    /**
+     * The platform's Editor reads the cursor drawable once and keeps it, so the view installs one [ShiftedCursor] for its
+     * whole life and later drawables (tinting, tests) replace what it wraps.
+     */
+    override fun setTextCursorDrawable(textCursorDrawable: Drawable?) {
+        if (!constructed || textCursorDrawable == null) { super.setTextCursorDrawable(textCursorDrawable); return }
+        if (textCursorDrawable !== cursor) cursor.drawable = textCursorDrawable
+        super.setTextCursorDrawable(cursor)
     }
 
     // ---- document -----------------------------------------------------------------------------------------
@@ -176,42 +191,45 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
         return Doc.spanAt(text, LineRange(length(), length()))?.takeIf { it.markerOnly && it.contentInset > 0 }
     }
 
+    /** Where the caret of an empty last item belongs, relative to the line start Layout gives it. */
+    private fun emptyItemShift(block: BlockSpan, layout: Layout): Int =
+        layout.getParagraphDirection(layout.getLineForOffset(length())) * block.contentInset
+
     /**
      * Layout deliberately ignores paragraph spans on a trailing empty line. Keep its zero-length block metadata
-     * out of the preceding paragraph's margins, and paint this line explicitly. The clipped second pass moves the
-     * platform's cursor (including its blink) and hint together; the document and IME offsets stay unchanged.
+     * out of the preceding paragraph's margins, and paint this line's marker explicitly. The text is drawn once and
+     * never moved (a shifted second pass showed the line above it indented twice on hardware rendering): only the
+     * platform's cursor moves to the item, through [cursor]. An empty document has no other line, so there the whole
+     * pass moves, hint included. The document and IME offsets stay unchanged.
      */
     override fun onDraw(canvas: Canvas) {
         val block = emptyFinalBlock()
         val layout = layout
         if (block == null || layout == null) { super.onDraw(canvas); return }
+        val shift = emptyItemShift(block, layout)
+        if (text.isEmpty()) {
+            val saved = canvas.save()
+            canvas.translate(shift.toFloat(), 0f)
+            super.onDraw(canvas)
+            canvas.restoreToCount(saved)
+        } else {
+            cursor.dx = if (selectionStart == length() && selectionEnd == length()) shift else 0
+            try { super.onDraw(canvas) } finally { cursor.dx = 0 }
+        }
         val line = layout.getLineForOffset(length())
-        val top = layout.getLineTop(line) + totalPaddingTop
-        val bottom = layout.getLineBottom(line) + totalPaddingTop
         val direction = layout.getParagraphDirection(line)
-        val inset = direction * block.contentInset.toFloat()
-        val saved = canvas.save()
-        canvas.clipOutRect(scrollX.toFloat(), top.toFloat(), (scrollX + width).toFloat(), bottom.toFloat())
-        super.onDraw(canvas)
-        canvas.restoreToCount(saved)
-        val lastLine = canvas.save()
-        canvas.clipRect(scrollX.toFloat(), top.toFloat(), (scrollX + width).toFloat(), bottom.toFloat())
-        canvas.translate(inset, 0f)
-        super.onDraw(canvas)
-        canvas.restoreToCount(lastLine)
         val color = paint.color
         paint.color = currentTextColor
         val x = totalPaddingLeft + if (direction > 0) 0 else layout.width
-        block.drawDecoration(canvas, paint, x, direction, top,
-            layout.getLineBaseline(line) + totalPaddingTop, bottom)
+        block.drawDecoration(canvas, paint, x, direction, layout.getLineTop(line) + totalPaddingTop,
+            layout.getLineBaseline(line) + totalPaddingTop, layout.getLineBottom(line) + totalPaddingTop)
         paint.color = color
     }
 
     private fun caretHorizontal(caret: Int): Int {
         val layout = layout ?: return totalPaddingLeft
-        val extra = if (caret == length()) emptyFinalBlock()?.contentInset ?: 0 else 0
-        val direction = layout.getParagraphDirection(layout.getLineForOffset(caret))
-        return layout.getPrimaryHorizontal(caret).toInt() + totalPaddingLeft + direction * extra
+        val shift = if (caret == length()) emptyFinalBlock()?.let { emptyItemShift(it, layout) } ?: 0 else 0
+        return layout.getPrimaryHorizontal(caret).toInt() + totalPaddingLeft + shift
     }
 
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
@@ -289,4 +307,17 @@ class KeeparrEditText(context: Context, val mode: HtmlMode) : EditText(context) 
     }
 
     fun moveCaretToEnd() { Selection.setSelection(text, text.length) }
+
+    /** Draws the platform cursor [dx] pixels to the side; the editor sets it for the frame in which the caret sits on an empty last item. */
+    private class ShiftedCursor : DrawableWrapper(null) {
+        var dx = 0
+
+        override fun draw(canvas: Canvas) {
+            if (dx == 0) { super.draw(canvas); return }
+            val saved = canvas.save()
+            canvas.translate(dx.toFloat(), 0f)
+            super.draw(canvas)
+            canvas.restoreToCount(saved)
+        }
+    }
 }
