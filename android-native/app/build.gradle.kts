@@ -12,8 +12,8 @@ android {
         applicationId = "dev.keeparr.android"
         minSdk = 34
         targetSdk = 35
-        versionCode = 14
-        versionName = "2.3.4"
+        versionCode = 15
+        versionName = "2.3.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     // Production signing comes from the environment (or -P properties) and never from the repository. Without it the
