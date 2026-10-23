@@ -13,6 +13,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -171,24 +174,29 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                 if (previous != null) pendingFocus = ChecklistModel.idOf(previous) to junction
                 return true
             }
+            override fun moveBefore(id: Long, beforeId: Long?): Boolean {
+                val moved = ChecklistModel.moveBefore(currentRows(), id, beforeId) ?: return false
+                applyRows(moved, external = true, structural = true)
+                return true
+            }
             override fun moveUp(id: Long) {
-                val rows = currentRows()
-                val (previous, _) = neighbours(rows, draftViewModel.draft.value.optBoolean("completedChecklistCollapsed"), id)
-                if (previous != null) ChecklistModel.moveBefore(rows, id, ChecklistModel.idOf(previous))?.let { applyRows(it, external = true, structural = true) }
+                val (previous, _) = neighbours(currentRows(), draftViewModel.draft.value.optBoolean("completedChecklistCollapsed"), id)
+                if (previous != null) moveBefore(id, ChecklistModel.idOf(previous))
             }
             override fun moveDown(id: Long) {
-                val rows = currentRows()
                 val hidden = draftViewModel.draft.value.optBoolean("completedChecklistCollapsed")
-                val visible = rows.filter { !hidden || !it.optBoolean("done") }
+                val visible = currentRows().filter { !hidden || !it.optBoolean("done") }
                 val position = visible.indexOfFirst { ChecklistModel.idOf(it) == id }
                 if (position < 0 || position >= visible.lastIndex) return
-                val before = visible.getOrNull(position + 2)?.let { ChecklistModel.idOf(it) }
-                ChecklistModel.moveBefore(rows, id, before)?.let { applyRows(it, external = true, structural = true) }
+                moveBefore(id, visible.getOrNull(position + 2)?.let { ChecklistModel.idOf(it) })
             }
             override fun setIndent(id: Long, level: Int) { ChecklistModel.setIndent(currentRows(), id, level)?.let { applyRows(it, structural = true) } }
             override fun remove(id: Long) { ChecklistModel.remove(currentRows(), id)?.let { applyRows(it, external = true, structural = true) } }
         }
     }
+    // The editor scrolls as one column; a checklist drag reads its viewport and scrolls it near the edges.
+    val editorScroll = rememberScrollState()
+    val editorViewport = remember { arrayOfNulls<androidx.compose.ui.layout.LayoutCoordinates>(1) }
     // Tapping blank editor space behaves like tapping the end of the content.
     fun focusEditorEnd() {
         if (note.checklist) {
@@ -426,8 +434,8 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         }
     }) { padding ->
         Surface(Modifier.fillMaxSize().padding(padding), color = color, contentColor = foreground) {
-        Column(Modifier.fillMaxSize().noteBackgroundImage(background, LocalDarkTheme.current, anchor = BackgroundAnchor.BottomCenter).clickable(remember { MutableInteractionSource() }, indication = null) { focusEditorEnd() }
-            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
+        Column(Modifier.fillMaxSize().onGloballyPositioned { editorViewport[0] = it }.noteBackgroundImage(background, LocalDarkTheme.current, anchor = BackgroundAnchor.BottomCenter).clickable(remember { MutableInteractionSource() }, indication = null) { focusEditorEnd() }
+            .verticalScroll(editorScroll).padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             incoming?.let { serverNote ->
                 Card(Modifier.fillMaxWidth()) {
@@ -493,7 +501,8 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                     Text(if (hideDone) "Show completed ($completedCount)" else "Hide completed ($completedCount)")
                 }
                 ChecklistRows(note.items, hideDone, externalEdits, editorColors, foreground, color, embeds, rowStates, checklistActions,
-                    ::openNoteLink, { uri, _ -> addImage(uri) })
+                    ::openNoteLink, { uri, _ -> addImage(uri) }, viewport = { editorViewport[0]?.takeIf { it.isAttached }?.boundsInWindow() },
+                    scrollBy = { editorScroll.scrollBy(it) })
                 TextButton(onClick = { addChecklistItem() }) { Icon(Icons.Outlined.Add, null); Text("List item") }
             }
             ImagesAt("bottom")

@@ -1,31 +1,44 @@
 package dev.keeparr.android.ui.editor
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.DragIndicator
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.keeparr.android.data.ChecklistModel
 import dev.keeparr.android.data.html.HtmlMode
@@ -41,32 +54,74 @@ interface ChecklistActions {
     fun backspaceAtStart(id: Long): Boolean
     fun moveUp(id: Long)
     fun moveDown(id: Long)
+    /** Moves [id] before [beforeId], or to the end for null (a drop). False when that changes nothing. */
+    fun moveBefore(id: Long, beforeId: Long?): Boolean
     fun setIndent(id: Long, level: Int)
     fun remove(id: Long)
 }
 
 /**
  * The rows of a checklist, each an editable [RichTextField] in row mode: formatted rows stay editable, a typed or pasted
- * line break splits the row, Backspace at the start merges it into the previous visible row.
+ * line break splits the row, Backspace at the start merges it into the previous visible row. A row is reordered by dragging
+ * its grip ([scrollBy] and [viewport] let the drag scroll the editor it sits in), indented or outdented by swiping it right
+ * or left, and removed with its X.
  */
 @Composable
 internal fun ChecklistRows(
     rows: List<JSONObject>, hideDone: Boolean, externalEdits: Long, colors: EditorColors, foreground: Color, background: Color,
     embeds: EmbedBinder?, states: MutableMap<Long, RichEditorState>, actions: ChecklistActions, onLinkTap: (String) -> Unit,
-    onImageContent: (Uri, String) -> Unit
+    onImageContent: (Uri, String) -> Unit, viewport: () -> Rect?, scrollBy: suspend (Float) -> Float
 ) {
     val visible = rows.filter { !hideDone || !it.optBoolean("done") }
+    val visibleIds = visible.map { ChecklistModel.idOf(it) }
+    val byId = visible.associateBy { ChecklistModel.idOf(it) }
+    val drag = remember { ChecklistDragController() }
+    val haptics = LocalHapticFeedback.current
+    SideEffect { drag.reconcile(visibleIds) }
     Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-        visible.forEachIndexed { visibleIndex, item ->
-            val id = ChecklistModel.idOf(item)
+        drag.shown(visibleIds).forEachIndexed { visibleIndex, id ->
+            val item = byId[id] ?: return@forEachIndexed
             val index = rows.indexOf(item)
             key(id) {
-                var menu by remember { mutableStateOf(false) }
                 val level = ChecklistModel.normalizeIndentLevel(item.opt("indentLevel"))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                val canIndent = level < ChecklistModel.maxIndentLevelAt(rows, index)
+                val indent by animateDpAsState((level * 12).dp, label = "checklist indent")
+                val dragged = drag.draggingId == id
+                DisposableEffect(id) { onDispose { drag.disposed(id) } }
+                Row(Modifier.fillMaxWidth().onSizeChanged { drag.sized(id, it.height.toFloat()) }
+                    // The same modifiers at rest and while dragged: changing the chain's structure when a drag starts (adding a
+                    // graphics layer) resets the grip's pointer input and ends the very gesture that caused it.
+                    .zIndex(if (dragged) 1f else 0f)
+                    .graphicsLayer { if (dragged) { translationY = drag.offset; shadowElevation = 8.dp.toPx() } }
+                    .background(if (dragged) background else Color.Transparent),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(width = 32.dp, height = 48.dp)
+                        .semantics {
+                            contentDescription = "Reorder item"
+                            // Dragging and swiping have no equivalent for a screen reader, which moves a row one step at a time.
+                            customActions = listOfNotNull(
+                                if (visibleIndex > 0) CustomAccessibilityAction("Move up") { actions.moveUp(id); true } else null,
+                                if (visibleIndex < visible.lastIndex) CustomAccessibilityAction("Move down") { actions.moveDown(id); true } else null,
+                                if (canIndent) CustomAccessibilityAction("Indent") { actions.setIndent(id, level + 1); true } else null,
+                                if (level > 0) CustomAccessibilityAction("Outdent") { actions.setIndent(id, level - 1); true } else null)
+                        }
+                        .checklistDragHandle(id, drag, { visibleIds }, viewport, scrollBy,
+                            onStart = { haptics.performHapticFeedback(HapticFeedbackType.LongPress) },
+                            onDrop = { actions.moveBefore(it.id, it.beforeId) }),
+                        contentAlignment = Alignment.Center) {
+                        Icon(Icons.Outlined.DragIndicator, null, tint = foreground.copy(alpha = .6f))
+                    }
+                    // The checkbox goes with the text; the grip stays put so every row can be grabbed in the same place.
+                    Spacer(Modifier.width(indent))
                     Checkbox(item.optBoolean("done"), onCheckedChange = { actions.toggle(id, it) }, colors = CheckboxDefaults.colors(
                         checkedColor = foreground, uncheckedColor = foreground.copy(alpha = .7f), checkmarkColor = background))
-                    Box(Modifier.weight(1f).padding(start = (level * 12).dp)) {
+                    Box(Modifier.weight(1f)
+                        .indentSwipe { step ->
+                            if (if (step > 0) canIndent else level > 0) {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                actions.setIndent(id, level + step)
+                            }
+                        }) {
                         if (ChecklistModel.isStructured(item)) Column {
                             Text("Structured checklist item")
                             Text("This item comes from a newer version of Keeparr and is shown read-only.", style = MaterialTheme.typography.labelSmall)
@@ -83,17 +138,7 @@ internal fun ChecklistRows(
                             )
                         }
                     }
-                    Box {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "Checklist item actions") }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            // Moves go to the neighbouring visible row, so hidden completed rows are never the target.
-                            if (visibleIndex > 0) DropdownMenuItem(text = { Text("Move up") }, onClick = { menu = false; actions.moveUp(id) })
-                            if (visibleIndex < visible.lastIndex) DropdownMenuItem(text = { Text("Move down") }, onClick = { menu = false; actions.moveDown(id) })
-                            if (level < ChecklistModel.maxIndentLevelAt(rows, index)) DropdownMenuItem(text = { Text("Indent") }, onClick = { menu = false; actions.setIndent(id, level + 1) })
-                            if (level > 0) DropdownMenuItem(text = { Text("Outdent") }, onClick = { menu = false; actions.setIndent(id, level - 1) })
-                            DropdownMenuItem(text = { Text("Remove item") }, leadingIcon = { Icon(Icons.Outlined.Close, null) }, onClick = { menu = false; actions.remove(id) })
-                        }
-                    }
+                    IconButton(onClick = { actions.remove(id) }) { Icon(Icons.Outlined.Close, "Remove item") }
                 }
             }
         }

@@ -23,6 +23,21 @@ import kotlinx.coroutines.launch
 internal data class NoteDrop(val sourceId: String, val targetId: String)
 
 /**
+ * Pixels to scroll this frame for a drag at window height [y] (negative scrolls toward the start): ramping up linearly from
+ * zero at [edge] pixels inside the viewport's [top]/[bottom] to [maxStep] at and beyond the edge itself.
+ */
+internal fun edgeScrollDelta(y: Float, top: Float, bottom: Float, edge: Float, maxStep: Float): Float {
+    if (edge <= 0f) return 0f
+    val fromTop = y - top
+    val fromBottom = bottom - y
+    return when {
+        fromTop < edge -> -maxStep * ((edge - fromTop) / edge).coerceIn(0f, 1f)
+        fromBottom < edge -> maxStep * ((edge - fromBottom) / edge).coerceIn(0f, 1f)
+        else -> 0f
+    }
+}
+
+/**
  * State and rules of one note-reorder drag, independent of Compose input handling so they can be tested.
  *
  * Card geometry lives in a plain map: reporting a card's bounds must not invalidate composition (it used to be a snapshot
@@ -69,14 +84,8 @@ internal class NoteReorderController(private val canDrop: (sourceId: String, tar
      */
     fun autoScrollDelta(viewport: Rect, edge: Float, maxStep: Float): Float {
         val point = lastPoint ?: return 0f
-        if (draggingId == null || edge <= 0f) return 0f
-        val fromTop = point.y - viewport.top
-        val fromBottom = viewport.bottom - point.y
-        return when {
-            fromTop < edge -> -maxStep * ((edge - fromTop) / edge).coerceIn(0f, 1f)
-            fromBottom < edge -> maxStep * ((edge - fromBottom) / edge).coerceIn(0f, 1f)
-            else -> 0f
-        }
+        if (draggingId == null) return 0f
+        return edgeScrollDelta(point.y, viewport.top, viewport.bottom, edge, maxStep)
     }
 
     /** Ends the drag; a drop is reported once, and only when it landed on an allowed target. */
