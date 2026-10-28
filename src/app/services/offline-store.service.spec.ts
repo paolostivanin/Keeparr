@@ -316,6 +316,9 @@ describe('OfflineStoreService indexed note access', () => {
       store.nextStamp()
     );
     const merged = note(-23, 'merged-pending-upload', 'Merged');
+    // Within one millisecond the outbox falls back to type priority (merge before upload), so make the merge strictly newer.
+    const uploadedAt = Date.now();
+    while (Date.now() === uploadedAt) await Promise.resolve();
 
     await store.persistNoteMergeMutation(partition, merged, [sourceA, sourceB], store.nextStamp());
 

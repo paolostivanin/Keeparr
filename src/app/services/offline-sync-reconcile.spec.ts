@@ -41,6 +41,10 @@ describe('OfflineSyncService profile switches', () => {
   });
 
   const switchProfile = () => { (service as any).currentPartition = second; };
+  // The service reads IndexedDB before it sends the request, so wait for the subscription instead of guessing a delay.
+  const untilRequested = async () => {
+    while (!release.observed) await new Promise(resolve => setTimeout(resolve, 1));
+  };
 
   it('does not write a snapshot requested by one profile into the profile that replaced it', async () => {
     (service as any).http = { get: () => release };
@@ -57,7 +61,7 @@ describe('OfflineSyncService profile switches', () => {
   it('does not apply a change page fetched for one profile to another', async () => {
     (service as any).http = { get: () => release };
     const pending = (service as any).pullChanges();
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await untilRequested();
     switchProfile();
     release.next({
       changes: [{ resourceType: 'note', resourceSyncId: 'a-note', operation: 'upsert', payload: note(1, 'a-note', 'Account A'), sequence: 1 }],
@@ -81,7 +85,7 @@ describe('OfflineSyncService profile switches', () => {
     (service as any).cacheChanged$.subscribe((change: unknown) => cacheChanges.push(change));
 
     const pending = (service as any).flushMutations(await store.listOutbox(first));
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await untilRequested();
     switchProfile();
     release.next({ results: [{ ok: true, resourceType: 'note', syncId: 'a-note', payload: { ...note(1, 'a-note', 'Edited'), revision: 2 } }], serverTime: Date.now() });
     await pending;
