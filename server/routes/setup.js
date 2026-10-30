@@ -53,6 +53,7 @@ function mountSetupRoutes(app) {
 
     const user = await createUser({ ...userData, role: 'admin', totpSecret: totpSecret || null, totpBackupCodes: backupCodes ? JSON.stringify(backupCodes) : null });
     await setAppSetting('originalAdminUserId', String(user.id));
+    await setAppSetting('trashRetentionDays', '30');
     res.status(201).json({ user: publicUser(user), backupCodes });
     } finally {
       setupAdminInProgress = false;

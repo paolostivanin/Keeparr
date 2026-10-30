@@ -218,6 +218,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   private lastLayoutNotes: NoteI[] | null = null
   private lastPreferences?: UserPreferences
   private reminderLookupCache?: { reminders: any[]; activeByNoteId: Map<number, any>; firedByNoteId: Map<number, any> }
+  trashRetentionDays: number | null = null
   private trashCountdownCache = new WeakMap<NoteI, { trashedAt: string; bucket: number; value: string }>()
   private reminderDateCache = new Map<string, string>()
   private pendingPermanentDeletes = new Map<number, { note: NoteI; allIndex: number; pinnedIndex: number; unpinnedIndex: number; timer: ReturnType<typeof setTimeout> }>()
@@ -462,18 +463,19 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   trashCountdown(note: NoteI) {
-    if (!note.trashedAt) return '10 days left'
+    if (this.trashRetentionDays === null) return 'Retention unavailable'
+    if (!note.trashedAt) return `${this.trashRetentionDays} days left`
     // Recompute at most once per minute per note; the value only changes once per day.
     const bucket = Math.floor(Date.now() / 60000)
     const cached = this.trashCountdownCache.get(note)
     if (cached && cached.trashedAt === note.trashedAt && cached.bucket === bucket) return cached.value
     const trashedAt = new Date(note.trashedAt).getTime()
     if (Number.isNaN(trashedAt)) {
-      const fallback = '10 days left'
+      const fallback = `${this.trashRetentionDays} days left`
       this.trashCountdownCache.set(note, { trashedAt: note.trashedAt, bucket, value: fallback })
       return fallback
     }
-    const expiresAt = trashedAt + 10 * 24 * 60 * 60 * 1000
+    const expiresAt = trashedAt + this.trashRetentionDays * 24 * 60 * 60 * 1000
     const daysLeft = Math.max(0, Math.ceil((expiresAt - Date.now()) / (24 * 60 * 60 * 1000)))
     const value = `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
     this.trashCountdownCache.set(note, { trashedAt: note.trashedAt, bucket, value })
@@ -3123,6 +3125,7 @@ export class NotesComponent implements OnInit, OnDestroy, AfterViewChecked {
   }
 
   ngOnInit(): void {
+    this.auth.getTrashRetention().then(days => { this.trashRetentionDays = days; this.trashCountdownCache = new WeakMap(); this.cd.markForCheck() }).catch(() => {})
     this.syncCurrentPage(this.router.url)
     setNoteCardPageFilter(this.noteStaysOnPage)
     this.zone.runOutsideAngular(() => {

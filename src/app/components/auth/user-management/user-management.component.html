@@ -178,6 +178,16 @@
       </section>
     </div>
 
+    <div class="settings-group">
+      <h2 class="group-title">Trash retention</h2>
+      <section class="settings-section">
+        <p class="section-desc">Notes in Trash become eligible for permanent deletion after this many days. Changing this applies to notes already in Trash.</p>
+        <label>Days <input type="number" min="7" max="365" step="1" [(ngModel)]="trashRetentionDays"></label>
+        <button type="button" (click)="saveTrashRetention()">Save</button>
+        @if (trashRetentionMessage) { <p>{{trashRetentionMessage}}</p> }
+      </section>
+    </div>
+
     <!-- ── Group: Automated Backups ────────────────────────────────────── -->
     <div class="settings-group">
       <h2 class="group-title color-orange">

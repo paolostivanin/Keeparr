@@ -9,12 +9,13 @@ const { orderedAccessibleIds } = require('./note-order');
 const { recordDependentSyncDeletesForNote, recordNoteSyncChange } = require('./sync-changes');
 const { serverLwwStamp } = require('./sync-protocol');
 
-function trashExpirationCutoff() {
-  return new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+async function trashExpirationCutoff() {
+  const days = Number(await getAppSetting('trashRetentionDays', '10'));
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
 async function purgeExpiredTrashedNotes() {
-  const expired = await all('SELECT * FROM notes WHERE trashed = 1 AND trashedAt IS NOT NULL AND trashedAt <= ?', [trashExpirationCutoff()]);
+  const expired = await all('SELECT * FROM notes WHERE trashed = 1 AND trashedAt IS NOT NULL AND trashedAt <= ?', [await trashExpirationCutoff()]);
   for (const note of expired) {
     const recipients = await getNoteRecipientIds(note.id);
     const stamp = serverLwwStamp();

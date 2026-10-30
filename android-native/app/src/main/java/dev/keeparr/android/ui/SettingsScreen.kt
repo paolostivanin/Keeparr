@@ -3,6 +3,8 @@ package dev.keeparr.android.ui
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
@@ -46,6 +48,28 @@ internal fun SettingsScreen(activity: MainActivity, app: KeeparrApplication, rem
     var alias by remember { mutableStateOf(app.settings.alias) }
     var confirmLogout by remember { mutableStateOf(false) }
     var pendingCount by remember { mutableIntStateOf(0) }
+    var isAdmin by remember(app.settings.profile) { mutableStateOf(false) }
+    var retentionDays by remember(app.settings.profile) { mutableStateOf<Int?>(null) }
+    var retentionError by remember(app.settings.profile) { mutableStateOf<String?>(null) }
+    var retentionRetry by remember(app.settings.profile) { mutableIntStateOf(0) }
+    var showRetention by remember(app.settings.profile) { mutableStateOf(false) }
+    var retentionInput by remember(app.settings.profile) { mutableStateOf("") }
+    var retentionSaving by remember(app.settings.profile) { mutableStateOf(false) }
+    LaunchedEffect(app.settings.profile, retentionRetry) {
+        val connection = app.settings.snapshot()
+        isAdmin = false; retentionDays = null; retentionError = null
+        try {
+            val user = JSONObject(app.repository.api.call("/api/users/me/preferences", connection = connection))
+            if (app.settings.snapshot() != connection) return@LaunchedEffect
+            isAdmin = user.optString("role") == "admin"
+            if (isAdmin) {
+                val result = JSONObject(app.repository.api.call("/api/trash-retention", connection = connection))
+                if (app.settings.snapshot() != connection) return@LaunchedEffect
+                retentionDays = result.getInt("days")
+            }
+        } catch (cancelled: CancellationException) { throw cancelled
+        } catch (problem: Exception) { retentionError = problem.message ?: "Could not load server settings." }
+    }
     // Permission state changes in system settings; re-read it when the user comes back.
     var refresh by remember { mutableIntStateOf(0) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refresh++ }
@@ -88,6 +112,15 @@ internal fun SettingsScreen(activity: MainActivity, app: KeeparrApplication, rem
                 SettingsDivider()
                 SettingsRow(Icons.Outlined.Lock, "Client certificate", alias.ifBlank { "None selected" },
                     onClick = { activity.chooseCertificate(app.settings.origin) { alias = it; SyncWorker.enqueue(app) } })
+            }
+            if (isAdmin || retentionError != null) {
+                SettingsSection("Administration") {
+                    SettingsRow(Icons.Outlined.DeleteOutline, "Trash retention",
+                        retentionError ?: retentionDays?.let { "$it days · applies to all users" } ?: "Loading…",
+                        onClick = if (retentionError != null) ({ retentionRetry++ }) else if (retentionDays != null) ({
+                            retentionInput = retentionDays.toString(); showRetention = true
+                        }) else null)
+                }
             }
             SettingsSection("Appearance") {
                 SettingsRow(Icons.Outlined.DarkMode, "Theme", "Follow the system, or always light or dark")
@@ -132,6 +165,31 @@ internal fun SettingsScreen(activity: MainActivity, app: KeeparrApplication, rem
             }
         }
     }
+    if (showRetention) AlertDialog(onDismissRequest = { if (!retentionSaving) showRetention = false },
+        title = { Text("Trash retention") },
+        text = {
+            Column {
+                Text("Notes become eligible for permanent deletion after this many days. Changes apply to notes already in Trash.")
+                OutlinedTextField(retentionInput, { retentionInput = it }, label = { Text("Days (7–365)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true,
+                    isError = retentionInput.toIntOrNull()?.let { it !in 7..365 } ?: true)
+            }
+        },
+        confirmButton = { TextButton(enabled = !retentionSaving && retentionInput.toIntOrNull()?.let { it in 7..365 } == true,
+            onClick = {
+                val days = retentionInput.toIntOrNull() ?: return@TextButton
+                val connection = app.settings.snapshot()
+                retentionSaving = true
+                scope.launch {
+                    try {
+                        val result = JSONObject(app.repository.api.call("/api/trash-retention", "PUT", JSONObject().put("days", days), connection))
+                        if (app.settings.snapshot() == connection) { retentionDays = result.getInt("days"); showRetention = false }
+                    } catch (cancelled: CancellationException) { throw cancelled
+                    } catch (problem: Exception) { onError(problem.message ?: "Could not save trash retention.")
+                    } finally { retentionSaving = false }
+                }
+            }) { Text(if (retentionSaving) "Saving…" else "Save") } },
+        dismissButton = { TextButton(enabled = !retentionSaving, onClick = { showRetention = false }) { Text("Cancel") } })
     if (confirmLogout) AlertDialog(onDismissRequest = { confirmLogout = false }, title = { Text("Sign out?") },
         text = { Text(if (pendingCount > 0) "This clears cached notes, attachments, and $pendingCount unsynchronized change(s), including recovered drafts and pending uploads, from this device." else "This clears cached notes and attachments from this device.") },
         confirmButton = { TextButton(onClick = { confirmLogout = false; onLogout() }) { Text("Clear and sign out") } },

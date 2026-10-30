@@ -52,6 +52,16 @@ async function oauthGrantsForUser(userId) {
 }
 
 function mountUserRoutes(app) {
+  app.get('/api/trash-retention', requireAuth, asyncRoute(async (_req, res) => {
+    res.json({ days: Number(await getAppSetting('trashRetentionDays', '10')) });
+  }));
+
+  app.put('/api/trash-retention', requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+    const days = req.body?.days;
+    if (!Number.isInteger(days) || days < 7 || days > 365) return res.status(400).json({ error: 'Retention must be a whole number from 7 to 365 days.' });
+    await setAppSetting('trashRetentionDays', days);
+    res.json({ days });
+  }));
   app.get('/api/users/me/preferences', requireAuth, asyncRoute(async (req, res) => {
     const user = await get('SELECT * FROM users WHERE id = ?', [req.user.id]);
     res.json(publicUser(user));

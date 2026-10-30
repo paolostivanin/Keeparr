@@ -98,6 +98,10 @@ Custom headers do not apply to the realtime WebSocket connection, because WebSoc
 
 These need `BASE_URL` set to the public origin.
 
+## Trash retention
+
+Administrators can set trash retention in User Management from 7 to 365 days. New installations default to 30 days; existing installations retain the previous 10-day policy until changed. The setting applies to notes already in Trash, so reducing it can make them eligible for permanent deletion immediately. Purging runs at startup and when notes are requested, at most once per hour.
+
 ## Backups and restore
 
 A backup is one `.zip` file in `data/backups`. It holds a consistent snapshot of the database (taken while Keeparr runs), every uploaded image and attachment, the web-push key (`vapid.json`) and a small manifest. Admins can schedule daily, weekly or monthly backups from User Management, or create one manually, and download any of them from there.
