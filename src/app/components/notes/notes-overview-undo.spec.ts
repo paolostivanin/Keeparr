@@ -28,7 +28,7 @@ describe('NotesComponent overview checklist undo', () => {
 
   beforeEach(() => {
     notes = new BehaviorSubject([note()]);
-    auth = { currentUser$: new BehaviorSubject({ id: 7 }) };
+    auth = { currentUser$: new BehaviorSubject({ id: 7 }), getTrashRetention: async () => 30 };
     shared = {
       note: { all: notes.value }, searchQuery: '', searchScope: new BehaviorSubject('all'),
       noteViewType: new BehaviorSubject('grid'), noteEditorOpen$: new BehaviorSubject(false),
