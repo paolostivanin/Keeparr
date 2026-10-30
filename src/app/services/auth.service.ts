@@ -641,11 +641,11 @@ export class AuthService {
 
 
   async getTrashRetention(): Promise<number> {
-    return (await firstValueFrom(this.http.get<{ days: number }>(`${this.apiUrl}/trash-retention`))).days;
+    return (await firstValueFrom(this.http.get<{ days: number }>(`${this.apiUrl}/trash-retention`, { headers: this.authHeaders() }))).days;
   }
 
   async saveTrashRetention(days: number): Promise<number> {
-    return (await firstValueFrom(this.http.put<{ days: number }>(`${this.apiUrl}/trash-retention`, { days }))).days;
+    return (await firstValueFrom(this.http.put<{ days: number }>(`${this.apiUrl}/trash-retention`, { days }, { headers: this.authHeaders() }))).days;
   }
 
   async saveBackupSchedule(schedule: string, backupTime?: string, keepCount?: number) {

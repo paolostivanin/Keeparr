@@ -46,7 +46,9 @@ export class UserManagementComponent implements OnInit {
     try {
       this.trashRetentionDays = await this.auth.saveTrashRetention(Number(this.trashRetentionDays));
       this.trashRetentionMessage = 'Trash retention saved.';
-    } catch { this.trashRetentionMessage = 'Enter a whole number from 7 to 365 days.'; }
+    } catch (error) {
+      this.trashRetentionMessage = this.getErrorMessage(error, 'Could not save trash retention.');
+    }
   }
 
   // Backup management
@@ -346,7 +348,7 @@ export class UserManagementComponent implements OnInit {
   ngOnInit(): void {
     this.loadUsers();
     this.loadRegistrationSettings();
-    this.auth.getTrashRetention().then(days => this.trashRetentionDays = days).catch(() => this.trashRetentionMessage = 'Could not load trash retention.');
+    this.auth.getTrashRetention().then(days => this.trashRetentionDays = days).catch(error => this.trashRetentionMessage = this.getErrorMessage(error, 'Could not load trash retention.'));
     this.loadBackupStatus().then(() => {
       setTimeout(() => this.initBackupTimePicker(), 500);
     });

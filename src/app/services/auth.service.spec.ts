@@ -48,3 +48,21 @@ describe('AuthService media tickets', () => {
     expect(auth.withMediaTicket('/api/proxy-image?url=x')).toBe('/api/proxy-image?url=x&ticket=tkt%201');
   });
 });
+
+describe('AuthService trash retention', () => {
+  it('sends the session token when reading and saving retention', async () => {
+    const get = jasmine.createSpy('get').and.returnValue(of({ days: 30 }));
+    const put = jasmine.createSpy('put').and.returnValue(of({ days: 45 }));
+    const auth = new AuthService({ get, put } as any);
+    auth.currentUser$.next({ id: 1, token: 'session-token' } as any);
+
+    expect(await auth.getTrashRetention()).toBe(30);
+    expect(await auth.saveTrashRetention(45)).toBe(45);
+
+    expect(get.calls.argsFor(0)[0]).toContain('/trash-retention');
+    expect(get.calls.argsFor(0)[1].headers.get('Authorization')).toBe('Bearer session-token');
+    expect(put.calls.argsFor(0)[0]).toContain('/trash-retention');
+    expect(put.calls.argsFor(0)[1]).toEqual({ days: 45 });
+    expect(put.calls.argsFor(0)[2].headers.get('Authorization')).toBe('Bearer session-token');
+  });
+});
