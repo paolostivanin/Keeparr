@@ -1,4 +1,6 @@
-FROM node:24-alpine AS builder
+# The builder's output (dist, server, mcp) is platform-independent, so it runs natively on the build host and is
+# shared by every target platform; only the runtime stage's npm ci needs per-platform (emulated) native modules.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS builder
 WORKDIR /app
 
 # Keep build logs free of npm's self-update and funding notices.
