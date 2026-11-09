@@ -3,6 +3,7 @@ package dev.keeparr.android.data
 import android.content.Context
 import android.security.KeyChain
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.joinAll
@@ -43,6 +45,7 @@ import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -131,7 +134,8 @@ private val Context.connectionDataStore by preferencesDataStore(
 class ConnectionSettings(
     context: Context,
     dataStoreOverride: DataStore<Preferences>? = null,
-    private val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val cipher: CredentialCipher = KeystoreCredentialCipher()
 ) : ConnectionProfile {
     private val dataStore = dataStoreOverride ?: context.connectionDataStore
     private val persistenceMutex = Mutex()
@@ -177,8 +181,30 @@ class ConnectionSettings(
             cache = stored
             originValue = stored[originPreference] ?: ""
             userIdValue = stored[userIdPreference] ?: 0
-            tokenValue = decrypt(stored[tokenPreference] ?: "")
+            // Read before the credentials, so a problem found decrypting them replaces the saved message instead of being overwritten.
             messageValue = stored[messagePreference] ?: ""
+            // A Keystore that fails at startup is retried briefly (after boot it can be busy). Once it has failed that way, later
+            // values get one attempt each instead of their own wait.
+            var keystoreDown = false
+            suspend fun read(ciphertext: String): CredentialRead {
+                var result = cipher.decrypt(ciphertext)
+                if (!keystoreDown) for (wait in CREDENTIAL_RETRY_DELAYS_MS) {
+                    if (result != CredentialRead.Unavailable) break
+                    delay(wait)
+                    result = cipher.decrypt(ciphertext)
+                }
+                if (result == CredentialRead.Unavailable) keystoreDown = true
+                return result
+            }
+            // A credential that can never be read again is removed, so it does not fail again on every start; one the Keystore
+            // could not read this time is kept for the next start.
+            val lost = mutableListOf<Preferences.Key<String>>()
+            var problem: String? = null
+            tokenValue = when (val token = read(stored[tokenPreference] ?: "")) {
+                is CredentialRead.Value -> token.text
+                CredentialRead.Lost -> { lost += tokenPreference; problem = LOST_SIGN_IN_MESSAGE; "" }
+                CredentialRead.Unavailable -> { problem = UNREADABLE_CREDENTIALS_MESSAGE; "" }
+            }
             lastSyncedAtValue = stored[lastSyncedAtPreference] ?: 0
             themeModeValue = ThemeMode.entries.firstOrNull { it.name == stored[themeModePreference] }
                 ?: stored[legacyDarkModePreference]?.let { if (it) ThemeMode.Dark else ThemeMode.Light } ?: ThemeMode.System
@@ -189,7 +215,19 @@ class ConnectionSettings(
                 when {
                     key.name.startsWith("alias_") -> (value as? String)?.let { aliases[key.name.removePrefix("alias_")] = it }
                     key.name.startsWith("alias_revision_") -> (value as? Long)?.let { aliasRevisions[key.name.removePrefix("alias_revision_")] = it }
-                    key.name.startsWith("headers_") -> (value as? String)?.let { gatewayHeaders[key.name.removePrefix("headers_")] = decrypt(it) }
+                    key.name.startsWith("headers_") && value is String -> when (val headers = read(value)) {
+                        is CredentialRead.Value -> gatewayHeaders[key.name.removePrefix("headers_")] = headers.text
+                        CredentialRead.Lost -> { lost += stringPreferencesKey(key.name); if (problem == null) problem = LOST_HEADERS_MESSAGE }
+                        CredentialRead.Unavailable -> if (problem == null) problem = UNREADABLE_CREDENTIALS_MESSAGE
+                    }
+                }
+            }
+            problem?.let { messageValue = it }
+            if (lost.isNotEmpty()) {
+                val message = messageValue
+                update {
+                    lost.forEach { remove(it) }
+                    this[messagePreference] = message
                 }
             }
             synchronized(snapshotLock) { refreshSnapshotLocked() }
@@ -320,30 +358,64 @@ class ConnectionSettings(
             tokenValue
         )
     }
-    private fun key(): SecretKey {
-        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        return (store.getKey("keeparr_session", null) as? SecretKey) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
-            init(KeyGenParameterSpec.Builder("keeparr_session", KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
-        }.generateKey()
-    }
-    @Synchronized private fun encrypt(value: String): String {
+    private fun encrypt(value: String): String = cipher.encrypt(value)
+}
+
+private const val LOST_SIGN_IN_MESSAGE =
+    "Your saved sign-in can no longer be read on this device. Sign in again; cached notes were retained."
+private const val LOST_HEADERS_MESSAGE =
+    "Your saved gateway headers can no longer be read on this device. Sign in again and re-enter them; cached notes were retained."
+private const val UNREADABLE_CREDENTIALS_MESSAGE =
+    "Android's secure storage did not respond, so your saved sign-in could not be read. Close and reopen Keeparr to try again; cached notes were retained."
+private val CREDENTIAL_RETRY_DELAYS_MS = listOf(250L, 750L, 2_000L)
+
+/** The result of reading one saved credential. */
+sealed interface CredentialRead {
+    data class Value(val text: String) : CredentialRead
+    /** It can never be read again: the Keystore key is gone (a new phone, a reset Keystore) or the bytes were not written with it. */
+    data object Lost : CredentialRead
+    /** The Keystore failed this time; the same ciphertext may still be readable on a later attempt. */
+    data object Unavailable : CredentialRead
+}
+
+/** Encrypts the saved session token and gateway headers. */
+interface CredentialCipher {
+    fun encrypt(value: String): String
+    fun decrypt(value: String): CredentialRead
+}
+
+/** AES-GCM with a key kept in the Android Keystore. Only encryption creates the key: a read never replaces a missing one. */
+class KeystoreCredentialCipher : CredentialCipher {
+    private fun keyStore() = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    private fun existingKey() = keyStore().getKey(KEY_ALIAS, null) as? SecretKey
+    private fun key(): SecretKey = existingKey() ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
+        init(KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
+    }.generateKey()
+    @Synchronized override fun encrypt(value: String): String {
         if (value.isEmpty()) return ""
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
         return Base64.encodeToString(cipher.iv + cipher.doFinal(value.toByteArray()), Base64.NO_WRAP)
     }
-    @Synchronized private fun decrypt(value: String): String {
-        if (value.isEmpty()) return ""
+    @Synchronized override fun decrypt(value: String): CredentialRead {
+        if (value.isEmpty()) return CredentialRead.Value("")
+        val bytes = runCatching { Base64.decode(value, Base64.NO_WRAP) }.getOrNull()?.takeIf { it.size > 12 } ?: return CredentialRead.Lost
         return try {
-            val bytes = Base64.decode(value, Base64.NO_WRAP)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12))) }
-            String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)))
-        } catch (_: Exception) {
-            messageValue = "Saved connection credentials could not be decrypted. Sign in again and re-enter gateway headers if needed; cached notes were retained."
-            update { this[messagePreference] = messageValue }
-            ""
+            val key = existingKey() ?: return CredentialRead.Lost
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, bytes.copyOfRange(0, 12))) }
+            CredentialRead.Value(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size))))
+        } catch (_: AEADBadTagException) {
+            CredentialRead.Lost
+        } catch (_: KeyPermanentlyInvalidatedException) {
+            // The key can no longer be used at all; drop it so the next sign-in encrypts with a new one.
+            runCatching { keyStore().deleteEntry(KEY_ALIAS) }
+            CredentialRead.Lost
+        } catch (error: Exception) {
+            Log.w("KeeparrSettings", "The Keystore could not decrypt a saved credential.", error)
+            CredentialRead.Unavailable
         }
     }
+    private companion object { const val KEY_ALIAS = "keeparr_session" }
 }
 
 class ApiException(val code: Int, override val message: String) : Exception(message)
@@ -412,12 +484,7 @@ class KeeparrApi(private val context: Context, private val settings: ConnectionP
                     Log.e("KeeparrApi", "Expected JSON for $path, received HTML (HTTP ${response.code}, content-type=$contentType).")
                     throw htmlGatewayFailure(response.code, path)
                 }
-                if (!response.isSuccessful) throw ApiException(response.code, when {
-                    response.code == 401 -> "Your Keeparr session expired. Sign in again."
-                    response.code == 403 -> "Access denied by the server or gateway. Check your certificate and account."
-                    response.code in 300..399 -> "The server redirected this request. Use its final HTTPS address."
-                    else -> runCatching { JSONObject(text).text("error") }.getOrDefault("Request failed (${response.code})").take(250)
-                })
+                if (!response.isSuccessful) throw ApiException(response.code, httpFailureMessage(response.code, path, text))
                 text
             }
         } catch (error: ApiException) { throw error }
@@ -427,7 +494,7 @@ class KeeparrApi(private val context: Context, private val settings: ConnectionP
         val address = parseOrigin(origin)
         val targetOrigin = address.toString().trimEnd('/')
         val attempt = ConnectionSnapshot(targetOrigin, settings.aliasFor(targetOrigin), settings.aliasRevisionFor(targetOrigin), gatewayHeaders, settings.userId, "")
-        val result = JSONObject(call("/api/auth/login", "POST", JSONObject().put("username", username).put("password", password)
+        val result = JSONObject(call(LOGIN_PATH, "POST", JSONObject().put("username", username).put("password", password)
             .put("totpToken", totp), attempt))
         val token = result.getString("token")
         val userId = result.getJSONObject("user").getLong("id")

@@ -92,4 +92,27 @@ class ConnectionFailureTest {
         assertTrue(connectionStateFor(ApiException(503, "offline")) is ConnectionState.Offline)
         assertEquals(ConnectionState.Offline("Connection unavailable"), connectionStateFor(IllegalStateException()))
     }
+
+    @Test fun aRefusedSignInShowsTheServersReasonNotAnExpiredSession() {
+        val wrongPassword = httpFailureMessage(401, LOGIN_PATH, """{"error":"Username or password is incorrect."}""")
+        assertEquals("Username or password is incorrect.", wrongPassword)
+        assertNull(connectionStateForMessage(wrongPassword))
+        val twoFactor = httpFailureMessage(401, LOGIN_PATH, """{"error":"2FA required","requires2FA":true}""")
+        assertTrue(twoFactor, twoFactor.contains("2FA code"))
+        assertNull(connectionStateForMessage(twoFactor))
+        assertEquals("Invalid 2FA code or backup code.", httpFailureMessage(401, LOGIN_PATH, """{"error":"Invalid 2FA code or backup code."}"""))
+        assertEquals("Your account is pending approval by an administrator.",
+            httpFailureMessage(403, LOGIN_PATH, """{"error":"Your account is pending approval by an administrator."}"""))
+    }
+
+    @Test fun a401OnAnyOtherRequestStillMeansTheSessionExpired() {
+        val expired = httpFailureMessage(401, "/api/sync/changes", """{"error":"Authentication required."}""")
+        assertTrue(connectionStateForMessage(expired) is ConnectionState.SessionExpired)
+        assertTrue(connectionStateFor(ApiException(401, expired)) is ConnectionState.SessionExpired)
+        assertTrue(connectionStateFor(ApiException(403, httpFailureMessage(403, "/api/notes", "{}"))) is ConnectionState.GatewayDenied)
+        assertEquals("Note not found.", httpFailureMessage(404, "/api/notes/1", """{"error":"Note not found."}"""))
+        assertEquals("Request failed (500)", httpFailureMessage(500, "/api/notes", "not json"))
+        assertEquals("a sign-in without a JSON body keeps the generic meaning",
+            "Your Keeparr session expired. Sign in again.", httpFailureMessage(401, LOGIN_PATH, ""))
+    }
 }

@@ -1,5 +1,6 @@
 package dev.keeparr.android.data
 
+import org.json.JSONObject
 import java.io.EOFException
 import java.io.IOException
 import java.net.SocketException
@@ -23,6 +24,27 @@ internal fun htmlGatewayFailure(code: Int, path: String): ApiException = when {
     code >= 500 -> ApiException(code, "The Keeparr server is unavailable right now (HTTP $code).")
     else -> ApiException(if (code in 400..499) code else 502,
         "Keeparr's API returned HTML for $path (HTTP $code); this path is not reaching the Keeparr backend. Deploy the native protocol update and route /api requests through the gateway.")
+}
+
+internal const val LOGIN_PATH = "/api/auth/login"
+
+/**
+ * The message for a JSON error response. A refused sign-in (wrong password, 2FA needed, account pending approval, lockout) shows the
+ * server's own reason; on any other request a 401 means the saved session is no longer valid.
+ */
+internal fun httpFailureMessage(code: Int, path: String, body: String): String {
+    val json = runCatching { JSONObject(body) }.getOrNull()
+    val serverError = json?.text("error")?.takeIf { it.isNotBlank() }?.take(250)
+    if (path == LOGIN_PATH && json != null) {
+        if (json.optBoolean("requires2FA")) return "This account uses 2FA. Enter a 2FA code or a backup code."
+        serverError?.let { return it }
+    }
+    return when {
+        code == 401 -> "Your Keeparr session expired. Sign in again."
+        code == 403 -> "Access denied by the server or gateway. Check your certificate and account."
+        code in 300..399 -> "The server redirected this request. Use its final HTTPS address."
+        else -> serverError ?: "Request failed ($code)"
+    }
 }
 
 /** A failed request that never produced an HTTP response. Code -1 marks it as a connection failure to every retry decision. */
