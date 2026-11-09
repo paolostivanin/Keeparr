@@ -49,7 +49,8 @@ services:
       # Set to "1" only when you actually need to perform a restore, then unset.
       # - KEEPARR_ALLOW_RESTORE=1
 
-      # Session lifetime in days (default 30). Lower = more re-auth, more
+      # Days a login session stays valid without use (default 30); any
+      # request extends it. Lower = idle devices re-auth sooner, more
       # damage-control if a token is stolen.
       # - KEEPARR_SESSION_TTL_DAYS=30
 

@@ -7,7 +7,7 @@ const { broadcastRealtime, closeRealtimeClientsForUser } = require('./realtime')
 const { deleteAttachmentFilesForNote, deleteImageFilesForNote, safeStoredImageFilename } = require('./files');
 const { getAppSetting } = require('./app-settings');
 const { mcpTokenHash, randomHex } = require('./auth');
-const { uploadDir } = require('./config');
+const { sessionTtlMs, uploadDir } = require('./config');
 
 function normalizeUsername(username) {
   return String(username || '').trim().toLowerCase();
@@ -58,12 +58,10 @@ function randomAvatarPreset() {
   return presets[Math.floor(Math.random() * presets.length)];
 }
 
-const SESSION_TTL_DAYS = Number(process.env.KEEPARR_SESSION_TTL_DAYS || 30);
-
 async function createSession(user) {
   const token = randomHex(32);
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(now.getTime() + sessionTtlMs).toISOString();
   await run(
     'INSERT INTO sessions (token, userId, createdAt, expiresAt, hashed) VALUES (?, ?, ?, ?, 1)',
     [mcpTokenHash(token), user.id, now.toISOString(), expiresAt]

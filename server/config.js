@@ -16,6 +16,10 @@ const takeoutTmpDir = process.env.TAKEOUT_TMP_DIR || path.join(dataDir, 'imports
 const dbPath = process.env.SQLITE_PATH || path.join(dataDir, 'keeparr.sqlite');
 const vapidPath = path.join(dataDir, 'vapid.json');
 const staticDir = path.join(__dirname, '..', 'dist', 'keep');
+// How long a login session stays valid without being used (default 30 days); every authenticated request extends it.
+// A zero, negative or non-numeric value falls back to the default instead of expiring every session or breaking login.
+const sessionTtlDays = Number(process.env.KEEPARR_SESSION_TTL_DAYS || 30);
+const sessionTtlMs = (Number.isFinite(sessionTtlDays) && sessionTtlDays > 0 ? sessionTtlDays : 30) * 24 * 60 * 60 * 1000;
 
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -57,6 +61,6 @@ const vapidSubject = process.env.VAPID_SUBJECT || 'https://example.com';
 webPush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
 
 module.exports = {
-  trustProxySetting, port, dataDir, uploadDir, attachmentDir, takeoutTmpDir, dbPath, vapidPath, staticDir,
+  trustProxySetting, port, dataDir, uploadDir, attachmentDir, takeoutTmpDir, dbPath, vapidPath, staticDir, sessionTtlMs,
   KEEPARR_VERSION, GITHUB_RELEASES_URL, vapidKeys
 };

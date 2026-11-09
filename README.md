@@ -52,7 +52,7 @@ Open `http://localhost:6767` and create the first admin account.
 
 Keeparr stores its database, uploads, attachments and generated server data in `./data`. Admins can schedule backups (the newest 7 automated ones are kept) from User Management; they live in `data/backups`, so copy them off the machine too. See [deployment](docs/deployment.md#backups-and-restore).
 
-The compose file pulls the multi-arch (amd64, arm64) image `ghcr.io/paolostivanin/keeparr:latest`. Release tags are also published as `2.5.1`, `2.5` and `2`; pin one of those in `docker-compose.yml` if you do not want to follow `latest`. To build from the local source instead, add the dev override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
+The compose file pulls the multi-arch (amd64, arm64) image `ghcr.io/paolostivanin/keeparr:latest`. Release tags are also published as `2.5.2`, `2.5` and `2`; pin one of those in `docker-compose.yml` if you do not want to follow `latest`. To build from the local source instead, add the dev override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
 
 ### Updating
 
@@ -76,7 +76,7 @@ Set environment variables in `docker-compose.yml` (commented examples are includ
 | `DATA_DIR`, `SQLITE_PATH` | Data directory (default `./data`) and database file (default `<data>/keeparr.sqlite`). |
 | `UPLOAD_DIR`, `ATTACHMENT_DIR`, `TAKEOUT_TMP_DIR` | Override where uploads, attachments and Takeout temp files are stored. |
 | `PUID` / `PGID` | Run the container as a specific Linux user/group. `KEEPARR_SKIP_CHOWN=1` skips the ownership fix at start. |
-| `KEEPARR_SESSION_TTL_DAYS` | Login session lifetime. Defaults to 30. |
+| `KEEPARR_SESSION_TTL_DAYS` | Days a login session stays valid without use; any request extends it. Defaults to 30. |
 | `KEEPARR_TRUST_PROXY` | Reverse proxies in front of Keeparr: a hop count (default 1), or a list of proxy addresses/subnets. Use 0 when the port is reachable directly, so clients cannot spoof their address and bypass the login rate limit. |
 | `KEEPARR_CORS_ALLOW_ALL` / `KEEPARR_CORS_ORIGINS` | CORS for remote clients. See [deployment](docs/deployment.md#vpn-tailscale-wireguard-and-multiple-domains). |
 | `KEEPARR_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_NAME`, `_SCOPES` | Optional OIDC single sign-on. See [oidc.md](docs/oidc.md). |

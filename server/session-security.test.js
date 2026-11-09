@@ -97,6 +97,35 @@ test('changing the password revokes other sessions, MCP and OAuth access, and ot
   thisSocket.socket.close();
 });
 
+test('a session in use is extended to a full lifetime once less than half is left, an expired one is not', { timeout: 90_000 }, async t => {
+  const harness = createHarness();
+  t.after(async () => { await harness.stop(); harness.cleanup(); });
+  await harness.start();
+  const ending = await harness.setupAdmin('owner', 'owner-pass-123');
+  const recent = await harness.login('owner', 'owner-pass-123');
+  const expired = await harness.login('owner', 'owner-pass-123');
+  const day = 24 * 60 * 60 * 1000;
+  const expiresAt = async token => (await query(harness.sqlitePath, 'SELECT expiresAt FROM sessions WHERE token = ?', [sha256(token)]))[0]?.expiresAt;
+  const setExpiresAt = (token, value) => query(harness.sqlitePath, 'UPDATE sessions SET expiresAt = ? WHERE token = ?', [value, sha256(token)], true);
+
+  await harness.stop();
+  const recentExpiresAt = new Date(Date.now() + 29 * day).toISOString();
+  await setExpiresAt(ending, new Date(Date.now() + day).toISOString());
+  await setExpiresAt(recent, recentExpiresAt);
+  await setExpiresAt(expired, new Date(Date.now() - 1000).toISOString());
+  await harness.start();
+
+  assert.equal((await harness.call('/users/me/preferences', { token: ending })).status, 200);
+  const renewed = Date.parse(await expiresAt(ending));
+  assert.ok(Math.abs(renewed - (Date.now() + 30 * day)) < 60_000, `a session with one day left runs for 30 more days (got ${new Date(renewed).toISOString()})`);
+
+  assert.equal((await harness.call('/users/me/preferences', { token: recent })).status, 200);
+  assert.equal(await expiresAt(recent), recentExpiresAt, 'a session with more than half its lifetime left is not rewritten');
+
+  assert.equal((await harness.call('/users/me/preferences', { token: expired })).status, 401, 'an expired session stays expired');
+  assert.equal(await expiresAt(expired), undefined, 'and is not brought back');
+});
+
 test('setting up 2FA needs the current password', { timeout: 60_000 }, async t => {
   const harness = createHarness();
   t.after(async () => { await harness.stop(); harness.cleanup(); });

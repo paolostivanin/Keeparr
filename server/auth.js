@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { generateSecret, verifySync, generateURI } = require('otplib');
 const { run, get } = require('./db');
 const { getAppSetting, setAppSetting } = require('./app-settings');
+const { sessionTtlMs } = require('./config');
 const { oauthTokenCanCallApi, resolveOAuthAccessToken } = require('./oauth-mcp');
 
 function randomHex(bytes = 32) {
@@ -111,15 +112,30 @@ async function verifySecondFactor(user, token) {
   return false;
 }
 
+// A session in use is pushed back to a full lifetime once less than half of it is left, so it only expires after a whole
+// lifetime without requests (the Android sync worker alone keeps a phone signed in), and each session is rewritten at
+// most once per half lifetime.
 async function resolveSessionFromToken(token) {
   if (!token) return null;
-  return await get(
+  const tokenHash = mcpTokenHash(token);
+  const now = Date.now();
+  const session = await get(
     `SELECT users.*, sessions.expiresAt AS sessionExpiresAt FROM sessions
      JOIN users ON users.id = sessions.userId
      WHERE sessions.token = ? AND users.enabled = 1
        AND (sessions.expiresAt IS NULL OR sessions.expiresAt > ?)`,
-    [mcpTokenHash(token), new Date().toISOString()]
+    [tokenHash, new Date(now).toISOString()]
   );
+  if (session?.sessionExpiresAt && Date.parse(session.sessionExpiresAt) - now < sessionTtlMs / 2) {
+    const expiresAt = new Date(now + sessionTtlMs).toISOString();
+    try {
+      await run('UPDATE sessions SET expiresAt = ? WHERE token = ?', [expiresAt, tokenHash]);
+      session.sessionExpiresAt = expiresAt;
+    } catch (error) {
+      console.error('[Auth] session renewal failed:', error.message);
+    }
+  }
+  return session;
 }
 
 function mcpTokenHash(token) {
