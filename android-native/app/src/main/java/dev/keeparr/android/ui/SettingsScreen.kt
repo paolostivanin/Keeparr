@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.keeparr.android.BuildConfig
 import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
@@ -47,6 +48,7 @@ internal fun SettingsScreen(activity: MainActivity, app: KeeparrApplication, rem
     val scheduler = app.reminders
     var alias by remember { mutableStateOf(app.settings.alias) }
     var confirmLogout by remember { mutableStateOf(false) }
+    val moveCompletedToBottom by app.settings.moveCompletedToBottom.collectAsStateWithLifecycle()
     var pendingCount by remember { mutableIntStateOf(0) }
     var isAdmin by remember(app.settings.profile) { mutableStateOf(false) }
     var retentionDays by remember(app.settings.profile) { mutableStateOf<Int?>(null) }
@@ -129,6 +131,10 @@ internal fun SettingsScreen(activity: MainActivity, app: KeeparrApplication, rem
                         FilterChip(selected = theme == mode, onClick = { onTheme(mode) }, label = { Text(mode.name) })
                     }
                 }
+                SettingsDivider()
+                SettingsSwitchRow(Icons.Outlined.Checklist, "Move completed items to bottom",
+                    "Checked items go to a collapsible section below the list", moveCompletedToBottom,
+                    onChange = { app.settings.setMoveCompletedToBottom(it); app.refreshWidgets(app) })
             }
             SettingsSection("Reminders") {
                 // `refresh` only exists to re-run these reads after returning from system settings.

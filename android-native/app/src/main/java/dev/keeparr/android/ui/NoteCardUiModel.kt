@@ -24,6 +24,8 @@ internal data class NoteCardUiModel(
     val locked: Boolean,
     val checklist: Boolean,
     val checklistItems: List<ChecklistCardItem>,
+    /** Checked items left out of [checklistItems] and summed up in a line below them; 0 when checked items stay in the list. */
+    val completedCount: Int,
     val imagePath: String?,
     val labels: List<String>,
     val shared: Boolean,
@@ -51,5 +53,5 @@ internal data class HomeProjection(
 internal val EmptyHomeProjection = HomeProjection(emptyList(), emptyList(), emptyList(), emptyList(), emptyMap(), emptyList())
 
 /** One-shot projection; the screen keeps a [HomeProjector] so unchanged notes are not rebuilt. */
-internal fun buildHomeProjection(notes: List<Note>, filter: String, search: String, reminders: List<JSONObject>): HomeProjection =
-    HomeProjector().project(notes, filter, search, reminders)
+internal fun buildHomeProjection(notes: List<Note>, filter: String, search: String, reminders: List<JSONObject>,
+    moveCompleted: Boolean = true): HomeProjection = HomeProjector().project(notes, filter, search, reminders, moveCompleted)

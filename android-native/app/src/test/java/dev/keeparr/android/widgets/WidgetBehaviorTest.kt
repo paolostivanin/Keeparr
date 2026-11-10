@@ -37,6 +37,8 @@ class WidgetBehaviorTest {
         override var headers = ""
         override var message = ""
         override var themeMode = ThemeMode.System
+        override val moveCompletedToBottom = kotlinx.coroutines.flow.MutableStateFlow(true)
+        override fun setMoveCompletedToBottom(enabled: Boolean) { moveCompletedToBottom.value = enabled }
         override fun aliasFor(server: String) = ""
         override fun setAliasFor(server: String, value: String) {}
         override fun headersFor(server: String) = ""
@@ -223,7 +225,12 @@ class WidgetBehaviorTest {
     private fun render(row: Row, single: Boolean = false) = buildRow(app, row, emptyMap(), single).apply(app, FrameLayout(app))
     private fun android.view.View.checkLines() = (findViewById<android.view.ViewGroup>(AppR.id.row_checks))
 
+    private fun android.view.View.checkTexts() = checkLines().let { lines ->
+        (0 until lines.childCount).map { lines.getChildAt(it).findViewById<TextView>(AppR.id.check_line_text).text.toString() } }
+    private fun android.view.View.completedLine() = findViewById<TextView>(AppR.id.row_completed)
+
     @Test fun aChecklistCardDrawsIconRowsInsteadOfTextGlyphs() {
+        profile.setMoveCompletedToBottom(false)
         val view = render(Row(checklistNote("Milk" to true, "Eggs" to false)))
         val lines = view.checkLines()
         assertEquals(android.view.View.VISIBLE, lines.visibility)
@@ -240,13 +247,47 @@ class WidgetBehaviorTest {
 
     @Test fun aRecycledRowViewDoesNotKeepThePreviousNotesChecklistRows() {
         val parent = FrameLayout(app)
-        val view = buildRow(app, Row(checklistNote("Milk" to true, "Eggs" to false)), emptyMap(), false).apply(app, parent)
+        val view = buildRow(app, Row(checklistNote("Milk" to false, "Eggs" to false, "Jam" to true)), emptyMap(), false).apply(app, parent)
         assertEquals(2, view.checkLines().childCount)
+        assertEquals(android.view.View.VISIBLE, view.completedLine().visibility)
         buildRow(app, Row(checklistNote("Bread" to false)), emptyMap(), false).reapply(app, view)
         assertEquals("rows are replaced, not accumulated", 1, view.checkLines().childCount)
+        assertEquals("the completed line goes with the note that had checked items", android.view.View.GONE, view.completedLine().visibility)
         buildRow(app, Row(note(2.0)), emptyMap(), false).reapply(app, view)
         assertEquals(0, view.checkLines().childCount)
         assertEquals(android.view.View.GONE, view.checkLines().visibility)
+    }
+
+    @Test fun aChecklistCardCountsCheckedItemsInsteadOfListingThemUnlessTurnedOff() {
+        val checklist = checklistNote("Milk" to true, "Eggs" to false, "Jam" to true, "Bread" to false)
+        val moved = render(Row(checklist))
+        assertEquals(listOf("Eggs", "Bread"), moved.checkTexts())
+        assertEquals(android.view.View.VISIBLE, moved.completedLine().visibility)
+        assertEquals("(2) Completed items", moved.completedLine().text.toString())
+
+        profile.setMoveCompletedToBottom(false)
+        val inPlace = render(Row(checklist))
+        assertEquals(listOf("Milk", "Eggs", "Jam", "Bread"), inPlace.checkTexts())
+        assertEquals(android.view.View.GONE, inPlace.completedLine().visibility)
+    }
+
+    @Test fun aSingleNoteWidgetListsOnlyOpenItemsAndCountsTheCheckedOnes() {
+        val checklist = checklistNote("Milk" to true, "Eggs" to false, "Jam" to true)
+        store(checklist)
+        configure(7, "note:${checklist.syncId}")
+        val moved = factory(7)
+        assertEquals("the header plus the one open item", 2, moved.count)
+        val header = moved.getViewAt(0)!!.apply(app, FrameLayout(app))
+        assertEquals("Checklist · 1 item(s)", header.findViewById<TextView>(AppR.id.row_body).text.toString())
+        assertEquals("(2) Completed items", header.completedLine().text.toString())
+        assertEquals("Eggs", moved.getViewAt(1)!!.apply(app, FrameLayout(app)).findViewById<TextView>(AppR.id.checklist_item_row).text.toString())
+
+        profile.setMoveCompletedToBottom(false)
+        val inPlace = factory(7)
+        assertEquals("checked items stay tappable when they are not moved", 4, inPlace.count)
+        val plainHeader = inPlace.getViewAt(0)!!.apply(app, FrameLayout(app))
+        assertEquals("Checklist · 3 item(s)", plainHeader.findViewById<TextView>(AppR.id.row_body).text.toString())
+        assertEquals(android.view.View.GONE, plainHeader.completedLine().visibility)
     }
 
     @Test fun aSingleNoteChecklistItemRowShowsTheItemTextWithoutAGlyphAndDescribesTheWholeRow() {

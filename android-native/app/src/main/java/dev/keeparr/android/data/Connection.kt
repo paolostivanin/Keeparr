@@ -98,6 +98,9 @@ interface ConnectionProfile {
     /** A sync completed: the saved problem no longer applies. */
     fun recordSyncSuccess(at: Long) { message = "" }
     var themeMode: ThemeMode
+    /** Whether checked checklist items move to a collapsible section below the others; on unless turned off on this device. */
+    val moveCompletedToBottom: StateFlow<Boolean> get() = MutableStateFlow(true)
+    fun setMoveCompletedToBottom(enabled: Boolean) {}
     fun snapshot() = ConnectionSnapshot(origin, aliasFor(origin), aliasRevisionFor(origin), headersFor(origin), userId, token)
 }
 
@@ -150,6 +153,8 @@ class ConnectionSettings(
     @Volatile private var messageValue = ""
     @Volatile private var lastSyncedAtValue = 0L
     @Volatile private var themeModeValue = ThemeMode.System
+    private val _moveCompletedToBottom = MutableStateFlow(true)
+    override val moveCompletedToBottom: StateFlow<Boolean> = _moveCompletedToBottom.asStateFlow()
     private val snapshotLock = Any()
     @Volatile private var activeSnapshot = ConnectionSnapshot("", "", 0, "", 0, "")
     private val aliases = ConcurrentHashMap<String, String>()
@@ -165,6 +170,7 @@ class ConnectionSettings(
     private val themeModePreference = stringPreferencesKey("themeMode")
     // The pre-ThemeMode on/off switch; only read, so an explicit earlier choice carries over.
     private val legacyDarkModePreference = booleanPreferencesKey("darkMode")
+    private val moveCompletedToBottomPreference = booleanPreferencesKey("moveCompletedToBottom")
 
     override suspend fun initialize() = withContext(Dispatchers.IO) {
         if (_ready.value) return@withContext
@@ -208,6 +214,7 @@ class ConnectionSettings(
             lastSyncedAtValue = stored[lastSyncedAtPreference] ?: 0
             themeModeValue = ThemeMode.entries.firstOrNull { it.name == stored[themeModePreference] }
                 ?: stored[legacyDarkModePreference]?.let { if (it) ThemeMode.Dark else ThemeMode.Light } ?: ThemeMode.System
+            _moveCompletedToBottom.value = stored[moveCompletedToBottomPreference] ?: true
             aliases.clear()
             aliasRevisions.clear()
             gatewayHeaders.clear()
@@ -346,6 +353,7 @@ class ConnectionSettings(
         update { this[messagePreference] = ""; this[lastSyncedAtPreference] = at }
     }
     override var themeMode: ThemeMode get() = themeModeValue; set(value) { themeModeValue = value; update { this[themeModePreference] = value.name } }
+    override fun setMoveCompletedToBottom(enabled: Boolean) { _moveCompletedToBottom.value = enabled; update { this[moveCompletedToBottomPreference] = enabled } }
     override fun snapshot() = activeSnapshot
 
     private fun refreshSnapshotLocked() {

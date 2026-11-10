@@ -26,15 +26,21 @@ internal class HomeProjector {
     private var lastReminders: List<JSONObject>? = null
     private var lastFilter = ""
     private var lastSearch = ""
+    private var lastMoveCompleted = true
     private var lastProjection: HomeProjection = EmptyHomeProjection
 
     /** Counters for tests and profiling: how much derived work the last calls actually did. */
     internal var cardBuilds = 0; private set
     internal var searchTextBuilds = 0; private set
 
-    @Synchronized fun project(notes: List<Note>, filter: String, search: String, reminders: List<JSONObject>): HomeProjection {
-        if (notes === lastNotes && reminders === lastReminders && filter == lastFilter && search == lastSearch) return lastProjection
+    /** [moveCompleted]: checklist cards leave checked items out and count them instead, as the editor moves them below. */
+    @Synchronized fun project(notes: List<Note>, filter: String, search: String, reminders: List<JSONObject>,
+        moveCompleted: Boolean = true): HomeProjection {
+        if (notes === lastNotes && reminders === lastReminders && filter == lastFilter && search == lastSearch &&
+            moveCompleted == lastMoveCompleted) return lastProjection
         syncMeta(notes)
+        // Every card depends on the setting, so a change rebuilds them all.
+        if (moveCompleted != lastMoveCompleted) meta.values.forEach { it.card = null }
         var visible = NoteOrder.visible(notes, filter)
         if (search.isNotBlank()) visible = visible.filter { note -> !note.locked && searchText(note).contains(search, ignoreCase = true) }
         val reminderIndex = ReminderFormat.indexByNote(notes, reminders)
@@ -43,7 +49,7 @@ internal class HomeProjector {
             val reminderText = reminderIndex[note.syncId]?.let { ReminderFormat.dateTime(ReminderFormat.displayDueAt(it)) }
             val cached = entry.card
             if (cached != null && entry.reminderText == reminderText) cached
-            else buildCard(note, reminderText).also { entry.card = it; entry.reminderText = reminderText; cardBuilds++ }
+            else buildCard(note, reminderText, moveCompleted).also { entry.card = it; entry.reminderText = reminderText; cardBuilds++ }
         }
         val projection = lastProjection.takeIf { previous -> sameElements(previous.visibleNotes, visible) &&
             sameElements(previous.cards, cards) && previous.filterChoices == filterChoices(notes) }
@@ -55,7 +61,8 @@ internal class HomeProjector {
                 notesBySyncId = visible.associateBy { it.syncId },
                 filterChoices = filterChoices(notes)
             )
-        lastNotes = notes; lastReminders = reminders; lastFilter = filter; lastSearch = search; lastProjection = projection
+        lastNotes = notes; lastReminders = reminders; lastFilter = filter; lastSearch = search; lastMoveCompleted = moveCompleted
+        lastProjection = projection
         return projection
     }
 
@@ -90,7 +97,7 @@ internal class HomeProjector {
 
     private fun <T> sameElements(a: List<T>, b: List<T>) = a.size == b.size && a.indices.all { a[it] === b[it] }
 
-    private fun buildCard(note: Note, reminderText: String?) = NoteCardUiModel(
+    private fun buildCard(note: Note, reminderText: String?, moveCompleted: Boolean) = NoteCardUiModel(
         syncId = note.syncId,
         title = NoteHtml.titleText(note.title),
         // A checklist note whose body has content is a hybrid: the body shows above the items.
@@ -100,9 +107,10 @@ internal class HomeProjector {
         hasBackgroundImage = note.raw.text("bgImage").isNotBlank(),
         locked = note.locked,
         checklist = note.checklist,
-        checklistItems = if (note.checklist) note.items.take(8).map { item ->
+        checklistItems = if (note.checklist) note.items.filter { !moveCompleted || !it.optBoolean("done") }.take(8).map { item ->
             ChecklistCardItem(item.optLong("id"), NoteHtml.plainText(item.text("data")), item.optBoolean("done"))
         } else emptyList(),
+        completedCount = if (note.checklist && moveCompleted) note.items.count { it.optBoolean("done") } else 0,
         imagePath = note.raw.optJSONArray("images")?.optJSONObject(0)?.text("dataUrl")?.takeIf { it.isNotBlank() }
             ?: NoteHtml.firstImageSrc(note.body),
         labels = note.labels.toList(),

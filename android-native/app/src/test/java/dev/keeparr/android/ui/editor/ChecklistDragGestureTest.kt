@@ -65,7 +65,7 @@ class ChecklistDragGestureTest {
         activity.setContent {
             MaterialTheme {
                 Column(Modifier.clickable { taps[0]++ }.verticalScroll(rememberScrollState())) {
-                    ChecklistRows(rows, false, 0L, EditorColors(0xFF000000.toInt(), 0xFF0000FF.toInt()), Color.Black, Color.White, null,
+                    ChecklistRows(rows, rows, 0L, EditorColors(0xFF000000.toInt(), 0xFF0000FF.toInt()), Color.Black, Color.White, null,
                         states, actions, {}, { _, _ -> }, viewport = { null }, scrollBy = { 0f })
                 }
             }

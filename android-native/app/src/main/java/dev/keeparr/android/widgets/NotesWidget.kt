@@ -242,7 +242,7 @@ internal suspend fun load(app: KeeparrApplication, widgetId: Int): Loaded {
     val notes = NoteOrder.visible(app.database.store().list(profile, "note").map { Note(JSONObject(it.payload)) }, filter)
     val reminders = app.database.store().list(profile, "reminder").map { JSONObject(it.payload) }
     val note = notes.singleOrNull()
-    val fullChecklist = note?.let(::singleNoteWidgetChecklistItems).orEmpty()
+    val fullChecklist = note?.let { singleNoteWidgetChecklistItems(it, app.settings.moveCompletedToBottom.value) }.orEmpty()
     val rows = if (single && fullChecklist.isNotEmpty()) {
         val seen = HashSet<String>()
         listOf(Row(note!!)) + fullChecklist.mapIndexed { index, item ->
@@ -260,6 +260,7 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
         // A note's own color is shown as its light or dark variant. Under ThemeMode.System both are handed to the host, which
         // picks by the system night mode without the row being rebuilt; a forced mode sends the one explicit color.
         val mode = app.settings.themeMode
+        val moveCompleted = app.settings.moveCompletedToBottom.value
         val colors = WidgetColors(app)
         // A background image replaces the color on every client, and the widget does not draw the illustration.
         val stored = if (note.raw.text("bgImage").isNotBlank()) "" else note.raw.text("bgColor")
@@ -285,14 +286,14 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
             setTextViewText(R.id.row_title, boundedWidgetText(title, 160))
             setViewVisibility(R.id.row_title, if (title.isBlank()) View.GONE else View.VISIBLE)
             tint(R.id.row_title, "setTextColor", mode, foreground)
-            val body = widgetNoteBodyText(note, single)
+            val body = widgetNoteBodyText(note, single, moveCompleted)
             setTextViewText(R.id.row_body, boundedWidgetText(body, if (single) 4096 else 1024))
             setViewVisibility(R.id.row_body, if (body.isBlank()) View.GONE else View.VISIBLE)
             tint(R.id.row_body, "setTextColor", mode, foreground)
             setInt(R.id.row_body, "setMaxLines", if (single) WIDGET_SINGLE_NOTE_MAX_LINES else WIDGET_CARD_MAX_LINES)
             // A recycled row view still holds the previous note's lines, so they are always cleared first.
             removeAllViews(R.id.row_checks)
-            val lines = if (single) emptyList() else widgetChecklistLines(note)
+            val lines = if (single) emptyList() else widgetChecklistLines(note, moveCompleted)
             lines.forEach { (done, text) ->
                 addView(R.id.row_checks, RemoteViews(app.packageName, R.layout.widget_check_line).apply {
                     setImageViewResource(R.id.check_line_icon, checkIcon(done))
@@ -303,6 +304,11 @@ internal fun buildRow(app: KeeparrApplication, row: Row, reminders: Map<String, 
                 })
             }
             setViewVisibility(R.id.row_checks, if (lines.isEmpty()) View.GONE else View.VISIBLE)
+            // Checked items are left out like on the home cards; this line says how many. Always set, as the view may be recycled.
+            val completed = widgetCompletedCount(note, moveCompleted)
+            setTextViewText(R.id.row_completed, if (completed > 0) "($completed) Completed items" else "")
+            tint(R.id.row_completed, "setTextColor", mode, foreground)
+            setViewVisibility(R.id.row_completed, if (completed > 0) View.VISIBLE else View.GONE)
             if (reminder != null) {
                 val label = "⏰ ${ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder))}"
                 setTextViewText(R.id.row_reminder, label)
@@ -380,8 +386,13 @@ internal fun applyFrameColors(app: KeeparrApplication, views: RemoteViews, mode:
 
 private fun checkIcon(done: Boolean) = if (done) R.drawable.ic_widget_check_on else R.drawable.ic_widget_check_off
 
-internal fun singleNoteWidgetChecklistItems(note: Note): List<JSONObject> =
-    if (note.checklist && !note.locked) note.items else emptyList()
+/** The items a single-note widget lists, one tappable row each; checked ones are left out when they move to the bottom. */
+internal fun singleNoteWidgetChecklistItems(note: Note, moveCompleted: Boolean = true): List<JSONObject> =
+    if (note.checklist && !note.locked) note.items.filter { !moveCompleted || !it.optBoolean("done") } else emptyList()
+
+/** Checked items a widget leaves out and counts instead; 0 when they stay in the list. */
+internal fun widgetCompletedCount(note: Note, moveCompleted: Boolean = true): Int =
+    if (moveCompleted && note.checklist && !note.locked) note.items.count { it.optBoolean("done") } else 0
 
 internal fun boundedWidgetText(text: String, maxCharacters: Int) = text.take(maxCharacters.coerceAtLeast(0))
 
@@ -391,10 +402,10 @@ internal const val WIDGET_SINGLE_NOTE_MAX_LINES = 30
 // One newline between lines, never the blank lines a platform conversion adds, which would eat the card's line budget.
 private fun widgetPlainText(html: String, maxCharacters: Int) = NoteHtml.plainText(boundedWidgetText(html, maxCharacters)).trim()
 
-internal fun widgetNoteBodyText(note: Note, single: Boolean): String = when {
+internal fun widgetNoteBodyText(note: Note, single: Boolean, moveCompleted: Boolean = true): String = when {
     note.locked -> "Open Keeparr to view"
     // A hybrid note's body comes first; the checklist's items are drawn as icon rows (see widgetChecklistLines).
-    single && note.checklist -> (hybridBodyText(note) + "Checklist · ${note.items.size} item(s)")
+    single && note.checklist -> (hybridBodyText(note) + "Checklist · ${singleNoteWidgetChecklistItems(note, moveCompleted).size} item(s)")
     note.checklist -> hybridBodyText(note).trim()
     // Bullets and numbers are drawn by the editor, not characters, so the preview text adds them.
     else -> NoteHtml.previewText(boundedWidgetText(note.body, 8192)).lines().filter { it.isNotBlank() }.joinToString("\n").trim()
@@ -403,9 +414,9 @@ internal fun widgetNoteBodyText(note: Note, single: Boolean): String = when {
 private fun hybridBodyText(note: Note): String =
     if (NoteHtml.hasMeaningfulBody(note.body)) NoteHtml.previewText(boundedWidgetText(note.body, 8192)).trim() + "\n" else ""
 
-/** The checklist rows a card shows (done, text), at most as many as the card has lines. */
-internal fun widgetChecklistLines(note: Note): List<Pair<Boolean, String>> =
-    if (note.checklist && !note.locked) note.items.take(WIDGET_CARD_MAX_LINES).map {
+/** The checklist rows a card shows (done, text), at most as many as the card has lines; no checked ones when they move to the bottom. */
+internal fun widgetChecklistLines(note: Note, moveCompleted: Boolean = true): List<Pair<Boolean, String>> =
+    if (note.checklist && !note.locked) note.items.filter { !moveCompleted || !it.optBoolean("done") }.take(WIDGET_CARD_MAX_LINES).map {
         it.optBoolean("done") to boundedWidgetText(widgetPlainText(it.text("data"), 512), 128)
     } else emptyList()
 

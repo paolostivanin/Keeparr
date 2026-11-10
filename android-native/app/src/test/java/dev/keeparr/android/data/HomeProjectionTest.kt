@@ -122,6 +122,22 @@ class HomeProjectionTest {
         assertEquals(setOf("text-card", "checklist-card", "locked-card", "image-card"), projection.cards.map { it.contentType }.toSet())
     }
 
+    @Test fun checklistCardsCountCheckedItemsInsteadOfListingThemUnlessTurnedOff() {
+        fun item(id: Int, done: Boolean) = JSONObject().put("id", id).put("done", done).put("data", "item $id")
+        val notes = listOf(note(1) { put("isCbox", true).put("checkBoxes", JSONArray().put(item(1, false)).put(item(2, true)).put(item(3, false)).put(item(4, true))) })
+        val projector = HomeProjector()
+        val moved = projector.project(notes, "home", "", emptyList()).cards.single()
+        assertEquals(listOf(1L, 3L), moved.checklistItems.map { it.id })
+        assertEquals(2, moved.completedCount)
+
+        val builds = projector.cardBuilds
+        val inPlace = projector.project(notes, "home", "", emptyList(), moveCompleted = false).cards.single()
+        assertEquals("turning the setting off rebuilds the card", builds + 1, projector.cardBuilds)
+        assertEquals(listOf(1L, 2L, 3L, 4L), inPlace.checklistItems.map { it.id })
+        assertEquals(0, inPlace.completedCount)
+        assertEquals(inPlace, buildHomeProjection(notes, "home", "", emptyList(), moveCompleted = false).cards.single())
+    }
+
     @Test fun homeStateClearsSelectionWhenTheQueryOrFilterChangesAndGatesReordering() {
         val state = HomeState()
         assertTrue(state.reorderEnabled)

@@ -136,8 +136,14 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     // A checklist shows its body above the rows once the body has content (a hybrid note), and keeps showing it while it is edited.
     var bodyShown by rememberSaveable(original.syncId) { mutableStateOf(NoteHtml.hasMeaningfulBody(original.body)) }
     val hybrid = note.checklist && (bodyShown || NoteHtml.hasMeaningfulBody(note.body))
-    val hideDone = raw.optBoolean("completedChecklistCollapsed")
+    // Checked rows go to a section below the others unless that is turned off in Settings; the section starts collapsed.
+    val moveCompleted by app.settings.moveCompletedToBottom.collectAsStateWithLifecycle()
+    val splitCompleted = rememberUpdatedState(moveCompleted)
+    val completedCollapsed = raw.optBoolean("completedChecklistCollapsed", true)
+    val sections = ChecklistSections.of(note.items, moveCompleted, completedCollapsed)
     fun currentRows() = ChecklistModel.rows(draftViewModel.draft.value.optJSONArray("checkBoxes"))
+    fun currentSections() = ChecklistSections.of(currentRows(), splitCompleted.value,
+        draftViewModel.draft.value.optBoolean("completedChecklistCollapsed", true))
     fun applyRows(rows: List<JSONObject>, external: Boolean = false, structural: Boolean = false) =
         change("checkBoxes", external = external, structural = structural) { it.put("checkBoxes", ChecklistModel.toJson(rows)) }
     // Without a row to follow, the new one goes at the end.
@@ -165,8 +171,9 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
             }
             override fun backspaceAtStart(id: Long): Boolean {
                 val rows = currentRows()
-                val (previous, _) = neighbours(rows, draftViewModel.draft.value.optBoolean("completedChecklistCollapsed"), id)
-                val visible = rows.filter { !draftViewModel.draft.value.optBoolean("completedChecklistCollapsed") || !it.optBoolean("done") }.map { ChecklistModel.idOf(it) }
+                val shown = currentSections()
+                val (previous, _) = neighbours(shown, id)
+                val visible = shown.sectionOf(id).map { ChecklistModel.idOf(it) }
                 val row = rows.firstOrNull { ChecklistModel.idOf(it) == id } ?: return false
                 val merged = ChecklistModel.mergeIntoPrevious(rows, id, visible) ?: return !ChecklistModel.isStructured(row)
                 val junction = previous?.takeIf { !ChecklistModel.isStructured(it) }?.let { NoteHtml.parse(it.getString("data"), HtmlMode.Row).length }
@@ -180,12 +187,11 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                 return true
             }
             override fun moveUp(id: Long) {
-                val (previous, _) = neighbours(currentRows(), draftViewModel.draft.value.optBoolean("completedChecklistCollapsed"), id)
+                val (previous, _) = neighbours(currentSections(), id)
                 if (previous != null) moveBefore(id, ChecklistModel.idOf(previous))
             }
             override fun moveDown(id: Long) {
-                val hidden = draftViewModel.draft.value.optBoolean("completedChecklistCollapsed")
-                val visible = currentRows().filter { !hidden || !it.optBoolean("done") }
+                val visible = currentSections().sectionOf(id)
                 val position = visible.indexOfFirst { ChecklistModel.idOf(it) == id }
                 if (position < 0 || position >= visible.lastIndex) return
                 moveBefore(id, visible.getOrNull(position + 2)?.let { ChecklistModel.idOf(it) })
@@ -200,7 +206,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     // Tapping blank editor space behaves like tapping the end of the content.
     fun focusEditorEnd() {
         if (note.checklist) {
-            val last = note.items.lastOrNull { (!hideDone || !it.optBoolean("done")) && !ChecklistModel.isStructured(it) }
+            val last = sections.open.lastOrNull { !ChecklistModel.isStructured(it) }
             if (last == null) addChecklistItem() else pendingFocus = ChecklistModel.idOf(last) to null
         } else bodyState.focus()
     }
@@ -496,14 +502,18 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                     onImageContent = { uri, _ -> addImage(uri) })
             }
             if (note.checklist) {
-                val completedCount = note.items.count { it.optBoolean("done") }
-                if (completedCount > 0) TextButton(onClick = { draftViewModel.updateChecklistCollapsed(!hideDone) }) {
-                    Text(if (hideDone) "Show completed ($completedCount)" else "Hide completed ($completedCount)")
-                }
-                ChecklistRows(note.items, hideDone, externalEdits, editorColors, foreground, color, embeds, rowStates, checklistActions,
-                    ::openNoteLink, { uri, _ -> addImage(uri) }, viewport = { editorViewport[0]?.takeIf { it.isAttached }?.boundsInWindow() },
-                    scrollBy = { editorScroll.scrollBy(it) })
+                @Composable fun Rows(shown: List<JSONObject>) = ChecklistRows(note.items, shown, externalEdits, editorColors, foreground, color,
+                    embeds, rowStates, checklistActions, ::openNoteLink, { uri, _ -> addImage(uri) },
+                    viewport = { editorViewport[0]?.takeIf { it.isAttached }?.boundsInWindow() }, scrollBy = { editorScroll.scrollBy(it) })
+                Rows(sections.open)
                 TextButton(onClick = { addChecklistItem() }) { Icon(Icons.Outlined.Add, null); Text("List item") }
+                val completedCount = ChecklistModel.checkedCount(note.items)
+                if (moveCompleted && completedCount > 0) {
+                    HorizontalDivider(color = foreground.copy(alpha = .2f))
+                    CompletedItemsHeader(completedCount, completedCollapsed, foreground) { draftViewModel.updateChecklistCollapsed(!completedCollapsed) }
+                    // A separate call, so a drag in one section never reorders the other.
+                    if (sections.completed.isNotEmpty()) Rows(sections.completed)
+                }
             }
             ImagesAt("bottom")
             val attachments = (metadataNote.raw.optJSONArray("attachments")?.objects().orEmpty() + note.raw.optJSONArray("attachments")?.objects().orEmpty())

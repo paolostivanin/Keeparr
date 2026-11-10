@@ -255,8 +255,9 @@ private fun HomeScreen(app: KeeparrApplication, notes: List<Note>, reminders: Li
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val reorderEnabled = home.reorderEnabled
     var projection by remember { mutableStateOf(EmptyHomeProjection, referentialEqualityPolicy()) }
-    LaunchedEffect(notes, filter, search, reminders) {
-        projection = withContext(Dispatchers.Default) { projector.project(notes, filter, search, reminders) }
+    val moveCompleted by app.settings.moveCompletedToBottom.collectAsStateWithLifecycle()
+    LaunchedEffect(notes, filter, search, reminders, moveCompleted) {
+        projection = withContext(Dispatchers.Default) { projector.project(notes, filter, search, reminders, moveCompleted) }
     }
     val visible = projection.visibleNotes
     // Plain holders: geometry and the latest projection are read by gestures at drag time, never during composition.
@@ -519,6 +520,8 @@ private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, modifier: M
                     }
                     Text(item.text, style = body, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 } }
+                if (note.completedCount > 0) Text("(${note.completedCount}) Completed items", style = MaterialTheme.typography.labelSmall,
+                    color = foreground.copy(alpha = .7f))
                 note.reminderText?.let { reminderText ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Outlined.Schedule, "Reminder", Modifier.size(textDp(14.sp)))
