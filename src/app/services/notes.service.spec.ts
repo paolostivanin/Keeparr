@@ -127,7 +127,7 @@ describe('NotesService local persistence errors', () => {
       revision: 8,
       ownerUserId: 3,
       collaborators: [{ id: 5, username: 'other', displayName: 'Other', avatarDataUrl: '', avatarPreset: 'cat', shareCount: 1 }],
-      completedChecklistCollapsed: true,
+      completedChecklistCollapsed: false,
       isCardPreview: false,
       futureField: { keep: true }
     } as NoteI;
@@ -151,7 +151,7 @@ describe('NotesService local persistence errors', () => {
     expect(clone.ownerUserId).toBe(7);
     expect(clone.collaborators).toEqual([]);
     expect(clone.attachments).toEqual([]);
-    expect(clone.completedChecklistCollapsed).toBeFalse();
+    expect(clone.completedChecklistCollapsed).toBeTrue();
     expect(clone.noteBody).toBe(source.noteBody);
     expect(clone.checkBoxes).toEqual(source.checkBoxes);
     expect(clone.images).toEqual(source.images);

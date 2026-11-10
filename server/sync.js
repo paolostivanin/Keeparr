@@ -38,7 +38,7 @@ async function syncSnapshotForUser(userId) {
     `SELECT notes.*,
             COALESCE(pos.sortOrder, notes.sortOrder) AS effectiveSortOrder,
             CASE WHEN user_pins.noteId IS NOT NULL THEN 1 ELSE 0 END AS userPinned,
-            COALESCE(view_state.completedChecklistCollapsed, 0) AS completedChecklistCollapsed,
+            COALESCE(view_state.completedChecklistCollapsed, 1) AS completedChecklistCollapsed,
             lastEditor.displayName AS lastEditorDisplayName,
             (SELECT GROUP_CONCAT(nc.userId) FROM note_collaborators nc WHERE nc.noteId = notes.id) AS collaboratorIds
      FROM notes

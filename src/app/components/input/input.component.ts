@@ -102,7 +102,7 @@ export class InputComponent implements OnInit {
   binderMenuError = ''
   isArchived = false
   isTrashed = false
-  isCboxCompletedListCollapsed = false
+  isCboxCompletedListCollapsed = true
   showTextFormatting = false
   showSelectionFormatting = false
   selectionFormattingStyle: Record<string, string> = {}
@@ -1124,14 +1124,14 @@ export class InputComponent implements OnInit {
     }
     const key = this.completedChecklistCollapseStorageKey(note)
     if (!key) {
-      this.isCboxCompletedListCollapsed = false
+      this.isCboxCompletedListCollapsed = true
       return
     }
     try {
       const saved = localStorage.getItem(key)
-      this.isCboxCompletedListCollapsed = saved === null ? false : saved === '1'
+      this.isCboxCompletedListCollapsed = saved === null ? true : saved === '1'
     } catch {
-      this.isCboxCompletedListCollapsed = false
+      this.isCboxCompletedListCollapsed = true
     }
   }
 
@@ -1313,7 +1313,7 @@ export class InputComponent implements OnInit {
     this.isCbox.next(false)
     this.isArchived = false
     this.isTrashed = false
-    this.isCboxCompletedListCollapsed = false
+    this.isCboxCompletedListCollapsed = true
     this.isPanning = false
     this.drawingTransform = { scale: 1, x: 0, y: 0 }
     this.activePointers.clear()

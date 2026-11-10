@@ -51,6 +51,11 @@ function canonicalizeNotePayload(payload) {
   };
 }
 
+/** A user who never toggled the completed checklist section sees it collapsed. */
+function completedChecklistCollapsed(row) {
+  return row.completedChecklistCollapsed == null ? true : Boolean(row.completedChecklistCollapsed);
+}
+
 function dbNoteToApi(row) {
   const pinned = row.userPinned !== undefined ? row.userPinned : row.pinned;
   return {
@@ -72,7 +77,7 @@ function dbNoteToApi(row) {
     locked: Boolean(row.locked),
     lockSalt: row.lockSalt || '',
     lockHash: row.lockHash || '',
-    completedChecklistCollapsed: Boolean(row.completedChecklistCollapsed),
+    completedChecklistCollapsed: completedChecklistCollapsed(row),
     archived: Boolean(row.archived),
     trashed: Boolean(row.trashed),
     trashedAt: row.trashedAt || '',
@@ -144,7 +149,7 @@ function dbNoteToCard(row, options = {}) {
     locked,
     lockSalt: row.lockSalt || '',
     lockHash: row.lockHash || '',
-    completedChecklistCollapsed: Boolean(row.completedChecklistCollapsed),
+    completedChecklistCollapsed: completedChecklistCollapsed(row),
     archived: Boolean(row.archived),
     trashed: Boolean(row.trashed),
     trashedAt: row.trashedAt || '',
@@ -279,7 +284,7 @@ async function getAccessibleNote(noteId, userId) {
     `SELECT notes.*,
      COALESCE(pos.sortOrder, notes.sortOrder, notes.id) AS effectiveSortOrder,
      CASE WHEN user_pins.noteId IS NOT NULL THEN 1 ELSE 0 END AS userPinned,
-     COALESCE(view_state.completedChecklistCollapsed, 0) AS completedChecklistCollapsed,
+     COALESCE(view_state.completedChecklistCollapsed, 1) AS completedChecklistCollapsed,
      lastEditor.displayName AS lastEditorDisplayName FROM notes
      LEFT JOIN note_collaborators ON note_collaborators.noteId = notes.id AND note_collaborators.userId = ?
      LEFT JOIN user_pins ON user_pins.noteId = notes.id AND user_pins.userId = ?

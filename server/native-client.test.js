@@ -246,23 +246,23 @@ async function integrationTest() {
     await reparentResponse.arrayBuffer();
     await request(`/notes/${original.id}/collaborators`, owner.token, { userIds: [editor.user.id] }, 'PUT');
     const collapseOwner = await mutate(owner.token, [{ type: 'note.view-state', syncId: original.syncId,
-      operationId: 'owner-collapse-state', payload: { completedChecklistCollapsed: true } }]);
+      operationId: 'owner-collapse-state', payload: { completedChecklistCollapsed: false } }]);
     assert.equal(collapseOwner.results[0].ok, true, 'personal view state is an accepted native mutation');
-    assert.equal((await request(`/notes/${original.id}`, owner.token)).completedChecklistCollapsed, true);
-    assert.equal((await request(`/notes/${original.id}`, editor.token)).completedChecklistCollapsed, false,
-      'one collaborator cannot overwrite another user\'s checklist-collapse preference');
+    assert.equal((await request(`/notes/${original.id}`, owner.token)).completedChecklistCollapsed, false);
+    assert.equal((await request(`/notes/${original.id}`, editor.token)).completedChecklistCollapsed, true,
+      'one collaborator cannot overwrite another user\'s checklist-collapse preference, which starts collapsed');
     const editorBootstrap = await request('/sync/bootstrap', editor.token);
-    await request(`/notes/${original.id}/view-state`, editor.token, { completedChecklistCollapsed: true }, 'PATCH');
+    await request(`/notes/${original.id}/view-state`, editor.token, { completedChecklistCollapsed: false }, 'PATCH');
     const editorViewStateChanges = await request(`/sync/changes?cursor=${editorBootstrap.cursor}`, editor.token);
-    assert.equal(editorViewStateChanges.changes.find(change => change.resourceSyncId === original.syncId)?.payload?.completedChecklistCollapsed, true,
+    assert.equal(editorViewStateChanges.changes.find(change => change.resourceSyncId === original.syncId)?.payload?.completedChecklistCollapsed, false,
       'web view-state changes reach native clients incrementally for that user');
-    assert.equal((await request(`/notes/${original.id}`, owner.token)).completedChecklistCollapsed, true);
-    assert.equal((await request(`/notes/${original.id}`, editor.token)).completedChecklistCollapsed, true);
-    const collapseEditor = await mutate(editor.token, [{ type: 'note.view-state', syncId: original.syncId,
-      operationId: 'editor-collapse-state', payload: { completedChecklistCollapsed: false } }]);
-    assert.equal(collapseEditor.results[0].ok, true);
-    assert.equal((await request(`/notes/${original.id}`, owner.token)).completedChecklistCollapsed, true);
+    assert.equal((await request(`/notes/${original.id}`, owner.token)).completedChecklistCollapsed, false);
     assert.equal((await request(`/notes/${original.id}`, editor.token)).completedChecklistCollapsed, false);
+    const collapseEditor = await mutate(editor.token, [{ type: 'note.view-state', syncId: original.syncId,
+      operationId: 'editor-collapse-state', payload: { completedChecklistCollapsed: true } }]);
+    assert.equal(collapseEditor.results[0].ok, true);
+    assert.equal((await request(`/notes/${original.id}`, owner.token)).completedChecklistCollapsed, false);
+    assert.equal((await request(`/notes/${original.id}`, editor.token)).completedChecklistCollapsed, true);
     const note = await request(`/notes/${original.id}`, owner.token);
     const save = (title, operationId) => ({ type: 'note.upsert', syncId: note.syncId, baseRevision: note.revision, operationId,
       payload: { ...note, noteTitle: title } });
