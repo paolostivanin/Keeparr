@@ -224,8 +224,10 @@ class NativeContractTest {
             .put(JSONObject().put("id", 1).put("done", true).put("data", "<p>Milk</p>"))
             .put(JSONObject().put("id", 2).put("done", false).put("data", "Eggs"))))
         assertEquals("a checklist card draws its items as icon rows, not as body text", "", widgetNoteBodyText(checklist, single = false))
-        assertEquals(listOf(true to "Milk", false to "Eggs"), widgetChecklistLines(checklist))
-        assertEquals("Checklist · 2 item(s)", widgetNoteBodyText(checklist, single = true))
+        assertEquals(listOf(true to "Milk", false to "Eggs"), widgetChecklistLines(checklist, moveCompleted = false))
+        assertEquals("Checklist · 2 item(s)", widgetNoteBodyText(checklist, single = true, moveCompleted = false))
+        assertEquals("checked items are counted instead of listed", listOf(false to "Eggs"), widgetChecklistLines(checklist))
+        assertEquals("Checklist · 1 item(s)", widgetNoteBodyText(checklist, single = true))
     }
     @Test fun widgetBodyTextShowsBulletsEvenWhenTheListTagsAreUpperCase() {
         assertEquals("\u2022 one\n  \u25E6 two", widgetNoteBodyText(Note(JSONObject().put("noteBody", "<UL><LI>one<UL><LI>two</LI></UL></LI></UL>")), single = false))
