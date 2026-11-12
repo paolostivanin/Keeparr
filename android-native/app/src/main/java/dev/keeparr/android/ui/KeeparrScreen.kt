@@ -1,74 +1,32 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package dev.keeparr.android.ui
 
-import android.app.DatePickerDialog
-import android.app.TimePickerDialog
 import android.content.Intent
-import android.graphics.Bitmap
 import android.net.Uri
-import android.text.Html
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.*
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.staggeredgrid.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.Label
-import androidx.compose.material.icons.outlined.*
-import androidx.compose.material3.*
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.TextUnit
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.semantics.CustomAccessibilityAction
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.customActions
-import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.keeparr.android.KeeparrApplication
 import dev.keeparr.android.MainActivity
-import dev.keeparr.android.R
 import dev.keeparr.android.data.*
 import dev.keeparr.android.data.html.NoteHtml
-import dev.keeparr.android.reminders.ReminderScheduler
-import kotlinx.coroutines.*
-import org.json.JSONArray
-import org.json.JSONObject
-import java.time.*
-
-private data class PendingLogin(val origin: String, val headers: String, val response: JSONObject)
+import dev.keeparr.android.ui.components.LoadingState
+import dev.keeparr.android.ui.components.LocalSnackbarHostState
+import dev.keeparr.android.ui.components.rememberActionRunner
+import kotlinx.coroutines.CancellationException
 
 @Composable
 fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
     val repo = app.repository
-    val scope = rememberCoroutineScope()
     val settingsReady by app.settings.ready.collectAsStateWithLifecycle()
     val settingsWriteError by app.settings.writeError.collectAsStateWithLifecycle()
     // Derived from the settings once they are ready, in the same composition: seeding these from a LaunchedEffect
@@ -81,7 +39,16 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
     // activity, which is why the open note and the settings screen are saved state.
     val themeMode = StartupGate.mode(themeOverride, app.settings.themeMode)
     LaunchedEffect(settingsReady, themeMode) { if (settingsReady) applyNightMode(activity, themeMode) }
+    // One slot, shown as a snackbar by the topmost screen. A newer message replaces the one on screen, so a burst of the same
+    // failure (an autosave retrying) shows once instead of queueing.
     var error by remember { mutableStateOf<String?>(null) }
+    val reportError: (String) -> Unit = remember { { message -> error = message } }
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(error) {
+        val message = error ?: return@LaunchedEffect
+        try { snackbar.showSnackbar(message, withDismissAction = true, duration = SnackbarDuration.Long) }
+        finally { if (error == message) error = null }
+    }
     val sessions: EditorSessionStores = androidx.lifecycle.viewmodel.compose.viewModel(activity)
     // The open note survives activity re-creation (rotation, process restoration) as its syncId and is reloaded;
     // its draft is already persisted on every change.
@@ -98,19 +65,25 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
     }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     val incoming by activity.incoming.collectAsStateWithLifecycle()
-    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (problem: Exception) { error = problem.message ?: "Could not complete this action" } } }
+    val action = rememberActionRunner(reportError)
     KeeparrTheme(dark) {
+        CompositionLocalProvider(LocalSnackbarHostState provides snackbar) {
         Surface(Modifier.fillMaxSize()) {
-            if (!settingsReady) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            } else if (!signedIn) LoginScreen(activity, app,
+            if (!settingsReady) LoadingState()
+            else if (!signedIn) LoginScreen(activity, app,
                 onLogin = { signedInOverride = true; repo.authenticated(); action { SyncWorker.schedule(app); repo.sync(); repo.foreground(true) } },
-                onCancel = { signedInOverride = true }, onError = { error = it })
+                onCancel = { signedInOverride = true })
             else {
-                val notes by remember(app.settings.profile) { repo.notes() }.collectAsStateWithLifecycle(emptyList())
+                // Null until the database has answered, so the home screen can tell "loading" from "no notes".
+                val notes by remember(app.settings.profile) { repo.notes() }.collectAsStateWithLifecycle(initialValue = null as List<Note>?)
                 val reminders by remember(app.settings.profile) { repo.reminders() }.collectAsStateWithLifecycle(emptyList())
                 val occurrences by remember(app.settings.profile) { repo.occurrences() }.collectAsStateWithLifecycle(emptyList())
                 val conflicts by remember(app.settings.profile) { repo.conflicts() }.collectAsStateWithLifecycle(emptyList())
+                // The home screen leaves the composition while a note or Settings is open; its view, query, layout, scroll
+                // position and last projection live here so it comes back exactly as it was. Leaving this branch (sign-out,
+                // a profile switch) starts them fresh.
+                val home = rememberSaveable(saver = HomeState.Saver) { HomeState() }
+                val gridState = rememberLazyStaggeredGridState()
                 LaunchedEffect(incoming, signedIn) {
                     val intent = incoming ?: return@LaunchedEffect
                     try {
@@ -131,498 +104,32 @@ fun KeeparrScreen(activity: MainActivity, app: KeeparrApplication) {
                             for (uri in uris) repo.attach(note, Media(app).stage(uri))
                         }
                     } catch (cancelled: CancellationException) { throw cancelled
-                    } catch (problem: Exception) { error = problem.message }
+                    } catch (problem: Exception) { problem.message?.let(reportError) }
                     activity.incoming.value = null
                 }
-                if (editing != null) key(editing!!.syncId) {
-                    NoteEditor(activity, app, editing!!, reminders, onClose = { closeEditor() }, onError = { error = it })
-                } else HomeScreen(app, notes, reminders, conflicts, onEdit = { openEditor(it) }, onCreate = { checklist ->
-                    action { val note = Note.create(app.settings.userId, checklist); repo.save(note); openEditor(note) }
-                }, onSettings = { showSettings = true }, onReauthenticate = { signedInOverride = false }, onError = { error = it })
-                if (showSettings) SettingsScreen(activity, app, reminders, occurrences, themeMode, onTheme = { themeOverride = it; app.settings.themeMode = it; app.refreshWidgets(app) },
-                    onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedInOverride = false; showSettings = false } }, onError = { error = it })
-            }
-            val visibleError = settingsWriteError ?: error
-            visibleError?.let { message ->
-                val dismiss = {
-                    if (settingsWriteError != null) app.settings.clearWriteError() else error = null
-                }
-                AlertDialog(onDismissRequest = dismiss, title = { Text("Keeparr") }, text = { Text(message) },
-                    confirmButton = { TextButton(onClick = dismiss) { Text("OK") } })
-            }
-        }
-    }
-}
-
-@Composable
-private fun LoginScreen(activity: MainActivity, app: KeeparrApplication, onLogin: () -> Unit, onCancel: () -> Unit, onError: (String) -> Unit) {
-    val scope = rememberCoroutineScope()
-    var server by remember { mutableStateOf(app.settings.origin) }
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var totp by remember { mutableStateOf("") }
-    var certificate by remember { mutableStateOf(app.settings.aliasFor(server)) }
-    var headers by remember { mutableStateOf(app.settings.headersFor(server)) }
-    var connectionStatus by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var pendingLogin by remember { mutableStateOf<PendingLogin?>(null) }
-    suspend fun activate(login: PendingLogin) {
-        app.settings.activateSession(
-            login.origin,
-            login.headers,
-            login.response.getString("token"),
-            login.response.getJSONObject("user").getLong("id")
-        )
-        pendingLogin = null
-        onLogin()
-    }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(28.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Spacer(Modifier.height(24.dp))
-        Box(Modifier.size(64.dp).clip(MaterialTheme.shapes.medium).background(Color(0xFFFBBC04))) {
-            Image(painterResource(R.drawable.ic_launcher_foreground), null, Modifier.fillMaxSize())
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Your notes. Your server.", style = MaterialTheme.typography.headlineMedium)
-            Text("Sign in to Keeparr", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        app.settings.message.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-        OutlinedTextField(server, { value ->
-            server = value
-            certificate = app.settings.aliasFor(value)
-            headers = app.settings.headersFor(value)
-            connectionStatus = null
-        }, label = { Text("Server address") }, placeholder = { Text("https://notes.example.com") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false))
-        OutlinedButton(onClick = { activity.chooseCertificate(server) { certificate = it } }, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Outlined.VerifiedUser, null); Spacer(Modifier.width(8.dp)); Text(if (certificate.isBlank()) "Select client certificate (optional)" else "Certificate: $certificate")
-        }
-        if (certificate.isNotBlank()) TextButton(onClick = { certificate = ""; app.settings.setAliasFor(server, "") }) { Text("Use no client certificate") }
-        OutlinedButton(onClick = { scope.launch {
-            busy = true
-            connectionStatus = null
-            try { connectionStatus = app.repository.api.testConnection(server, headers) }
-            catch (problem: Exception) { connectionStatus = problem.message ?: "Connection test failed" }
-            finally { busy = false }
-        } }, enabled = !busy && server.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-            Text(if (busy) "Testing connection…" else "Test server connection")
-        }
-        connectionStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (it.startsWith("Connected")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
-        OutlinedTextField(username, { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(password, { password = it }, label = { Text("Password") }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(totp, { totp = it }, label = { Text("2FA or backup code, if enabled") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(headers, { headers = it }, label = { Text("Gateway headers (optional JSON)") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-        Button(onClick = { scope.launch {
-            busy = true
-            try {
-                if (headers.isNotBlank()) JSONObject(headers)
-                val response = app.repository.api.login(server, username, password, totp, headers)
-                val targetOrigin = server.trim().trimEnd('/')
-                val target = PendingLogin(targetOrigin, headers, response)
-                val targetUserId = response.getJSONObject("user").getLong("id")
-                if (ConnectionProfilePolicy.requiresConfirmation(app.settings.snapshot(), targetOrigin, targetUserId)) pendingLogin = target
-                else activate(target)
-            } catch (problem: Exception) { onError(problem.message ?: "Sign-in failed") }
-            finally { busy = false }
-        } }, enabled = !busy && server.isNotBlank() && username.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-            if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Sign in")
-        }
-    }
-    pendingLogin?.let { login ->
-        val displayName = login.response.getJSONObject("user").text("displayName", login.response.getJSONObject("user").text("username", "this account"))
-        AlertDialog(onDismissRequest = { pendingLogin = null; onCancel() }, title = { Text("Switch Keeparr profile?") },
-            text = { Text("Sign in as $displayName on ${login.origin}? Your cached notes and pending work stay isolated in the previous profile.") },
-            confirmButton = { TextButton(onClick = { scope.launch {
-                runCatching { activate(login) }.onFailure { onError(it.message ?: "Could not activate this profile") }
-            } }) { Text("Switch profile") } },
-            dismissButton = { TextButton(onClick = { pendingLogin = null; onCancel() }) { Text("Stay with previous profile") } })
-    }
-}
-
-@Composable
-private fun HomeScreen(app: KeeparrApplication, notes: List<Note>, reminders: List<JSONObject>, conflicts: List<Outbox>, onEdit: (Note) -> Unit,
-    onCreate: (Boolean) -> Unit, onSettings: () -> Unit, onReauthenticate: () -> Unit, onError: (String) -> Unit) {
-    val scope = rememberCoroutineScope()
-    val status by app.repository.status.collectAsStateWithLifecycle()
-    val connectionState by app.repository.connectionState.collectAsStateWithLifecycle()
-    val home = remember { HomeState() }
-    val projector = remember { HomeProjector() }
-    var search by home::search
-    var filter by home::filter
-    var grid by home::grid
-    val selectedIds = home.selectedIds
-    var confirmBulkTrash by remember { mutableStateOf(false) }
-    var conflict by remember { mutableStateOf<Outbox?>(null) }
-    val drawer = rememberDrawerState(DrawerValue.Closed)
-    val reorderEnabled = home.reorderEnabled
-    var projection by remember { mutableStateOf(EmptyHomeProjection, referentialEqualityPolicy()) }
-    val moveCompleted by app.settings.moveCompletedToBottom.collectAsStateWithLifecycle()
-    LaunchedEffect(notes, filter, search, reminders, moveCompleted) {
-        projection = withContext(Dispatchers.Default) { projector.project(notes, filter, search, reminders, moveCompleted) }
-    }
-    val visible = projection.visibleNotes
-    // Plain holders: geometry and the latest projection are read by gestures at drag time, never during composition.
-    val latestProjection by rememberUpdatedState(projection)
-    val gridState = rememberLazyStaggeredGridState()
-    val gridCoordinates = remember { arrayOfNulls<LayoutCoordinates>(1) }
-    val reorder = remember { NoteReorderController { source, target ->
-        val notes = latestProjection.notesBySyncId
-        notes[source] != null && notes[source]?.pinned == notes[target]?.pinned
-    } }
-    val visibleIndex = remember(visible) { visible.withIndex().associate { it.value.syncId to it.index } }
-    fun moveNote(syncId: String, delta: Int) = visibleIndex[syncId]?.let { moveNoteBy(visible, it, delta) }
-    val selectedNotes = selectedIds.mapNotNull(projection.notesBySyncId::get)
-    val canTrashSelected = selectedNotes.isNotEmpty() && selectedNotes.all { it.owner == app.settings.userId }
-    val allSelectedTrashed = selectedNotes.isNotEmpty() && selectedNotes.all { it.trashed }
-    fun selectNote(id: String) = home.select(id)
-    fun toggleSelected(id: String) = home.toggle(id)
-    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
-    ModalNavigationDrawer(drawerState = drawer, drawerContent = {
-        ModalDrawerSheet(Modifier.verticalScroll(rememberScrollState()), drawerShape = RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)) {
-            Text("Keeparr", Modifier.padding(24.dp), style = MaterialTheme.typography.headlineMedium)
-            projection.filterChoices.forEach { (value, label) -> NavigationDrawerItem(label = { Text(label) }, selected = filter == value,
-                onClick = { filter = value; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp),
-                colors = NavigationDrawerItemDefaults.colors(unselectedTextColor = MaterialTheme.colorScheme.onSurface)) }
-        }
-    }) {
-        Scaffold(topBar = {
-            Column(Modifier.statusBarsPadding().padding(horizontal = 12.dp)) {
-                Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainer) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.Menu, "Navigation") }
-                        TextField(search, { search = it }, placeholder = { Text("Search your notes") }, modifier = Modifier.weight(1f), singleLine = true,
-                            colors = TextFieldDefaults.colors(unfocusedContainerColor = Color.Transparent, focusedContainerColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent, focusedIndicatorColor = Color.Transparent))
-                        IconButton(onClick = { grid = !grid }) { Icon(if (grid) Icons.Outlined.ViewAgenda else Icons.Outlined.GridView, "Switch grid or list") }
-                        IconButton(onClick = onSettings) { Icon(Icons.Outlined.AccountCircle, "Settings") }
+                // One screen at a time: an open note wins (a widget can open one over Settings), then Settings, then home.
+                val current = editing
+                when {
+                    current != null -> key(current.syncId) {
+                        NoteEditor(activity, app, current, reminders, onClose = { closeEditor() }, onError = reportError)
                     }
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(status, Modifier.weight(1f).padding(start = 12.dp), style = MaterialTheme.typography.labelSmall, maxLines = 2)
-                    if (connectionState is ConnectionState.SessionExpired) {
-                        TextButton(onClick = onReauthenticate) { Text("Sign in again") }
-                    }
-                    IconButton(onClick = { action { app.repository.sync() } }) { Icon(Icons.Outlined.Sync, "Synchronize") }
-                }
-                if (conflicts.isNotEmpty()) TextButton(onClick = { conflict = conflicts.first() }) { Text("${conflicts.size} edit(s) need attention") }
-                selectedIds.takeIf { it.isNotEmpty() }?.let { selection ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("${selection.size} selected", Modifier.weight(1f))
-                        if (selection.size == 1 && reorderEnabled) {
-                            val earlier = moveNote(selection.single(), -1)
-                            val later = moveNote(selection.single(), 1)
-                            IconButton(onClick = { earlier?.let { ids -> action { app.repository.reorder(ids) } } }, enabled = earlier != null) {
-                                Icon(Icons.Outlined.ArrowUpward, "Move earlier") }
-                            IconButton(onClick = { later?.let { ids -> action { app.repository.reorder(ids) } } }, enabled = later != null) {
-                                Icon(Icons.Outlined.ArrowDownward, "Move later") }
-                        }
-                        if (canTrashSelected) IconButton(onClick = {
-                            if (allSelectedTrashed) action { app.repository.setTrashed(selection.toList(), false); home.clearSelection() }
-                            else confirmBulkTrash = true
-                        }) { Icon(if (allSelectedTrashed) Icons.Outlined.RestoreFromTrash else Icons.Outlined.DeleteOutline,
-                            if (allSelectedTrashed) "Restore selected notes" else "Move selected notes to Trash") }
-                        IconButton(onClick = { home.clearSelection() }) { Icon(Icons.Outlined.Close, "Clear selection") }
-                    }
-                    if (!canTrashSelected) Text("Only notes you own can be moved to Trash.", style = MaterialTheme.typography.labelSmall)
+                    // A note that was open before re-creation is being reloaded: don't flash the home screen meanwhile.
+                    editingId != null -> LoadingState()
+                    showSettings -> SettingsScreen(activity, app, reminders, occurrences, themeMode,
+                        onTheme = { themeOverride = it; app.settings.themeMode = it; app.refreshWidgets(app) },
+                        onClose = { showSettings = false }, onLogout = { action { repo.logout(); signedInOverride = false; showSettings = false } },
+                        onError = reportError)
+                    else -> HomeScreen(app, home, gridState, notes, reminders, conflicts, onEdit = { openEditor(it) }, onCreate = { checklist ->
+                        action { val note = Note.create(app.settings.userId, checklist); repo.save(note); openEditor(note) }
+                    }, onSettings = { showSettings = true }, onReauthenticate = { signedInOverride = false }, onError = reportError)
                 }
             }
-        }, bottomBar = {
-            Surface(shadowElevation = 4.dp, color = MaterialTheme.colorScheme.surfaceContainer) {
-                Row(Modifier.navigationBarsPadding().fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { onCreate(false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                        Text("Take a note…", Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge) }
-                    IconButton(onClick = { onCreate(true) }) { Icon(Icons.Outlined.CheckBox, "Create checklist") }
-                    IconButton(onClick = { onCreate(false) }) { Icon(Icons.Outlined.Add, "Create note") }
-                }
-            }
-        }) { padding ->
-            if (filter == "reminders") ReminderList(app, reminders, notes, Modifier.fillMaxSize().padding(padding), onOpenNote = { note -> if (note != null) onEdit(note) }, onError = onError)
-            else if (visible.isEmpty()) Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { EmptyState(emptyView(filter, search)) }
-            else LazyVerticalStaggeredGrid(columns = if (grid) StaggeredGridCells.Adaptive(170.dp) else StaggeredGridCells.Fixed(1), state = gridState,
-                modifier = Modifier.fillMaxSize().padding(padding).onGloballyPositioned { gridCoordinates[0] = it }
-                    .noteReorderGestures(reorder, reorderEnabled, { gridCoordinates[0] }, { gridState.scrollBy(it) }, onDrop = { drop ->
-                        val source = latestProjection.notesBySyncId[drop.sourceId]
-                        if (source != null && selectedIds.size <= 1) moveDraggedNote(visible, source, drop.targetId)?.let { ids -> action { app.repository.reorder(ids) } }
-                    }),
-                contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp) {
-                val pinned = projection.pinnedCards; val other = projection.otherCards
-                if (pinned.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("PINNED", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                items(pinned, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, Modifier.animateItem(fadeOutSpec = tween(120)), card.syncId in selectedIds, reorderEnabled, reorder,
-                    onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
-                    onLongClick = { selectNote(card.syncId) }, onMove = { delta -> moveNote(card.syncId, delta)?.let { ids -> action { app.repository.reorder(ids) } } },
-                    canMove = { delta -> visibleIndex[card.syncId]?.let { canMoveNoteBy(visible, it, delta) } == true }) }
-                if (pinned.isNotEmpty() && other.isNotEmpty()) item(span = StaggeredGridItemSpan.FullLine, contentType = "section-header") { Text("OTHER", Modifier.padding(8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                items(other, key = { it.syncId }, contentType = { it.contentType }) { card -> NoteCard(app, card, Modifier.animateItem(fadeOutSpec = tween(120)), card.syncId in selectedIds, reorderEnabled, reorder,
-                    onClick = { if (selectedIds.isEmpty()) projection.notesBySyncId[card.syncId]?.let(onEdit) else toggleSelected(card.syncId) },
-                    onLongClick = { selectNote(card.syncId) }, onMove = { delta -> moveNote(card.syncId, delta)?.let { ids -> action { app.repository.reorder(ids) } } },
-                    canMove = { delta -> visibleIndex[card.syncId]?.let { canMoveNoteBy(visible, it, delta) } == true }) }
+            // A setting that could not be written must be acknowledged, so it stays a dialog rather than a snackbar.
+            settingsWriteError?.let { message ->
+                AlertDialog(onDismissRequest = app.settings::clearWriteError, title = { Text("Setting not saved") }, text = { Text(message) },
+                    confirmButton = { TextButton(onClick = app.settings::clearWriteError) { Text("OK") } })
             }
         }
-    }
-    conflict?.let { entry ->
-        val result = JSONObject(entry.conflict!!)
-        val latest = result.optJSONObject("latest")
-        val primaryResolution = when (entry.type) {
-            "note.upsert" -> if (latest == null) ConflictResolution.SAVE_AS_COPY else ConflictResolution.REPLACE_WITH_DRAFT
-            "reminder.upsert" -> if (latest == null) ConflictResolution.DISCARD else ConflictResolution.REPLACE_WITH_DRAFT
-            "media.upload" -> ConflictResolution.SAVE_AS_COPY
-            else -> ConflictResolution.DISCARD
-        }
-        val primaryLabel = when (entry.type) {
-            "note.upsert" -> if (latest == null) "Save draft as copy" else "Replace server version"
-            "reminder.upsert" -> if (latest == null) "Discard schedule" else "Keep my schedule"
-            "media.upload" -> "Save as copy"
-            "reminder.action" -> "Discard outdated action"
-            "note.view-state" -> "Use server preference"
-            else -> "Resolve"
-        }
-        fun resolveWith(choice: ConflictResolution) {
-            action {
-                app.repository.resolve(entry, choice)
-                app.repository.sync()
-                conflict = null
-            }
-        }
-        AlertDialog(onDismissRequest = { conflict = null }, title = { Text("Keep your draft safe") },
-            text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(result.text("error", "This edit conflicts with a newer version."))
-                if (entry.type == "note.upsert") {
-                    val draft = JSONObject(entry.payload)
-                    Text("Your draft: ${NoteHtml.titleText(draft.text("noteTitle"))}", Modifier.padding(top = 12.dp))
-                    Text(NoteHtml.previewText(draft.text("noteBody")))
-                    latest?.let { server ->
-                        Text("Server version: ${NoteHtml.titleText(server.text("noteTitle"))}", Modifier.padding(top = 12.dp))
-                        Text(NoteHtml.previewText(server.text("noteBody")))
-                        val localItems = draft.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
-                        val serverItems = server.optJSONArray("checkBoxes")?.objects().orEmpty().associateBy { it.optLong("id") }
-                        val differing = (localItems.keys + serverItems.keys).filter { id ->
-                            localItems[id]?.toString() != serverItems[id]?.toString()
-                        }
-                        if (differing.isNotEmpty()) {
-                            Text("Checklist differences", Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
-                            differing.take(30).forEach { id ->
-                                val localText = localItems[id]?.opt("data")?.toString() ?: "(missing)"
-                                val serverText = serverItems[id]?.opt("data")?.toString() ?: "(missing)"
-                                Text("Item $id · local: $localText · server: $serverText", style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                    }
-                } else if (entry.type == "media.upload") {
-                    val upload = JSONObject(entry.payload)
-                    Text("Pending file: ${upload.text("name", "attachment")}", Modifier.padding(top = 12.dp))
-                    Text("You can save the local note and file as a new note on this account, or discard the pending upload.")
-                } else if (entry.type == "reminder.upsert") {
-                    val local = JSONObject(entry.payload)
-                    Text("Your schedule: ${local.text("dueAtUtc")} · ${local.text("repeatRule", "once")}", Modifier.padding(top = 12.dp))
-                    latest?.let { Text("Server schedule: ${it.text("dueAtUtc")} · ${it.text("repeatRule", "once")}") }
-                } else if (entry.type == "reminder.action") {
-                    Text("This reminder action is no longer valid for the current schedule. The reminder itself is unchanged.")
-                }
-            } }, confirmButton = { Row(Modifier.horizontalScroll(rememberScrollState())) {
-                TextButton(onClick = { resolveWith(primaryResolution) }) { Text(primaryLabel) }
-                if (entry.type == "note.upsert" && latest != null) {
-                    TextButton(onClick = { resolveWith(ConflictResolution.SAVE_AS_COPY) }) { Text("Save as copy") }
-                }
-            } }, dismissButton = { TextButton(onClick = {
-                resolveWith(if (latest != null) ConflictResolution.USE_SERVER else ConflictResolution.DISCARD)
-            }) { Text(if (latest != null) "Use server" else "Discard") } })
-    }
-    if (confirmBulkTrash) AlertDialog(onDismissRequest = { confirmBulkTrash = false }, title = { Text("Move notes to Trash?") },
-        text = { Text("${selectedIds.size} selected note(s) will move to Trash. You can restore them later.") },
-        confirmButton = { TextButton(onClick = { action {
-            app.repository.setTrashed(selectedIds.toList(), true)
-            home.clearSelection()
-            confirmBulkTrash = false
-        } }) { Text("Move to Trash") } },
-        dismissButton = { TextButton(onClick = { confirmBulkTrash = false }) { Text("Cancel") } })
-}
-
-@Composable
-private fun ReminderList(app: KeeparrApplication, reminders: List<JSONObject>, notes: List<Note>, modifier: Modifier,
-    onOpenNote: (Note?) -> Unit, onError: (String) -> Unit) {
-    val scope = rememberCoroutineScope()
-    var removing by remember { mutableStateOf<JSONObject?>(null) }
-    val rows = reminders.filter { reminder ->
-        reminder.text("status") == "pending" && reminder.text("dueAtUtc").isNotEmpty() &&
-            (reminder.optLong("noteId") == 0L || notes.any { it.id == reminder.optLong("noteId") || it.syncId == reminder.text("noteSyncId") })
-    }
-        .sortedBy { runCatching { Instant.parse(ReminderFormat.displayDueAt(it)) }.getOrDefault(Instant.MAX) }
-    if (rows.isEmpty()) Box(modifier, contentAlignment = Alignment.Center) { EmptyState(emptyView("reminders", "")) }
-    else LazyColumn(modifier, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(rows, key = { it.text("syncId") }) { reminder ->
-            val note = notes.find { it.id == reminder.optLong("noteId") || it.syncId == reminder.text("noteSyncId") }
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(if (note?.locked == true) "Locked note reminder" else reminder.text("title", note?.title ?: "Reminder"), style = MaterialTheme.typography.titleMedium)
-                     Text(ReminderFormat.dateTime(ReminderFormat.displayDueAt(reminder)))
-                    runCatching { JSONObject(reminder.text("repeatRule")) }.getOrNull()?.text("type")?.takeIf { it.isNotBlank() }?.let { type ->
-                        val description = if (type == "custom_days") "every ${runCatching { JSONObject(reminder.text("repeatRule")).optInt("intervalDays", 1) }.getOrDefault(1)} days" else type
-                        Text("Repeats: $description", style = MaterialTheme.typography.labelMedium)
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        if (note != null) TextButton(onClick = { onOpenNote(note) }) { Text("Open note") }
-                        TextButton(onClick = { scope.launch { runCatching { app.repository.dismissReminder(reminder.text("syncId")) }.onFailure { if (it !is CancellationException) onError(it.message ?: "Could not dismiss reminder") } } }) { Text("Dismiss") }
-                        TextButton(onClick = { removing = reminder }) { Text("Delete") }
-                    }
-                }
-            }
-        }
-    }
-    removing?.let { reminder -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("Delete reminder?") },
-        text = { Text("This removes the reminder from this account.") },
-        confirmButton = { TextButton(onClick = { scope.launch { runCatching { app.repository.deleteReminder(reminder.text("syncId")) }.onFailure { if (it !is CancellationException) onError(it.message ?: "Could not delete reminder") }; removing = null } }) { Text("Delete") } },
-        dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } }) }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun NoteCard(app: KeeparrApplication, note: NoteCardUiModel, modifier: Modifier, selected: Boolean, reorderEnabled: Boolean, reorder: NoteReorderController,
-    onClick: () -> Unit, onLongClick: () -> Unit, onMove: (Int) -> Unit, canMove: (Int) -> Boolean) {
-    DisposableEffect(note.syncId, reorder) { onDispose { reorder.disposed(note.syncId) } }
-    // Only this card's own highlight state is observed, so a changing drop target recomposes just two cards.
-    val dragging by remember(note.syncId, reorder) { derivedStateOf { reorder.draggingId == note.syncId } }
-    val dropTarget by remember(note.syncId, reorder) { derivedStateOf { reorder.targetId == note.syncId } }
-    // The stored color is data; the dark variant is derived here at render time.
-    val displayed = note.colorArgb?.let { NotePalette.display(it, LocalDarkTheme.current) }
-    val color = displayed?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
-    val foreground = if (note.hasBackgroundImage) MaterialTheme.colorScheme.onSurface
-        else displayed?.let { Color(NotePalette.textColor(it)) } ?: MaterialTheme.colorScheme.onSurface
-    val highlighted = selected || dropTarget
-    val shape = MaterialTheme.shapes.small
-    // A colored note gets a hairline in its own text color, so the border stays soft on every swatch in light and dark.
-    val outline = if (note.colorArgb != null) foreground.copy(alpha = .14f) else MaterialTheme.colorScheme.outlineVariant
-    val body = MaterialTheme.typography.bodyMedium
-    // The press ripple is drawn by the clickable, outside the Surface, so it takes the card's text color and its rounded clip from here.
-    CompositionLocalProvider(LocalContentColor provides foreground) {
-    Surface(shape = shape, color = color, contentColor = foreground,
-        border = BorderStroke(if (highlighted) 3.dp else 1.dp, if (highlighted) MaterialTheme.colorScheme.primary else outline),
-        modifier = modifier.fillMaxWidth().alpha(if (dragging) .6f else 1f)
-            .onGloballyPositioned { reorder.positioned(note.syncId, it.boundsInWindow()) }
-            .clip(shape)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick,
-                onLongClickLabel = "Drag to reorder note".takeIf { reorderEnabled })
-            // Dragging is not available to every user, so the same moves are exposed as accessibility actions.
-            .semantics {
-                if (reorderEnabled) customActions = listOfNotNull(
-                    CustomAccessibilityAction("Move earlier") { onMove(-1); true }.takeIf { canMove(-1) },
-                    CustomAccessibilityAction("Move later") { onMove(1); true }.takeIf { canMove(1) })
-            }) {
-        Column(Modifier.noteBackgroundImage(note.background.takeUnless { note.locked }, LocalDarkTheme.current).padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (note.locked) { Icon(Icons.Outlined.Lock, "Locked note"); Text("Locked note", style = body) }
-                else {
-                note.imagePath?.let { MediaImage(app, it) }
-                if (note.title.isNotBlank()) Text(note.title, style = MaterialTheme.typography.titleMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                if (note.bodyText.isNotBlank()) Text(note.bodyText, style = body, maxLines = 12, overflow = TextOverflow.Ellipsis)
-                if (note.checklist) note.checklistItems.forEach { item -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    // The box is as tall as one text line and scales with the font size, so it stays centered on the first line.
-                    Box(Modifier.height(textDp(body.lineHeight)), contentAlignment = Alignment.Center) {
-                        Icon(if (item.done) Icons.Outlined.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
-                            if (item.done) "Completed" else "Not completed", Modifier.size(textDp(18.sp)))
-                    }
-                    Text(item.text, style = body, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                } }
-                if (note.completedCount > 0) Text("(${note.completedCount}) Completed items", style = MaterialTheme.typography.labelSmall,
-                    color = foreground.copy(alpha = .7f))
-                note.reminderText?.let { reminderText ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.Schedule, "Reminder", Modifier.size(textDp(14.sp)))
-                        Text(reminderText, Modifier.padding(start = 5.dp), style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                    }
-                }
-                if (note.labels.isNotEmpty()) Text(note.labels.joinToString(" · "), style = MaterialTheme.typography.labelSmall)
-                if (note.shared) Icon(Icons.Outlined.PeopleOutline, "Shared note", Modifier.size(18.dp))
-            }
-        }
-    }
-    }
-}
-
-@Composable
-private fun textDp(size: TextUnit) = with(LocalDensity.current) { size.toDp() }
-
-private class EmptyView(val icon: ImageVector, val title: String, val hint: String)
-
-private fun emptyView(filter: String, search: String) = when {
-    search.isNotBlank() -> EmptyView(Icons.Outlined.SearchOff, "No matching notes", "Try different words or check the spelling.")
-    filter == "reminders" -> EmptyView(Icons.Outlined.Notifications, "No upcoming reminders", "Notes with a reminder appear here.")
-    filter == "shared" -> EmptyView(Icons.Outlined.PeopleOutline, "No shared notes", "Notes you share, or that are shared with you, appear here.")
-    filter == "archive" -> EmptyView(Icons.Outlined.Archive, "Your archive is empty", "Archive a note to tuck it away without deleting it.")
-    filter == "trash" -> EmptyView(Icons.Outlined.DeleteOutline, "Trash is empty", "Notes you delete appear here, so you can still restore them.")
-    filter.startsWith("label:") -> EmptyView(Icons.AutoMirrored.Outlined.Label, "No notes with this label", "Add the label to a note and it appears here.")
-    filter.startsWith("binder:") -> EmptyView(Icons.Outlined.Folder, "This binder is empty", "Notes you file in this binder appear here.")
-    else -> EmptyView(Icons.Outlined.Lightbulb, "Your notes appear here", "Tap \"Take a note…\" to write your first one.")
-}
-
-@Composable
-private fun EmptyState(view: EmptyView) {
-    Column(Modifier.padding(horizontal = 40.dp, vertical = 24.dp).semantics(mergeDescendants = true) {}, horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.size(96.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
-            Icon(view.icon, null, Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
-        }
-        Text(view.title, Modifier.padding(top = 20.dp), style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
-        Text(view.hint, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-    }
-}
-
-internal fun canReorderNotes(filter: String, search: String) = search.isBlank() && filter in setOf("home", "pinned")
-
-internal fun searchVisibleNotes(notes: List<Note>, filter: String, search: String): List<Note> {
-    val visible = NoteOrder.visible(notes, filter)
-    if (search.isBlank()) return visible
-    return visible.filter { note ->
-        !note.locked && (NoteHtml.titleText(note.title) + " " + NoteHtml.plainText(note.body) + " " + note.items.joinToString { NoteHtml.plainText(it.text("data")) })
-            .contains(search, true)
-    }
-}
-
-/** Whether the note at [index] can swap one place toward [delta] (-1 earlier, +1 later) without leaving its pinned group. */
-internal fun canMoveNoteBy(visible: List<Note>, index: Int, delta: Int): Boolean {
-    val to = index + delta
-    return (delta == -1 || delta == 1) && index in visible.indices && to in visible.indices && visible[index].pinned == visible[to].pinned
-}
-
-/** The stored order after moving the note at [index] one place by [delta], or null where that is not allowed. */
-internal fun moveNoteBy(visible: List<Note>, index: Int, delta: Int): List<String>? {
-    if (!canMoveNoteBy(visible, index, delta)) return null
-    return visible.map { it.syncId }.toMutableList().also { java.util.Collections.swap(it, index, index + delta) }
-}
-
-internal fun moveDraggedNote(visible: List<Note>, source: Note, targetId: String): List<String>? {
-    val from = visible.indexOfFirst { it.syncId == source.syncId }
-    val to = visible.indexOfFirst { it.syncId == targetId }
-    if (from < 0 || to < 0 || from == to || visible[from].pinned != visible[to].pinned) return null
-    val ids = visible.map { it.syncId }.toMutableList()
-    ids.add(to, ids.removeAt(from))
-    return ids
-}
-
-@Composable
-internal fun MediaImage(app: KeeparrApplication, path: String, maxHeight: androidx.compose.ui.unit.Dp = 240.dp) {
-    val profile = app.settings.profile
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val density = androidx.compose.ui.platform.LocalDensity.current
-        val maxHeightPx = with(density) { maxHeight.roundToPx() }
-        val widthPx = constraints.maxWidth
-        // Decode for the space this slot can actually fill, not a fixed size.
-        val decodeSize = previewDecodeSize(widthPx, maxHeightPx)
-        var bitmap by remember(profile, path) { mutableStateOf<Bitmap?>(null) }
-        var failed by remember(profile, path) { mutableStateOf(false) }
-        var attempt by remember(profile, path) { mutableIntStateOf(0) }
-        LaunchedEffect(profile, path, decodeSize, attempt) {
-            val loaded = Media(app).preview(path, maxDimension = decodeSize)
-            if (loaded != null) { PreviewGeometry.remember(path, loaded.width, loaded.height); bitmap = loaded; failed = false }
-            else if (bitmap == null) failed = true
-        }
-        val current = bitmap
-        if (current != null) Image(current.asImageBitmap(), "Note image", Modifier.fillMaxWidth().heightIn(max = maxHeight))
-        else {
-            // Loading and failure keep the height the loaded image will take, so the card does not jump.
-            val reserved = with(density) { PreviewGeometry.reservedHeightPx(path, widthPx, maxHeightPx).toDp() }
-            Box(Modifier.fillMaxWidth().height(reserved), contentAlignment = Alignment.Center) {
-                if (failed) TextButton(onClick = { failed = false; attempt++ }, modifier = Modifier.semantics {
-                    contentDescription = "Image could not be loaded. Tap to retry."
-                }) { Icon(Icons.Outlined.BrokenImage, null); Text("Retry", Modifier.padding(start = 6.dp)) }
-                else CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-            }
         }
     }
 }

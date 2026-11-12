@@ -1,6 +1,7 @@
 package dev.keeparr.android.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -103,6 +104,16 @@ class ConnectionFailureTest {
         assertEquals("Invalid 2FA code or backup code.", httpFailureMessage(401, LOGIN_PATH, """{"error":"Invalid 2FA code or backup code."}"""))
         assertEquals("Your account is pending approval by an administrator.",
             httpFailureMessage(403, LOGIN_PATH, """{"error":"Your account is pending approval by an administrator."}"""))
+    }
+
+    @Test fun onlyASignInThatAsksForACodeStartsTheSecondStep() {
+        assertTrue(loginRequiresSecondFactor(401, LOGIN_PATH, """{"error":"2FA required","requires2FA":true}"""))
+        assertFalse("a wrong code is an error, not a new prompt",
+            loginRequiresSecondFactor(401, LOGIN_PATH, """{"error":"Invalid 2FA code or backup code."}"""))
+        assertFalse(loginRequiresSecondFactor(401, LOGIN_PATH, """{"error":"Username or password is incorrect."}"""))
+        assertFalse(loginRequiresSecondFactor(401, "/api/auth/2fa/disable", """{"requires2FA":true}"""))
+        assertFalse(loginRequiresSecondFactor(429, LOGIN_PATH, """{"requires2FA":true}"""))
+        assertFalse(loginRequiresSecondFactor(401, LOGIN_PATH, "not json"))
     }
 
     @Test fun a401OnAnyOtherRequestStillMeansTheSessionExpired() {

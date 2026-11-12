@@ -2,6 +2,8 @@ package dev.keeparr.android.ui.editor
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
@@ -15,9 +17,12 @@ import androidx.compose.material.icons.outlined.FormatItalic
 import androidx.compose.material.icons.outlined.FormatUnderlined
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -27,6 +32,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.unit.dp
 import dev.keeparr.android.data.html.HtmlMode
 
 /**
@@ -41,32 +47,49 @@ fun FormatToolbar(focus: RichEditorFocus, canUndo: Boolean, canRedo: Boolean, on
     val formatting = field?.formatting.orEmpty()
     val body = field?.mode == HtmlMode.Body
     val any = field != null
-    Row(modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+    // Three groups (block, inline, history), divided so the bar scans at a glance.
+    Row(modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
         TextCommand("H1", "Heading 1", "h1" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.H1) }
         TextCommand("H2", "Heading 2", "h2" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.H2) }
         TextCommand("Aa", "Normal text", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Normal) }
         TextCommand("•", "Bulleted list", "bullet" in formatting, body, contentColor) { onCommand(); field?.run(EditorCommand.Bullet) }
         IconCommand(Icons.AutoMirrored.Outlined.FormatIndentIncrease, "Indent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Indent) }
         IconCommand(Icons.AutoMirrored.Outlined.FormatIndentDecrease, "Outdent", false, body, contentColor) { onCommand(); field?.run(EditorCommand.Outdent) }
+        GroupDivider(contentColor)
         IconCommand(Icons.Outlined.FormatBold, "Bold", "b" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Bold) }
         IconCommand(Icons.Outlined.FormatItalic, "Italic", "i" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Italic) }
         IconCommand(Icons.Outlined.FormatUnderlined, "Underline", "u" in formatting, any, contentColor) { onCommand(); field?.run(EditorCommand.Underline) }
         IconCommand(Icons.Outlined.FormatClear, "Clear formatting", false, any, contentColor) { onCommand(); field?.run(EditorCommand.Clear) }
+        GroupDivider(contentColor)
         IconCommand(Icons.AutoMirrored.Outlined.Undo, "Undo", false, canUndo, contentColor, onUndo)
         IconCommand(Icons.AutoMirrored.Outlined.Redo, "Redo", false, canRedo, contentColor, onRedo)
     }
 }
 
+/** An active command sits on a tonal circle as well as taking the accent color, so its state doesn't rest on color alone. */
+@Composable
+private fun commandColors(active: Boolean) = IconButtonDefaults.iconButtonColors(
+    containerColor = if (active) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+
 @Composable
 private fun IconCommand(icon: ImageVector, label: String, active: Boolean, enabled: Boolean, contentColor: Color, onClick: () -> Unit) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.alpha(if (enabled) 1f else .38f).semantics { contentDescription = label; role = Role.Button; selected = active }) {
+    IconButton(onClick = onClick, enabled = enabled, colors = commandColors(active),
+        modifier = Modifier.alpha(if (enabled) 1f else .38f).semantics { contentDescription = label; role = Role.Button; selected = active }) {
         Icon(icon, null, tint = if (active) MaterialTheme.colorScheme.primary else contentColor)
     }
 }
 
 @Composable
 private fun TextCommand(text: String, label: String, active: Boolean, enabled: Boolean, contentColor: Color, onClick: () -> Unit) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.alpha(if (enabled) 1f else .38f).semantics { contentDescription = label; role = Role.Button; selected = active }) {
-        Text(text, color = if (active) MaterialTheme.colorScheme.primary else contentColor, style = MaterialTheme.typography.labelLarge)
+    IconButton(onClick = onClick, enabled = enabled, colors = commandColors(active),
+        modifier = Modifier.alpha(if (enabled) 1f else .38f).semantics { contentDescription = label; role = Role.Button; selected = active }) {
+        // A lone bullet needs a larger size than the letter commands to read as a symbol rather than a speck.
+        Text(text, color = if (active) MaterialTheme.colorScheme.primary else contentColor,
+            style = if (text.length == 1) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.labelLarge)
     }
+}
+
+@Composable
+private fun GroupDivider(contentColor: Color) {
+    VerticalDivider(Modifier.height(24.dp).padding(horizontal = 4.dp), color = contentColor.copy(alpha = .2f))
 }

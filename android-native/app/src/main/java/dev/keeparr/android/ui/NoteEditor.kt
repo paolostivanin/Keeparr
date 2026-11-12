@@ -1,4 +1,5 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class,
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package dev.keeparr.android.ui
 
 import android.app.DatePickerDialog
@@ -12,6 +13,8 @@ import android.widget.EditText
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.layout.boundsInWindow
@@ -28,10 +31,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Label
 import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -63,6 +69,7 @@ import dev.keeparr.android.data.html.EmbedKind
 import dev.keeparr.android.data.html.EmbedSpan
 import dev.keeparr.android.data.html.HtmlMode
 import dev.keeparr.android.data.html.NoteHtml
+import dev.keeparr.android.ui.components.*
 import dev.keeparr.android.ui.editor.*
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -90,7 +97,6 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     val localSaving by draftViewModel.localSaving.collectAsStateWithLifecycle()
     val localSaveFailed by draftViewModel.localSaveFailed.collectAsStateWithLifecycle()
     var unlockedLockHash by remember(original.syncId) { mutableStateOf("") }
-    var passcode by remember { mutableStateOf("") }
     var reminderDialog by remember { mutableStateOf(false) }
     var shareDialog by remember { mutableStateOf(false) }
     var organizeDialog by remember { mutableStateOf(false) }
@@ -110,7 +116,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         (it.optLong("noteId") == note.id || it.text("noteSyncId") == note.syncId) }
     fun change(vararg touched: String, external: Boolean = false, structural: Boolean = false, block: (JSONObject) -> Unit) =
         draftViewModel.change(*touched, external = external, structural = structural, block = block)
-    fun action(block: suspend () -> Unit) { scope.launch { try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (problem: Exception) { onError(problem.message ?: "Action failed") } } }
+    val action = rememberActionRunner(onError)
     fun openNoteLink(rawUrl: String) {
         val value = rawUrl.trim()
         val scheme = android.net.Uri.parse(value).scheme?.lowercase()
@@ -296,7 +302,9 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    BackHandler { if (inaccessible) onClose() else close() }
+    // Until it is unlocked a locked note has no draft to save, so leaving it just closes it, as leaving a removed note does.
+    val locked = lockSource.locked && unlockedLockHash != lockSource.raw.text("lockHash")
+    BackHandler { if (inaccessible || locked) onClose() else close() }
     LaunchedEffect(cachedNote) {
         if (original.id > 0 && cachedNote == null && !inaccessible) {
             val hadUnsavedChanges = changed
@@ -327,21 +335,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) addImage(uri)
     }
-    if (inaccessible) {
-        AlertDialog(onDismissRequest = onClose, title = { Text("Note access removed") },
-            text = { Text("This note is no longer available on the server. Your current draft is saved on this device and will not be sent to that note.") },
-            confirmButton = { TextButton(onClick = { action { app.repository.recoverDraftAsCopy(app.settings.profile, note.syncId); onClose() } }) { Text("Recover as new note") } },
-            dismissButton = { TextButton(onClick = onClose) { Text("Keep for later") } })
-        return
-    }
-    if (lockSource.locked && unlockedLockHash != lockSource.raw.text("lockHash")) {
-        AlertDialog(onDismissRequest = onClose, title = { Text("Unlock note") }, text = {
-            OutlinedTextField(passcode, { passcode = it }, label = { Text("Note passcode") }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation())
-        }, confirmButton = { TextButton(onClick = { action {
-            if (withContext(Dispatchers.Default) { verifyLock(lockSource, passcode) }) unlockedLockHash = lockSource.raw.text("lockHash") else onError("Incorrect note passcode")
-        } }) { Text("Unlock") } }, dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } })
-        return
-    }
+    val enter = Modifier.screenEnter(ScreenEnter.Rise)
     // The stored color is data; the dark variant is derived at render time. Everything below draws on `color`/`foreground`.
     // The stored color shows through transparent parts of the illustration; text follows the theme over artwork.
     val bgImage = note.raw.text("bgImage")
@@ -350,25 +344,50 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
     val color = displayedColor?.let { Color(it) } ?: MaterialTheme.colorScheme.surface
     val foreground = if (bgImage.isNotBlank()) MaterialTheme.colorScheme.onSurface
         else displayedColor?.let { Color(NotePalette.textColor(it)) } ?: MaterialTheme.colorScheme.onSurface
+    if (inaccessible) {
+        var recoverError by remember { mutableStateOf<String?>(null) }
+        var recovering by remember { mutableStateOf(false) }
+        val dialogAction = rememberActionRunner { recoverError = it; recovering = false }
+        // The note's own color behind the dialog, rather than an empty screen.
+        Surface(enter.fillMaxSize(), color = color) {}
+        ConfirmDialog(title = "Note access removed",
+            text = "This note is no longer available on the server. Your current draft is saved on this device and will not be sent to that note.",
+            confirmLabel = "Recover as new note", dismissLabel = "Keep for later", icon = Icons.Outlined.LinkOff, error = recoverError, busy = recovering,
+            onConfirm = {
+                recovering = true
+                dialogAction { app.repository.recoverDraftAsCopy(app.settings.profile, note.syncId); onClose() }
+            }, onDismiss = onClose)
+        return
+    }
+    if (locked) {
+        LockedNotePage(color, foreground, enter, onBack = onClose,
+            verify = { passcode -> withContext(Dispatchers.Default) { verifyLock(lockSource, passcode) } },
+            onUnlocked = { unlockedLockHash = lockSource.raw.text("lockHash") })
+        return
+    }
+    // The top bar tints once the content scrolls under it, and a hairline marks more content below. Both read the scroll
+    // state directly: checklist auto-scroll and the text field's bring-into-view don't go through nested scrolling.
+    val scrolled by remember { derivedStateOf { editorScroll.canScrollBackward } }
+    val moreBelow by remember { derivedStateOf { editorScroll.canScrollForward } }
     CompositionLocalProvider(LocalRichEditorFocus provides focus) {
     NoteSurfaceTheme(color, foreground,
         linkColor = if (bgImage.isNotBlank()) if (LocalDarkTheme.current) NotePalette.LINK_DARK_THEME else NotePalette.LINK_LIGHT_THEME else null) {
     SystemBarsOverride(lightBackground = NotePalette.textColor(color.toArgb()) == NotePalette.TEXT_LIGHT_THEME)
-    Scaffold(topBar = {
-        TopAppBar(title = {},
+    val barColor by animateColorAsState(if (scrolled) MaterialTheme.colorScheme.surfaceContainer else color, tween(Motion.BASE), label = "editor bar")
+    val muted = foreground.copy(alpha = .7f)
+    Scaffold(enter, topBar = {
+        TopAppBar(title = {}, colors = TopAppBarDefaults.topAppBarColors(containerColor = barColor),
             navigationIcon = { IconButton(onClick = ::close) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Save and go back") } }, actions = {
                 IconButton(onClick = { change("pinned") { it.put("pinned", !note.pinned) } }) {
-                    Icon(Icons.Outlined.PushPin, if (note.pinned) "Unpin" else "Pin",
+                    Icon(if (note.pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin, if (note.pinned) "Unpin" else "Pin",
                         tint = if (note.pinned) MaterialTheme.colorScheme.primary else LocalContentColor.current)
                 }
                 if (owner && !note.trashed) IconButton(onClick = { change { it.put("archived", !note.archived) }; close() }) {
-                    Icon(Icons.Outlined.Archive, if (note.archived) "Unarchive" else "Archive")
+                    Icon(if (note.archived) Icons.Outlined.Unarchive else Icons.Outlined.Archive, if (note.archived) "Unarchive" else "Archive")
                 }
                 Box {
                     IconButton(onClick = { moreMenuExpanded = true }) { Icon(Icons.Outlined.MoreVert, "More note actions") }
                     DropdownMenu(expanded = moreMenuExpanded, onDismissRequest = { moreMenuExpanded = false }) {
-                        DropdownMenuItem(text = { Text("Remind me") }, leadingIcon = { Icon(Icons.Outlined.NotificationAdd, null) },
-                            onClick = { moreMenuExpanded = false; reminderDialog = true })
                         if (owner) {
                             DropdownMenuItem(text = { Text("Labels and binder") }, leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Label, null) },
                                 onClick = { moreMenuExpanded = false; organizeDialog = true })
@@ -398,6 +417,7 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                         DropdownMenuItem(text = { Text("Undo changes") }, leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Undo, null) },
                             onClick = { moreMenuExpanded = false; draftViewModel.undoAll() })
                         if (owner) {
+                            HorizontalDivider()
                             if (note.trashed) DropdownMenuItem(text = { Text("Restore") }, leadingIcon = { Icon(Icons.Outlined.RestoreFromTrash, null) },
                                 onClick = { moreMenuExpanded = false; action {
                                     draftViewModel.flushAndQueueSync()
@@ -411,57 +431,59 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                 }
             })
     }, bottomBar = {
-        Surface(color = color, contentColor = foreground, tonalElevation = 2.dp) {
+        Surface(color = color, contentColor = foreground) {
           // The bar rides above the keyboard, so the formatting commands stay within reach while typing.
           Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
+            // Always laid out (only its color changes), so the content above never shifts by its height.
+            HorizontalDivider(color = foreground.copy(alpha = if (moreBelow) .12f else 0f))
             if (formatBar) CompositionLocalProvider(LocalRichEditorFocus provides focus) {
                 FormatToolbar(focus, canUndo, canRedo, onUndo = { draftViewModel.undo() }, onRedo = { draftViewModel.redo() },
-                    onCommand = { draftViewModel.markStructural() }, contentColor = foreground, modifier = Modifier.padding(horizontal = 8.dp))
+                    onCommand = { draftViewModel.markStructural() }, contentColor = foreground, modifier = Modifier.padding(horizontal = Spacing.sm))
             }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                IconButton(onClick = { formatBar = !formatBar }, modifier = Modifier.semantics { selected = formatBar }) {
-                    Icon(Icons.Outlined.TextFormat, if (formatBar) "Hide formatting toolbar" else "Show formatting toolbar",
-                        tint = if (formatBar) MaterialTheme.colorScheme.primary else LocalContentColor.current)
+            Row(Modifier.fillMaxWidth().padding(horizontal = Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
+                IconToggleButton(checked = formatBar, onCheckedChange = { formatBar = it }, colors = IconButtonDefaults.iconToggleButtonColors(
+                    checkedContainerColor = MaterialTheme.colorScheme.secondaryContainer, checkedContentColor = MaterialTheme.colorScheme.onSecondaryContainer)) {
+                    Icon(Icons.Outlined.TextFormat, "Formatting")
                 }
-                IconButton(onClick = { picker.launch(arrayOf("*/*")) }) { Icon(Icons.Outlined.AttachFile, "Add image or attachment") }
+                IconButton(onClick = { picker.launch(arrayOf("*/*")) }) { Icon(Icons.Outlined.AddPhotoAlternate, "Add image or attachment") }
                 if (owner) IconButton(onClick = { palette = true }) { Icon(Icons.Outlined.Palette, "Background color") }
-                IconButton(onClick = { reminderDialog = true }) { Icon(Icons.Outlined.NotificationAdd, "Reminder") }
+                IconButton(onClick = { reminderDialog = true }) {
+                    if (selectedReminder != null) Icon(Icons.Outlined.NotificationsActive, "Edit reminder", tint = MaterialTheme.colorScheme.primary)
+                    else Icon(Icons.Outlined.NotificationAdd, "Add reminder")
+                }
                 Spacer(Modifier.weight(1f))
-                Text(when {
-                    localSaving -> "Saving…"
-                    localSaveFailed -> "Not saved"
-                    syncStatus.isNotBlank() -> syncStatus
-                    else -> "Saved"
-                }, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 8.dp))
+                SaveStatus(localSaving, localSaveFailed, syncStatus, muted, Modifier.padding(horizontal = Spacing.sm))
             }
           }
         }
-    }) { padding ->
+    }, snackbarHost = { KeeparrSnackbarHost() }) { padding ->
         Surface(Modifier.fillMaxSize().padding(padding), color = color, contentColor = foreground) {
+        // The scroll, the art and the blank-space tap cover the full width; the content inside stops at a readable width.
         Column(Modifier.fillMaxSize().onGloballyPositioned { editorViewport[0] = it }.noteBackgroundImage(background, LocalDarkTheme.current, anchor = BackgroundAnchor.BottomCenter).clickable(remember { MutableInteractionSource() }, indication = null) { focusEditorEnd() }
-            .verticalScroll(editorScroll).padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            .verticalScroll(editorScroll)) {
+        Column(Modifier.centeredMaxWidth().padding(horizontal = Spacing.lg, vertical = Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
             incoming?.let { serverNote ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("A newer server version is available", style = MaterialTheme.typography.titleSmall)
-                        Text("Your draft is kept on this device. Saving it may require conflict resolution.", style = MaterialTheme.typography.bodySmall)
-                        if (serverNote.title.isNotBlank()) Text("Server title: ${NoteHtml.titleText(serverNote.title)}", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
+                StatusBanner(buildString {
+                    append("Your draft is kept on this device. Saving it may need conflict resolution.")
+                    if (serverNote.title.isNotBlank()) append("\nServer title: ${NoteHtml.titleText(serverNote.title)}")
+                }, title = "A newer version is on the server", icon = Icons.Outlined.CloudSync)
             }
-            if (!owner) Text("Shared by ${metadataNote.raw.text("ownerDisplayName", "another Keeparr user")}",
-                style = MaterialTheme.typography.labelSmall, color = foreground.copy(alpha = .7f))
-            editors[note.id].orEmpty().takeIf { it.isNotEmpty() }?.let { active ->
-                Text("Editing with ${active.joinToString()}", style = MaterialTheme.typography.labelSmall, color = foreground.copy(alpha = .7f))
+            val activeEditors = editors[note.id].orEmpty()
+            if (!owner || activeEditors.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                if (!owner) MetaLine(Icons.Outlined.PeopleOutline, "Shared by ${metadataNote.raw.text("ownerDisplayName", "another Keeparr user")}", muted)
+                if (activeEditors.isNotEmpty()) MetaLine(Icons.Outlined.Edit, "Editing now: ${activeEditors.joinToString()}", muted)
             }
             // The title is plain text: it shows the decoded text and stores it escaped, or untouched when the text did not change.
+            // It wraps, but stays one paragraph: a typed or pasted line break moves on to the body instead.
             val titleBaseline = remember(original.syncId, externalEdits) { note.title }
             val titleText = NoteHtml.titleText(note.title)
-            BasicTextField(value = titleText, onValueChange = { text -> change("noteTitle") { it.put("noteTitle", NoteHtml.titleHtml(text, titleBaseline)) } },
-                modifier = Modifier.fillMaxWidth().onFocusChanged { if (it.isFocused) focus.clear() }, singleLine = true,
+            fun setTitle(text: String) { if (text != titleText) change("noteTitle") { it.put("noteTitle", NoteHtml.titleHtml(text, titleBaseline)) } }
+            BasicTextField(value = titleText, onValueChange = { text ->
+                    if ('\n' in text || '\r' in text) { setTitle(text.split('\n', '\r').filter { it.isNotEmpty() }.joinToString(" ")); focusEditorEnd() }
+                    else setTitle(text)
+                },
+                // Inset like the body below it, whose platform text field keeps a small built-in padding.
+                modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.xs).onFocusChanged { if (it.isFocused) focus.clear() },
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
                     imeAction = androidx.compose.ui.text.input.ImeAction.Next),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onNext = { focusEditorEnd() }),
@@ -470,24 +492,29 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                     if (titleText.isBlank()) Text("Title", style = MaterialTheme.typography.headlineSmall, color = foreground.copy(alpha = .55f))
                     inner()
                 } })
-            if (titleText.isNotBlank()) HorizontalDivider(color = foreground.copy(alpha = .12f))
             val editorColors = EditorColors(foreground.toArgb(), LocalNoteLinkColor.current)
             // Mutations must be based on the draft. A metadata-first union here
             // can resurrect a just-removed image during the next placement edit.
             val images = note.raw.optJSONArray("images")?.objects().orEmpty()
             fun updateImages(next: List<JSONObject>) = change("images") { it.put("images", ChecklistModel.toJson(next)) }
             @Composable fun ImagesAt(placement: String) {
-                images.filter { it.text("placement", "top") == placement }.forEach { image ->
-                    Column {
+                images.filter { it.text("placement", "top") == placement }.forEach { image -> key(image.text("dataUrl")) {
+                    var imageMenu by remember { mutableStateOf(false) }
+                    Box(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.card)) {
                         MediaImage(app, image.text("dataUrl"))
-                        Row {
-                            TextButton(onClick = { updateImages(images.map { if (it === image) it.shallowCopy().put("placement", if (placement == "top") "bottom" else "top") else it }) }) {
-                                Text(if (placement == "top") "Move below the text" else "Move above the text")
+                        Box(Modifier.align(Alignment.TopEnd).padding(Spacing.xs)) {
+                            FilledIconButton(onClick = { imageMenu = true }, colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Color.Black.copy(alpha = .5f), contentColor = Color.White)) { Icon(Icons.Outlined.MoreVert, "Image options") }
+                            DropdownMenu(expanded = imageMenu, onDismissRequest = { imageMenu = false }) {
+                                DropdownMenuItem(text = { Text(if (placement == "top") "Move below the text" else "Move above the text") },
+                                    leadingIcon = { Icon(if (placement == "top") Icons.Outlined.ArrowDownward else Icons.Outlined.ArrowUpward, null) },
+                                    onClick = { imageMenu = false; updateImages(images.map { if (it === image) it.shallowCopy().put("placement", if (placement == "top") "bottom" else "top") else it }) })
+                                DropdownMenuItem(text = { Text("Remove image") }, leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null) },
+                                    onClick = { imageMenu = false; updateImages(images.filter { it !== image }) })
                             }
-                            TextButton(onClick = { updateImages(images.filter { it !== image }) }) { Icon(Icons.Outlined.Close, null); Text("Remove image") }
                         }
                     }
-                }
+                } }
             }
             ImagesAt("top")
             if (!note.checklist || hybrid) {
@@ -505,38 +532,58 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
                 @Composable fun Rows(shown: List<JSONObject>) = ChecklistRows(note.items, shown, externalEdits, editorColors, foreground, color,
                     embeds, rowStates, checklistActions, ::openNoteLink, { uri, _ -> addImage(uri) },
                     viewport = { editorViewport[0]?.takeIf { it.isAttached }?.boundsInWindow() }, scrollBy = { editorScroll.scrollBy(it) })
-                Rows(sections.open)
-                TextButton(onClick = { addChecklistItem() }) { Icon(Icons.Outlined.Add, null); Text("List item") }
-                val completedCount = ChecklistModel.checkedCount(note.items)
-                if (moveCompleted && completedCount > 0) {
-                    HorizontalDivider(color = foreground.copy(alpha = .2f))
-                    CompletedItemsHeader(completedCount, completedCollapsed, foreground) { draftViewModel.updateChecklistCollapsed(!completedCollapsed) }
-                    // A separate call, so a drag in one section never reorders the other.
-                    if (sections.completed.isNotEmpty()) Rows(sections.completed)
+                Column {
+                    Rows(sections.open)
+                    AddChecklistItemRow(muted) { addChecklistItem() }
+                    val completedCount = ChecklistModel.checkedCount(note.items)
+                    if (moveCompleted && completedCount > 0) {
+                        HorizontalDivider(Modifier.padding(vertical = Spacing.xs), color = foreground.copy(alpha = .16f))
+                        CompletedItemsHeader(completedCount, completedCollapsed, foreground) { draftViewModel.updateChecklistCollapsed(!completedCollapsed) }
+                        // A separate call, so a drag in one section never reorders the other.
+                        if (sections.completed.isNotEmpty()) Rows(sections.completed)
+                    }
                 }
             }
             ImagesAt("bottom")
             val attachments = (metadataNote.raw.optJSONArray("attachments")?.objects().orEmpty() + note.raw.optJSONArray("attachments")?.objects().orEmpty())
                 .distinctBy { it.text("syncId").ifBlank { it.optLong("id").toString() } }
-             attachments.forEach { attachment ->
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    TextButton(onClick = { action {
+            if (attachments.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                attachments.forEach { attachment ->
+                    val name = attachment.text("originalName").ifBlank { "Attachment" }
+                    Surface(onClick = { action {
                         val file = Media(app).download("/api/attachments/${attachment.getLong("id")}")
                         val uri = FileProvider.getUriForFile(app, "dev.keeparr.android.files", file)
                         activity.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, attachment.text("mimeType", "application/octet-stream")).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-                    } }) { Icon(Icons.Outlined.AttachFile, null); Text(attachment.text("originalName")) }
-                    if (owner) IconButton(onClick = { action { app.repository.deleteAttachment(note.syncId, attachment.text("syncId")) } }) {
-                        Icon(Icons.Outlined.DeleteOutline, "Remove ${attachment.text("originalName")}")
+                    } }, shape = MaterialTheme.shapes.card, color = Color.Transparent, border = BorderStroke(1.dp, foreground.copy(alpha = .2f))) {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = Spacing.lg, end = Spacing.xs),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
+                            Icon(Icons.Outlined.AttachFile, null, tint = muted)
+                            Column(Modifier.weight(1f).padding(vertical = Spacing.sm)) {
+                                Text(name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                attachment.text("mimeType").takeIf { it.isNotBlank() }?.let {
+                                    Text(it, style = MaterialTheme.typography.bodySmall, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                            if (owner) IconButton(onClick = { action { app.repository.deleteAttachment(note.syncId, attachment.text("syncId")) } }) {
+                                Icon(Icons.Outlined.DeleteOutline, "Remove $name")
+                            }
+                        }
                     }
                 }
-             }
-            if (metadataNote.labels.isNotEmpty()) Text(metadataNote.labels.joinToString(" · "), style = MaterialTheme.typography.labelMedium)
-            if (metadataNote.binder.isNotEmpty()) Text("Binder: ${metadataNote.binder}", style = MaterialTheme.typography.labelMedium)
-            selectedReminder?.let { TextButton(onClick = { reminderDialog = true }) {
-                Icon(Icons.Outlined.Schedule, null); Text(ReminderFormat.dateTime(ReminderFormat.displayDueAt(it)))
-            } }
-         }
-         }
+            }
+            // Reminder, labels and binder as chips at the end of the note; tapping one edits it.
+            val reminderChip = selectedReminder?.let { ReminderFormat.dateTime(ReminderFormat.displayDueAt(it)) }
+            if (reminderChip != null || metadataNote.labels.isNotEmpty() || metadataNote.binder.isNotEmpty()) {
+                FlowRow(Modifier.padding(top = Spacing.xs), horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                    reminderChip?.let { MetaChip(it, icon = Icons.Outlined.Alarm, onClick = { reminderDialog = true }) }
+                    val organize: (() -> Unit)? = if (owner) ({ organizeDialog = true }) else null
+                    metadataNote.labels.forEach { MetaChip(it, icon = Icons.AutoMirrored.Outlined.Label, onClick = organize) }
+                    if (metadataNote.binder.isNotEmpty()) MetaChip(metadataNote.binder, icon = Icons.Outlined.Folder, onClick = organize)
+                }
+            }
+        }
+        }
+        }
     }
     }
     }
@@ -557,161 +604,74 @@ internal fun NoteEditor(activity: MainActivity, app: KeeparrApplication, origina
         change { it.put("bgImage", selected?.stored ?: "") }
         palette = false
     })
-    if (organizeDialog) {
-        var labels by remember { mutableStateOf(note.labels.joinToString(", ")) }
-        var binder by remember { mutableStateOf(note.binder) }
-        AlertDialog(onDismissRequest = { organizeDialog = false }, title = { Text("Organize note") }, text = { Column {
-            OutlinedTextField(labels, { labels = it }, label = { Text("Labels, separated by commas") })
-            OutlinedTextField(binder, { binder = it }, label = { Text("Binder (optional)") })
-        } }, confirmButton = { TextButton(onClick = { change { it.put("labels", JSONArray(labels.split(',').map { label -> label.trim() }.filter { it.isNotEmpty() }.distinct().map { label -> JSONObject().put("name", label).put("added", true) })).put("binder", binder.trim()) }; organizeDialog = false }) { Text("Save") } })
-    }
+    if (organizeDialog) OrganizeDialog(note.labels.toList(), note.binder, onDismiss = { organizeDialog = false }, onSave = { labels, binder ->
+        change { it.put("labels", JSONArray(labels.map { label -> JSONObject().put("name", label).put("added", true) })).put("binder", binder) }
+        organizeDialog = false
+    })
     if (reminderDialog) ReminderDialog(activity, app, selectedReminder, onClose = { reminderDialog = false }, onSave = { due, timezone, repeat ->
-        action { draftViewModel.flushAndQueueSync(); app.repository.setReminder(Note(raw), due, timezone, repeat); reminderDialog = false }
-    }, onRemove = { selectedReminder?.let { action { app.repository.deleteReminder(it.getString("syncId")); reminderDialog = false } } })
-    if (shareDialog) ShareDialog(app, note, onClose = { shareDialog = false }, onSave = { ids -> action { draftViewModel.flushAndQueueSync(); app.repository.share(Note(raw), ids); shareDialog = false } }, onError)
+        draftViewModel.flushAndQueueSync(); app.repository.setReminder(Note(raw), due, timezone, repeat); reminderDialog = false
+    }, onRemove = { selectedReminder?.let { app.repository.deleteReminder(it.getString("syncId")) }; reminderDialog = false })
+    if (shareDialog) ShareDialog(app, note, onClose = { shareDialog = false }, onSave = { ids ->
+        draftViewModel.flushAndQueueSync(); app.repository.share(Note(raw), ids); shareDialog = false
+    })
     if (confirmHideCheckboxes) {
         val checked = ChecklistModel.checkedCount(note.items)
-        AlertDialog(onDismissRequest = { confirmHideCheckboxes = false }, title = { Text("Hide checkboxes?") },
-            text = { Text("$checked checked ${if (checked == 1) "item" else "items"} will be removed. The other items become lines of text.") },
-            confirmButton = { TextButton(onClick = { confirmHideCheckboxes = false; hideCheckboxes() }) { Text("Hide checkboxes") } },
-            dismissButton = { TextButton(onClick = { confirmHideCheckboxes = false }) { Text("Cancel") } })
+        ConfirmDialog(title = "Hide checkboxes?",
+            text = "$checked checked ${if (checked == 1) "item" else "items"} will be removed. The other items become lines of text.",
+            confirmLabel = "Hide checkboxes", destructive = true,
+            onConfirm = { confirmHideCheckboxes = false; hideCheckboxes() }, onDismiss = { confirmHideCheckboxes = false })
     }
-    if (confirmMoveToTrash) AlertDialog(onDismissRequest = { confirmMoveToTrash = false }, title = { Text("Move note to Trash?") },
-        text = { Text("This note will be moved to Trash. You can restore it later.") },
-        confirmButton = { TextButton(onClick = { action {
-            draftViewModel.flushAndQueueSync()
-            app.repository.setTrashed(listOf(note.syncId), true)
-            confirmMoveToTrash = false
-            onClose()
-        } }) { Text("Move to Trash") } },
-        dismissButton = { TextButton(onClick = { confirmMoveToTrash = false }) { Text("Cancel") } })
-}
-
-@Composable
-private fun NoteColorPicker(selectedColor: String, selectedImage: NoteBackground?, onDismiss: () -> Unit, onSelect: (String) -> Unit,
-    onSelectImage: (NoteBackground?) -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Background", style = MaterialTheme.typography.titleLarge)
-            Text("Colors", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            LazyVerticalGrid(columns = GridCells.Fixed(5), modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                items(NotePalette.colors) { swatch ->
-                    val isSelected = NotePalette.sameColor(selectedColor, swatch.hex)
-                    // The swatch shows the variant the note will be drawn in under the current theme.
-                    val color = if (swatch.hex.isEmpty()) MaterialTheme.colorScheme.surfaceVariant
-                        else Color(android.graphics.Color.parseColor(if (LocalDarkTheme.current) swatch.dark else swatch.hex))
-                    val foreground = Color(NotePalette.textColor(color.toArgb()))
-                    Box(Modifier.size(48.dp).clip(CircleShape).background(color)
-                        .border(if (isSelected) 3.dp else 1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, CircleShape)
-                        .semantics { contentDescription = "${swatch.name} background color"; selected = isSelected; role = Role.RadioButton }
-                        .clickable { onSelect(swatch.hex) }, contentAlignment = androidx.compose.ui.Alignment.Center) {
-                        if (swatch.hex.isEmpty()) Text("×", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        else if (isSelected) Icon(Icons.Outlined.Check, "Selected color", tint = foreground)
-                    }
+    if (confirmMoveToTrash) {
+        var trashError by remember { mutableStateOf<String?>(null) }
+        var trashing by remember { mutableStateOf(false) }
+        val dialogAction = rememberActionRunner { trashError = it; trashing = false }
+        ConfirmDialog(title = "Move note to Trash?", text = "You can restore it from Trash later.", confirmLabel = "Move to Trash",
+            icon = Icons.Outlined.DeleteOutline, error = trashError, busy = trashing,
+            onConfirm = {
+                trashing = true
+                dialogAction {
+                    draftViewModel.flushAndQueueSync()
+                    app.repository.setTrashed(listOf(note.syncId), true)
+                    confirmMoveToTrash = false
+                    onClose()
                 }
-            }
-            Text("Backgrounds", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            val dark = LocalDarkTheme.current
-            androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                listItems(listOf<NoteBackground?>(null) + NoteBackground.entries) { image ->
-                    val isSelected = image == selectedImage
-                    Box(Modifier.size(64.dp).clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.surfaceVariant)
-                        .noteBackgroundImage(image, dark, thumbnail = true, anchor = BackgroundAnchor.Center)
-                        .border(if (isSelected) 3.dp else 1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.small)
-                        .semantics { contentDescription = "${image?.label ?: "No"} background image"; selected = isSelected; role = Role.RadioButton }
-                        .clickable { onSelectImage(image) }, contentAlignment = androidx.compose.ui.Alignment.Center) {
-                        if (image == null) Text("×", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
+            }, onDismiss = { confirmMoveToTrash = false })
     }
 }
 
+/** A quiet one-line fact about the note: who shared it, who is editing it now. */
 @Composable
-private fun ReminderDialog(activity: MainActivity, app: KeeparrApplication, existing: JSONObject?, onClose: () -> Unit,
-    onSave: (String, String, String?) -> Unit, onRemove: () -> Unit) {
-    // An existing reminder keeps its own time zone: re-saving it (for any reason) must not silently move a repeating
-    // schedule to wherever the phone is today. A new reminder uses the phone's zone.
-    val systemZone = remember(existing?.text("timezone")) {
-        existing?.text("timezone")?.takeIf { it.isNotBlank() }?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: ZoneId.systemDefault()
+private fun MetaLine(icon: ImageVector, text: String, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        Icon(icon, null, Modifier.size(16.dp), tint = color)
+        Text(text, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
-    val timezone = systemZone.id
-    var time by remember(existing?.text("syncId"), existing?.text("dueAtUtc"), timezone) {
-        mutableStateOf(runCatching { Instant.parse(existing?.let { ReminderFormat.displayDueAt(it) }) }.getOrNull()?.atZone(systemZone)
-            ?: ZonedDateTime.now(systemZone).plusHours(1).withSecond(0).withNano(0))
-    }
-    val existingRepeat = remember(existing?.text("repeatRule")) { runCatching { JSONObject(existing?.text("repeatRule") ?: "") }.getOrNull() }
-    var repeat by remember { mutableStateOf(existingRepeat?.text("type") ?: "none") }
-    var intervalDays by remember { mutableStateOf((existingRepeat?.optInt("intervalDays", 2) ?: 2).coerceAtLeast(1).toString()) }
-    var moveToTop by remember { mutableStateOf(existingRepeat?.optBoolean("moveToTopOnTrigger") ?: false) }
-    val scheduler = app.reminders
-    AlertDialog(onDismissRequest = onClose, title = { Text("Remind me") }, text = { Column {
-        Row(Modifier.horizontalScroll(rememberScrollState())) {
-            TextButton(onClick = { time = ZonedDateTime.now(time.zone).withHour(time.hour).withMinute(time.minute).withSecond(0).withNano(0) }) { Text("Today") }
-            TextButton(onClick = { time = ZonedDateTime.now(time.zone).plusDays(1).withHour(time.hour).withMinute(time.minute).withSecond(0).withNano(0) }) { Text("Tomorrow") }
-        }
-        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            TextButton(onClick = { DatePickerDialog(activity, { _, year, month, day ->
-                time = time.withDayOfMonth(1).withYear(year).withMonth(month + 1).withDayOfMonth(day)
-            }, time.year, time.monthValue - 1, time.dayOfMonth).show() }) {
-                Icon(Icons.Outlined.CalendarToday, null); Spacer(Modifier.width(6.dp))
-                Text(time.format(DateTimeFormatter.ofPattern("EEE, MMM d", Locale.getDefault())))
-            }
-            TextButton(onClick = { TimePickerDialog(activity, { _, hour, minute -> time = time.withHour(hour).withMinute(minute) },
-                time.hour, time.minute, DateFormat.is24HourFormat(activity)).show() }) {
-                Icon(Icons.Outlined.Schedule, null); Spacer(Modifier.width(6.dp))
-                Text(time.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(Locale.getDefault())))
-            }
-        }
-        Text("Repeat")
-        Row(Modifier.horizontalScroll(rememberScrollState())) { listOf("none", "daily", "weekly", "monthly", "custom_days").forEach { type ->
-            FilterChip(repeat == type, { repeat = type }, label = { Text(if (type == "custom_days") "Every N days" else type.replaceFirstChar { it.uppercase() }) }, modifier = Modifier.padding(2.dp))
-        } }
-        if (repeat == "custom_days") OutlinedTextField(intervalDays, { value -> intervalDays = value.filter(Char::isDigit).take(3) },
-            label = { Text("Interval in days") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        if (repeat != "none") Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            Text("Move note to top when it fires", Modifier.weight(1f))
-            Switch(moveToTop, { moveToTop = it })
-        }
-        Text((if (systemZone == ZoneId.systemDefault()) "Phone time" else "Reminder time zone") + " · $timezone", style = MaterialTheme.typography.bodySmall)
-        if (!scheduler.notificationsAllowed()) TextButton(onClick = activity::requestNotifications) { Text("Allow reminder notifications") }
-        if (!scheduler.precise()) TextButton(onClick = activity::requestPreciseAlarms) { Text("Allow precise delivery (otherwise may be delayed)") }
-    } }, confirmButton = { TextButton(onClick = { onSave(time.toInstant().toString(), timezone, if (repeat == "none") null else JSONObject()
-        .put("type", repeat).put("moveToTopOnTrigger", moveToTop)
-        .also { if (repeat == "custom_days") it.put("intervalDays", intervalDays.toIntOrNull()?.coerceIn(1, 365) ?: 1) }.toString()) }) { Text("Save") } },
-        dismissButton = { if (existing != null) TextButton(onClick = onRemove) { Text("Remove reminder") } else TextButton(onClick = onClose) { Text("Cancel") } })
 }
 
+/** "+ List item", lined up with the checkboxes of the rows above it. */
 @Composable
-private fun ShareDialog(app: KeeparrApplication, note: Note, onClose: () -> Unit, onSave: (List<Long>) -> Unit, onError: (String) -> Unit) {
-    var users by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
-    var selected by remember { mutableStateOf(note.raw.optJSONArray("collaborators")?.objects().orEmpty().map { it.getLong("id") }.toSet()) }
-    var loading by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        try { users = app.repository.shareUsers().filter { it.optLong("id") != app.settings.userId } }
-        catch (cancelled: CancellationException) { throw cancelled }
-        catch (problem: Exception) { onError(problem.message ?: "Connect to load collaborators") }
-        finally { loading = false }
+private fun AddChecklistItemRow(color: Color, onAdd: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = Dimens.minTouchTarget).clip(MaterialTheme.shapes.chip)
+        .clickable(role = Role.Button, onClick = onAdd), verticalAlignment = Alignment.CenterVertically) {
+        Spacer(Modifier.width(Dimens.checklistGripWidth))
+        Box(Modifier.size(Dimens.minTouchTarget), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Add, null, tint = color) }
+        Text("List item", style = MaterialTheme.typography.bodyLarge, color = color)
     }
-    AlertDialog(onDismissRequest = onClose, title = { Text("Collaborators") }, text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-        Text("People on this Keeparr server can edit this note. Reminders remain personal.")
-        if (loading) CircularProgressIndicator()
-        users.forEach { user -> Row {
-            val id = user.getLong("id")
-            Checkbox(id in selected, { selected = if (it) selected + id else selected - id })
-            Text(user.text("displayName", user.text("username")), Modifier.padding(top = 12.dp))
-        } }
-    } }, confirmButton = { TextButton(onClick = { onSave(selected.toList()) }, enabled = !loading) { Text("Save") } }, dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } })
 }
 
-private fun verifyLock(note: Note, passcode: String): Boolean {
-    val salt = note.raw.text("lockSalt"); val expected = note.raw.text("lockHash")
-    val bytes = if (expected.startsWith("pbkdf2:")) javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        .generateSecret(javax.crypto.spec.PBEKeySpec(passcode.toCharArray(), salt.toByteArray(), 150000, 256)).encoded
-    else java.security.MessageDigest.getInstance("SHA-256").digest("$salt:$passcode".toByteArray())
-    val actual = (if (expected.startsWith("pbkdf2:")) "pbkdf2:" else "sha256:") + android.util.Base64.encodeToString(bytes, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
-    return java.security.MessageDigest.isEqual(actual.toByteArray(), expected.toByteArray())
+/** Where this note's changes are: being saved, saved on the device, or synced, in a word and an icon. */
+@Composable
+private fun SaveStatus(saving: Boolean, failed: Boolean, syncStatus: String, color: Color, modifier: Modifier = Modifier) {
+    val (icon, text) = when {
+        saving -> Icons.Outlined.CloudUpload to "Saving…"
+        failed -> Icons.Outlined.ErrorOutline to "Not saved"
+        syncStatus == "Syncing…" -> Icons.Outlined.Sync to "Syncing…"
+        syncStatus == "Synced" -> Icons.Outlined.CloudDone to "Synced"
+        syncStatus.contains("attention", true) -> Icons.Outlined.SyncProblem to "Needs attention"
+        else -> Icons.Outlined.PhoneAndroid to "Saved on device"
+    }
+    Row(modifier.semantics(mergeDescendants = true) {}, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.xs + Spacing.xxs)) {
+        Icon(icon, null, Modifier.size(16.dp), tint = if (failed) MaterialTheme.colorScheme.error else color)
+        Text(text, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
 }

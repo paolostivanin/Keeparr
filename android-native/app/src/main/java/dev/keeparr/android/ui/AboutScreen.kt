@@ -1,28 +1,23 @@
 package dev.keeparr.android.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.keeparr.android.BuildConfig
-import dev.keeparr.android.R
+import dev.keeparr.android.ui.components.BrandMark
+import dev.keeparr.android.ui.components.SubpageScaffold
+import dev.keeparr.android.ui.components.centeredMaxWidth
+import dev.keeparr.android.ui.components.screenEnter
 
 /** Attribution and licence facts shown in About. They mirror the repository's NOTICE file; keep the two in step. */
 internal object AboutInfo {
@@ -43,43 +38,34 @@ internal object AboutInfo {
         "Google Sans and Roboto fonts: SIL Open Font License 1.1")
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun AboutScreen(onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     val uriHandler = LocalUriHandler.current
-    Scaffold(topBar = {
-        TopAppBar(title = { Text("About") }, navigationIcon = {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back") }
-        })
-    }) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp),
+    SubpageScaffold("About", onBack = onBack, modifier = Modifier.screenEnter()) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).centeredMaxWidth().padding(bottom = Spacing.xl),
             horizontalAlignment = Alignment.CenterHorizontally) {
-            Spacer(Modifier.height(16.dp))
-            Box(Modifier.size(96.dp).clip(RoundedCornerShape(26.dp)).background(Color(0xFFFBBC04))) {
-                Image(painterResource(R.drawable.ic_launcher_foreground), contentDescription = null, Modifier.fillMaxSize())
-            }
-            Spacer(Modifier.height(16.dp))
-            Text("Keeparr", style = MaterialTheme.typography.headlineMedium)
+            BrandMark(88.dp, Modifier.padding(top = Spacing.lg))
+            Text("Keeparr", Modifier.padding(top = Spacing.lg), style = MaterialTheme.typography.headlineMedium)
             Text("Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(AboutInfo.TAGLINE, Modifier.padding(horizontal = 32.dp, vertical = 8.dp), textAlign = TextAlign.Center,
+            Text(AboutInfo.TAGLINE, Modifier.padding(horizontal = Spacing.xxl, vertical = Spacing.sm), textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.height(8.dp))
             SettingsSection("Origin") {
                 SettingsRow(Icons.Outlined.Info, "Derived from Kept", AboutInfo.ORIGIN)
                 SettingsDivider()
-                SettingsRow(Icons.Outlined.Code, "Original project (Kept)", AboutInfo.UPSTREAM_URL.removePrefix("https://"),
+                SettingsRow(Icons.Outlined.Code, "Original project (Kept)", AboutInfo.UPSTREAM_URL.removePrefix("https://"), external = true,
                     onClick = { uriHandler.openUri(AboutInfo.UPSTREAM_URL) })
             }
             SettingsSection("Licence and source") {
-                SettingsRow(Icons.Outlined.Gavel, "License", AboutInfo.LICENSE, onClick = { uriHandler.openUri(AboutInfo.LICENSE_URL) })
+                SettingsRow(Icons.Outlined.Gavel, "License", AboutInfo.LICENSE, external = true, onClick = { uriHandler.openUri(AboutInfo.LICENSE_URL) })
                 SettingsDivider()
-                SettingsRow(Icons.Outlined.Code, "Source code", AboutInfo.SOURCE_URL.removePrefix("https://"),
+                SettingsRow(Icons.Outlined.Code, "Source code", AboutInfo.SOURCE_URL.removePrefix("https://"), external = true,
                     onClick = { uriHandler.openUri(AboutInfo.SOURCE_URL) })
             }
             SettingsSection("Credits") {
-                SettingsRow(Icons.Outlined.Favorite, "UI scaffolding", AboutInfo.SCAFFOLD, onClick = { uriHandler.openUri(AboutInfo.SCAFFOLD_URL) })
+                SettingsRow(Icons.Outlined.FavoriteBorder, "UI scaffolding", AboutInfo.SCAFFOLD, external = true,
+                    onClick = { uriHandler.openUri(AboutInfo.SCAFFOLD_URL) })
                 SettingsDivider()
                 SettingsRow(Icons.Outlined.Inventory2, "Open-source libraries", AboutInfo.LIBRARIES.joinToString("\n"))
             }

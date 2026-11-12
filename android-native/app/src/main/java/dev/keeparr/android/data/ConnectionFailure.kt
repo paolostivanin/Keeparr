@@ -28,6 +28,10 @@ internal fun htmlGatewayFailure(code: Int, path: String): ApiException = when {
 
 internal const val LOGIN_PATH = "/api/auth/login"
 
+/** The server's answer to a sign-in that needs a 2FA or backup code before it can finish (the password was right). */
+internal fun loginRequiresSecondFactor(code: Int, path: String, body: String): Boolean =
+    code == 401 && path == LOGIN_PATH && runCatching { JSONObject(body).optBoolean("requires2FA") }.getOrDefault(false)
+
 /**
  * The message for a JSON error response. A refused sign-in (wrong password, 2FA needed, account pending approval, lockout) shows the
  * server's own reason; on any other request a 401 means the saved session is no longer valid.

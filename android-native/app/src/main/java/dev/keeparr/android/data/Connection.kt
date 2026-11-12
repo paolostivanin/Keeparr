@@ -426,7 +426,10 @@ class KeystoreCredentialCipher : CredentialCipher {
     private companion object { const val KEY_ALIAS = "keeparr_session" }
 }
 
-class ApiException(val code: Int, override val message: String) : Exception(message)
+open class ApiException(val code: Int, override val message: String) : Exception(message)
+
+/** A sign-in whose password was right, on an account with 2FA, sent without a code: ask for one and sign in again. */
+class SecondFactorRequired(message: String) : ApiException(401, message)
 
 class KeeparrApi(private val context: Context, private val settings: ConnectionProfile) : NativeApi {
     private var signature = ""
@@ -492,7 +495,10 @@ class KeeparrApi(private val context: Context, private val settings: ConnectionP
                     Log.e("KeeparrApi", "Expected JSON for $path, received HTML (HTTP ${response.code}, content-type=$contentType).")
                     throw htmlGatewayFailure(response.code, path)
                 }
-                if (!response.isSuccessful) throw ApiException(response.code, httpFailureMessage(response.code, path, text))
+                if (!response.isSuccessful) {
+                    val message = httpFailureMessage(response.code, path, text)
+                    throw if (loginRequiresSecondFactor(response.code, path, text)) SecondFactorRequired(message) else ApiException(response.code, message)
+                }
                 text
             }
         } catch (error: ApiException) { throw error }

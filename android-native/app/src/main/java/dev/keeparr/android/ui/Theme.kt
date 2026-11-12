@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.UiModeManager
 import android.content.Context
 import android.content.ContextWrapper
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -13,11 +14,14 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalView
 import android.view.View
 import dev.keeparr.android.data.ThemeMode
@@ -37,7 +41,9 @@ private val DarkColors = darkColorScheme(
     primary = Color(0xFFFFCF45), onPrimary = Color(0xFF202124),
     primaryContainer = Color(0xFF594400), onPrimaryContainer = Color(0xFFFEEFC3),
     secondary = Color(0xFFBDC1C6), onSecondary = Color(0xFF202124),
-    secondaryContainer = Color(0xFFFEEFC3), onSecondaryContainer = Color(0xFF202124),
+    // Selected states (drawer item, chips, segmented buttons) use a deep amber in the dark theme: the light accent container
+    // the web uses there glares on #202124, so this is the one deliberate departure from the web tokens.
+    secondaryContainer = Color(0xFF41331C), onSecondaryContainer = Color(0xFFFEEFC3),
     tertiary = Color(0xFF8AB4F8), onTertiary = Color(0xFF202124),
     tertiaryContainer = Color(0xFF174EA6), onTertiaryContainer = Color(0xFFD2E3FC),
     background = Color(0xFF202124), onBackground = Color(0xFFE8EAED),
@@ -49,6 +55,8 @@ private val DarkColors = darkColorScheme(
     surfaceDim = Color(0xFF202124), surfaceBright = Color(0xFF3C4043),
     surfaceContainerLowest = Color(0xFF1B1C1E), surfaceContainerLow = Color(0xFF28292C), surfaceContainer = Color(0xFF303134),
     surfaceContainerHigh = Color(0xFF35363A), surfaceContainerHighest = Color(0xFF3C4043),
+    error = Color(0xFFF28B82), onError = Color(0xFF601410),
+    errorContainer = Color(0xFF5C2B29), onErrorContainer = Color(0xFFFAD2CF),
 )
 
 private val LightColors = lightColorScheme(
@@ -67,7 +75,37 @@ private val LightColors = lightColorScheme(
     surfaceDim = Color(0xFFE8EAED), surfaceBright = Color(0xFFFFFFFF),
     surfaceContainerLowest = Color(0xFFFFFFFF), surfaceContainerLow = Color(0xFFF8F9FA), surfaceContainer = Color(0xFFF1F3F4),
     surfaceContainerHigh = Color(0xFFEBEDF0), surfaceContainerHighest = Color(0xFFE3E5E8),
+    error = Color(0xFFC5221F), onError = Color(0xFFFFFFFF),
+    errorContainer = Color(0xFFFCE8E6), onErrorContainer = Color(0xFFA50E0E),
 )
+
+/**
+ * Roles Material 3 has no slot for: the brand yellow (logo tiles) and the success and warning tones used by status banners.
+ * Read them through [MaterialTheme.extendedColors].
+ */
+@Immutable
+data class KeeparrExtendedColors(
+    val brand: Color, val onBrand: Color,
+    val success: Color, val successContainer: Color, val onSuccessContainer: Color,
+    val warning: Color, val warningContainer: Color, val onWarningContainer: Color,
+)
+
+private val LightExtended = KeeparrExtendedColors(
+    brand = Color(0xFFFBBC04), onBrand = Color(0xFF202124),
+    success = Color(0xFF188038), successContainer = Color(0xFFE6F4EA), onSuccessContainer = Color(0xFF0D652D),
+    warning = Color(0xFFB06000), warningContainer = Color(0xFFFEF7E0), onWarningContainer = Color(0xFF7A4100),
+)
+
+private val DarkExtended = KeeparrExtendedColors(
+    brand = Color(0xFFFBBC04), onBrand = Color(0xFF202124),
+    success = Color(0xFF81C995), successContainer = Color(0xFF173D24), onSuccessContainer = Color(0xFFCEEAD6),
+    warning = Color(0xFFFDD663), warningContainer = Color(0xFF4A3A10), onWarningContainer = Color(0xFFFEEFC3),
+)
+
+private val LocalExtendedColors = staticCompositionLocalOf { LightExtended }
+
+val MaterialTheme.extendedColors: KeeparrExtendedColors
+    @Composable @ReadOnlyComposable get() = LocalExtendedColors.current
 
 // Both families are bundled variable fonts (Latin and Latin-extended subsets, wght 400-700): no Play Services, no network.
 @OptIn(ExperimentalTextApi::class)
@@ -100,6 +138,16 @@ private val KeeparrShapes = Shapes(
     extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(16.dp),
     large = RoundedCornerShape(28.dp), extraLarge = RoundedCornerShape(28.dp),
 )
+
+// What each radius is for, so screens ask for a role rather than a size.
+/** Chips and small controls (8dp). */
+val Shapes.chip: Shape get() = extraSmall
+/** Note cards and banners (12dp). */
+val Shapes.card: Shape get() = small
+/** Grouped settings rows and other tonal groups (16dp). */
+val Shapes.group: Shape get() = medium
+/** The search pill and other fully rounded bars. */
+val Shapes.pill: Shape get() = CircleShape
 
 /** True while the app is drawn in its dark theme (which can differ from the system's: see ThemeMode). */
 val LocalDarkTheme = staticCompositionLocalOf { false }
@@ -146,7 +194,8 @@ fun KeeparrTheme(dark: Boolean, content: @Composable () -> Unit) {
     val view = LocalView.current
     val bars = remember(view) { SystemBarsController(view.takeUnless { it.isInEditMode }) }
     SideEffect { bars.theme(dark) }
-    CompositionLocalProvider(LocalDarkTheme provides dark, LocalSystemBars provides bars) {
+    CompositionLocalProvider(LocalDarkTheme provides dark, LocalSystemBars provides bars,
+        LocalExtendedColors provides if (dark) DarkExtended else LightExtended) {
         MaterialTheme(colorScheme = if (dark) DarkColors else LightColors, typography = KeeparrTypography, shapes = KeeparrShapes, content = content)
     }
 }

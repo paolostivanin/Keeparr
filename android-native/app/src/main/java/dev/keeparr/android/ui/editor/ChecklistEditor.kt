@@ -47,6 +47,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import dev.keeparr.android.data.ChecklistModel
+import dev.keeparr.android.ui.Dimens
 import dev.keeparr.android.data.html.HtmlMode
 import org.json.JSONObject
 import android.net.Uri
@@ -102,7 +103,7 @@ internal fun ChecklistRows(
                     .graphicsLayer { if (dragged) { translationY = drag.offset; shadowElevation = 8.dp.toPx() } }
                     .background(if (dragged) background else Color.Transparent),
                     verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(width = 32.dp, height = 48.dp)
+                    Box(Modifier.size(width = Dimens.checklistGripWidth, height = Dimens.minTouchTarget)
                         .semantics {
                             contentDescription = "Reorder item"
                             // Dragging and swiping have no equivalent for a screen reader, which moves a row one step at a time.
@@ -134,8 +135,10 @@ internal fun ChecklistRows(
                             Text("This item comes from a newer version of Keeparr and is shown read-only.", style = MaterialTheme.typography.labelSmall)
                         } else {
                             val state = states.getOrPut(id) { RichEditorState(HtmlMode.Row, "row:$id") }
+                            // A checked row's text recedes, so the open items stand out.
+                            val rowColors = if (item.optBoolean("done")) EditorColors((colors.text and 0xFFFFFF) or (0x99 shl 24), colors.link) else colors
                             RichTextField(
-                                state = state, html = item.getString("data"), externalEdits = externalEdits, colors = colors, hint = "List item",
+                                state = state, html = item.getString("data"), externalEdits = externalEdits, colors = rowColors, hint = "List item",
                                 modifier = Modifier.fillMaxWidth(), embeds = embeds,
                                 onLinkTap = onLinkTap,
                                 onImageContent = onImageContent,
@@ -145,7 +148,9 @@ internal fun ChecklistRows(
                             )
                         }
                     }
-                    IconButton(onClick = { actions.remove(id) }) { Icon(Icons.Outlined.Close, "Remove item") }
+                    IconButton(onClick = { actions.remove(id) }) {
+                        Icon(Icons.Outlined.Close, "Remove item", Modifier.size(20.dp), tint = foreground.copy(alpha = .6f))
+                    }
                 }
             }
         }
@@ -156,12 +161,12 @@ internal fun ChecklistRows(
 @Composable
 internal fun CompletedItemsHeader(count: Int, collapsed: Boolean, foreground: Color, onToggle: () -> Unit) {
     val tint = foreground.copy(alpha = .7f)
-    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
+    Row(Modifier.fillMaxWidth().heightIn(min = Dimens.minTouchTarget)
         .clickable(onClickLabel = if (collapsed) "Show completed items" else "Hide completed items", role = Role.Button, onClick = onToggle)
         .semantics { stateDescription = if (collapsed) "Collapsed" else "Expanded" },
         verticalAlignment = Alignment.CenterVertically) {
         // As wide as a row's grip, so the arrow lines up with the grips above it.
-        Box(Modifier.size(width = 32.dp, height = 48.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(width = Dimens.checklistGripWidth, height = Dimens.minTouchTarget), contentAlignment = Alignment.Center) {
             Icon(Icons.Outlined.ExpandMore, null, Modifier.rotate(if (collapsed) -90f else 0f), tint = tint)
         }
         Text("($count) Completed items", color = tint, style = MaterialTheme.typography.bodyMedium)
