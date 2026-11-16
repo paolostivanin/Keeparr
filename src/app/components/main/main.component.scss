@@ -166,7 +166,7 @@
     border-radius: 999px;
     color: #3c4043;
     cursor: pointer;
-    font: 600 12px/1 inherit;
+    font: 600 12px/1 var(--font-display);
     margin-left: 4px;
     padding: 5px 10px;
   }
@@ -1293,8 +1293,9 @@
       background: #fff;
       border: 1px solid #dadce0;
       border-radius: 999px;
+      color: #3c4043;
       cursor: pointer;
-      font: 600 12px/1 inherit;
+      font: 600 12px/1 var(--font-display);
       padding: 7px 12px;
     }
   }
